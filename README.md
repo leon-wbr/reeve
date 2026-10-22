@@ -55,5 +55,6 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 ## Documents
 
 - [PHILOSOPHY.md](PHILOSOPHY.md)
-- [docs/metrics.md](docs/metrics.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/use-cases/](docs/use-cases/)
+- [docs/metrics.md](docs/metrics.md)
