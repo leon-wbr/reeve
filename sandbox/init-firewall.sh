@@ -3,7 +3,8 @@
 # then blocked too, so nothing can tunnel out through the resolver. Runs as root once at start.
 set -euo pipefail
 
-[ "${REEVE_SANDBOX_NET:-restricted}" = open ] && exit 0
+ready=/run/reeve-ready
+[ "${REEVE_SANDBOX_NET:-restricted}" = open ] && { touch "$ready"; exit 0; }
 
 hosts="api.anthropic.com ${REEVE_SANDBOX_ALLOW:-}"
 
@@ -28,3 +29,4 @@ iptables -P OUTPUT DROP
 dig +short +time=1 +tries=1 example.com >/dev/null 2>&1 && { echo "firewall check failed: DNS reachable" >&2; exit 1; }
 curl -s --connect-timeout 2 -o /dev/null https://1.1.1.1 && { echo "firewall check failed: 1.1.1.1 reachable" >&2; exit 1; }
 curl -s --max-time 10 -o /dev/null https://api.anthropic.com || { echo "firewall check failed: api.anthropic.com unreachable" >&2; exit 1; }
+touch "$ready"

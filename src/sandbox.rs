@@ -61,6 +61,8 @@ impl Opts {
 pub type Mount = (PathBuf, bool);
 
 const WORKSPACE_LABEL: &str = "reeve.workspace";
+/// Written by init-firewall once egress is locked down.
+const READY: &str = "/run/reeve-ready";
 
 /// Tagged with a hash of the embedded build files, so editing them builds a new image.
 pub fn image_tag(version: &str) -> String {
@@ -100,6 +102,7 @@ pub fn up_args(
         "run",
         "-d",
         "--rm",
+        "--init",
         "--name",
         name,
         "--cap-add",
@@ -140,7 +143,7 @@ pub fn up_args(
     a
 }
 
-pub fn exec_args(name: &str, cwd: &Path, argv: &[String], claude: bool, tty: bool) -> Vec<String> {
+pub fn exec_args(name: &str, cwd: &Path, argv: &[String], tty: bool) -> Vec<String> {
     let mut a: Vec<String> = strings(["exec", "-i"]).collect();
     if tty {
         a.push("-t".into());
@@ -152,9 +155,6 @@ pub fn exec_args(name: &str, cwd: &Path, argv: &[String], claude: bool, tty: boo
         &cwd.display().to_string(),
         name,
     ]));
-    if claude {
-        a.extend(strings(["claude", "--dangerously-skip-permissions"]));
-    }
     a.extend(argv.iter().cloned());
     a
 }
@@ -220,10 +220,9 @@ fn docker<S: AsRef<OsStr>>(args: impl IntoIterator<Item = S>) -> io::Result<Stri
         .stdin(Stdio::null())
         .output()?;
     if !o.status.success() {
-        return Err(io::Error::other(format!(
-            "docker: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )));
+        return Err(io::Error::other(
+            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        ));
     }
     Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
@@ -283,32 +282,74 @@ pub fn down(name: &str) -> io::Result<()> {
 
 /// The workspace a running sandbox was started with.
 pub fn workspace_of(name: &str) -> io::Result<PathBuf> {
-    let w = docker([
-        "inspect",
-        "-f",
-        &format!("{{{{index .Config.Labels \"{WORKSPACE_LABEL}\"}}}}"),
-        name,
-    ])?;
-    Ok(PathBuf::from(w))
+    let label = format!("{{{{index .Config.Labels \"{WORKSPACE_LABEL}\"}}}}");
+    match docker(["inspect", "-f", &label, name])?.as_str() {
+        "" | "<no value>" => Err(io::Error::other(format!("{name} is not a reeve sandbox"))),
+        w => Ok(PathBuf::from(w)),
+    }
 }
 
-pub fn exec(name: &str, cwd: &Path, argv: &[String], claude: bool) -> io::Result<ExitStatus> {
+/// Sandbox `name` for workspace `o.workspace`: reused if it exists (once its firewall is up),
+/// otherwise started. Losing a race to start it counts as finding it.
+pub fn ensure(name: &str, o: &Opts) -> io::Result<PathBuf> {
+    if !running(name) {
+        match up(name, o) {
+            Ok(ws) => return Ok(ws),
+            Err(e) if !e.to_string().contains("is already in use") => return Err(e),
+            Err(_) => wait_for(
+                || docker(["inspect", name]).is_ok(),
+                &format!("sandbox {name} to appear"),
+            )?,
+        }
+    }
+    let ws = workspace_of(name)?;
+    let want = fs::canonicalize(&o.workspace)?;
+    if ws != want {
+        return Err(io::Error::other(format!(
+            "sandbox {name} holds {}, not {}; use another name",
+            ws.display(),
+            want.display()
+        )));
+    }
+    wait_for(
+        || docker(["exec", name, "test", "-f", READY]).is_ok(),
+        &format!("sandbox {name}'s firewall"),
+    )?;
+    Ok(ws)
+}
+
+fn wait_for(ok: impl Fn() -> bool, what: &str) -> io::Result<()> {
+    for _ in 0..60 {
+        if ok() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    Err(io::Error::other(format!("timed out waiting for {what}")))
+}
+
+pub fn exec(name: &str, cwd: &Path, argv: &[String]) -> io::Result<ExitStatus> {
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     Command::new("docker")
-        .args(exec_args(name, cwd, argv, claude, tty))
+        .args(exec_args(name, cwd, argv, tty))
         .status()
 }
 
-pub fn run(name: &str, o: &Opts, argv: &[String]) -> io::Result<ExitStatus> {
-    let n = name.to_string();
-    let _ = ctrlc::set_handler(move || {
-        let _ = down(&n);
-        std::process::exit(130);
-    });
-    let cwd = up(name, o)?;
-    let status = exec(name, &cwd, argv, true);
-    let _ = down(name);
-    status
+pub fn running(name: &str) -> bool {
+    docker(["inspect", "-f", "{{.State.Running}}", name]).is_ok_and(|s| s == "true")
+}
+
+/// Running sandboxes, one per line: name, workspace, status.
+pub fn ls() -> io::Result<String> {
+    let label = format!("{{{{.Label \"{WORKSPACE_LABEL}\"}}}}");
+    let format = format!("table {{{{.Names}}}}\t{label}\t{{{{.Status}}}}");
+    docker([
+        "ps",
+        "--filter",
+        &format!("label={WORKSPACE_LABEL}"),
+        "--format",
+        &format,
+    ])
 }
 
 #[cfg(test)]
@@ -413,30 +454,25 @@ mod tests {
     }
 
     #[test]
-    fn claude_runs_as_node_with_skip_permissions_in_the_workspace() {
+    fn commands_run_as_node_in_the_workspace() {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        let a = exec_args("sb", Path::new("/ws"), &s(&["-p", "hi"]), true, false);
+        let a = exec_args("sb", Path::new("/ws"), &s(&["claude", "-p", "hi"]), false);
         assert_eq!(
             a,
             s(&[
-                "exec",
-                "-i",
-                "-u",
-                "node",
-                "-w",
-                "/ws",
-                "sb",
-                "claude",
-                "--dangerously-skip-permissions",
-                "-p",
-                "hi"
+                "exec", "-i", "-u", "node", "-w", "/ws", "sb", "claude", "-p", "hi"
             ])
         );
-        let plain = exec_args("sb", Path::new("/ws"), &s(&["ls"]), false, true);
+        let tty = exec_args("sb", Path::new("/ws"), &s(&["ls"]), true);
         assert_eq!(
-            plain,
+            tty,
             s(&["exec", "-i", "-t", "-u", "node", "-w", "/ws", "sb", "ls"])
         );
+    }
+
+    #[test]
+    fn sandbox_runs_an_init_to_reap_background_sessions() {
+        assert!(up(&opts(&[]), &[]).contains(&"--init".to_string()));
     }
 
     #[test]
