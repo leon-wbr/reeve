@@ -1,4 +1,5 @@
 mod bench;
+mod gate;
 mod run;
 mod sandbox;
 
@@ -40,6 +41,24 @@ enum Top {
     /// Benchmark a communicator setup on a fixed scenario with a simulated user
     #[command(subcommand)]
     Bench(Bench),
+    /// Protect a branch so it only moves to commits whose CI passed (a git reference-transaction hook)
+    #[command(subcommand)]
+    Gate(Gate),
+}
+
+#[derive(Subcommand)]
+enum Gate {
+    /// Install the gate in the current repository
+    Install {
+        /// The branch to protect
+        #[arg(long)]
+        protect: String,
+        /// CI status command; `{rev}` is replaced by the commit. Exit 0 pass, 2 pending, else fail
+        #[arg(long)]
+        ci: String,
+    },
+    /// Run as the reference-transaction hook (installed by `reeve gate install`)
+    Hook { state: String },
 }
 
 #[derive(Subcommand)]
@@ -178,6 +197,8 @@ fn main() -> ExitCode {
         Top::Bench(Bench::Check { repo, branch }) => bench::check::check(&repo, &branch)
             .map(|c| println!("{c}"))
             .map(|_| 0),
+        Top::Gate(Gate::Install { protect, ci }) => gate::install(&protect, &ci).map(|_| 0),
+        Top::Gate(Gate::Hook { state }) => gate::hook(&state).map(|ok| if ok { 0 } else { 1 }),
     };
     match result {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),

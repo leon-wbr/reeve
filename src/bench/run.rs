@@ -138,6 +138,9 @@ impl Bench {
             }
         }
         self.git(["-C", &self.base, "worktree", "prune"])?;
+        let _ = self.git([
+            "-C", &self.base, "config", "--unset-all", "reeve.protect", &format!("^{}$", self.run),
+        ]);
         let branches = self.git(["-C", &self.base, "branch", "--format=%(refname:short)"])?;
         for b in branches.split('\n').filter(|b| mine(&self.run, b)) {
             let _ = self.git(["-C", &self.base, "branch", "-D", b]);
@@ -405,6 +408,17 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         "-qm",
         "scenario",
     ])?;
+    if arm_dir.join("setup").exists() {
+        let ok = Command::new(arm_dir.join("setup"))
+            .current_dir(&dir)
+            .env("RUN", &run)
+            .env("REEVE", std::env::current_exe()?)
+            .status()?
+            .success();
+        if !ok {
+            return Err(io::Error::other("arm setup failed"));
+        }
+    }
 
     let comm_name = format!("{run}-comm");
     let mut args: Vec<OsString> = [
