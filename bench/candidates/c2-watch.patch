@@ -1,0 +1,126 @@
+diff --git a/bench/arms/c2/setup b/bench/arms/c2/setup
+new file mode 100755
+index 0000000..a9b4364
+--- /dev/null
++++ b/bench/arms/c2/setup
+@@ -0,0 +1,8 @@
++#!/bin/sh
++cat > .claude/settings.local.json <<JSON
++{
++  "hooks": {
++    "Stop": [{ "hooks": [{ "type": "command", "command": "'$REEVE' watch --main '$RUN' --ci 'node scripts/ci.mjs {rev}'", "asyncRewake": true, "timeout": 3600 }] }]
++  }
++}
++JSON
+diff --git a/src/main.rs b/src/main.rs
+index b8d097c..79e4e2f 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,5 +1,6 @@
+ mod bench;
+ mod gate;
++mod watch;
+ mod run;
+ mod sandbox;
+ 
+@@ -44,6 +45,14 @@ enum Top {
+     /// Protect a branch so it only moves to commits whose CI passed (a git reference-transaction hook)
+     #[command(subcommand)]
+     Gate(Gate),
++    /// Stop hook (asyncRewake): wait for pending CI on MAIN or MAIN-* and wake the session when it finishes
++    Watch {
++        #[arg(long)]
++        main: String,
++        /// CI status command; `{rev}` is replaced by the commit. Exit 0 pass, 2 pending, else fail
++        #[arg(long)]
++        ci: String,
++    },
+ }
+ 
+ #[derive(Subcommand)]
+@@ -198,6 +207,7 @@ fn main() -> ExitCode {
+             .map(|c| println!("{c}"))
+             .map(|_| 0),
+         Top::Gate(Gate::Install { protect, ci }) => gate::install(&protect, &ci).map(|_| 0),
++        Top::Watch { main, ci } => watch::watch(&main, &ci),
+         Top::Gate(Gate::Hook { state }) => gate::hook(&state).map(|ok| if ok { 0 } else { 1 }),
+     };
+     match result {
+diff --git a/src/watch.rs b/src/watch.rs
+new file mode 100644
+index 0000000..51b90d4
+--- /dev/null
++++ b/src/watch.rs
+@@ -0,0 +1,72 @@
++use std::collections::BTreeMap;
++use std::io::{self, Read};
++use std::process::Command;
++use std::thread::sleep;
++use std::time::{Duration, Instant};
++
++const POLL: Duration = Duration::from_secs(15);
++const GIVE_UP: Duration = Duration::from_secs(50 * 60);
++
++fn tips(main: &str) -> io::Result<BTreeMap<String, String>> {
++    let out = Command::new("git")
++        .args(["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"])
++        .output()?;
++    Ok(String::from_utf8_lossy(&out.stdout)
++        .lines()
++        .filter_map(|l| l.split_once(' '))
++        .filter(|(b, _)| *b == main || b.starts_with(&format!("{main}-")))
++        .map(|(b, sha)| (b.to_string(), sha.to_string()))
++        .collect())
++}
++
++fn status(ci: &str, sha: &str) -> io::Result<&'static str> {
++    let code = Command::new("sh").arg("-c").arg(ci.replace("{rev}", sha)).output()?.status.code();
++    Ok(match code {
++        Some(0) => "pass",
++        Some(2) => "pending",
++        _ => "fail",
++    })
++}
++
++/// A Stop hook for `asyncRewake`: while CI is pending on `main` or a `main-*` branch, waits for
++/// a run to finish and exits 2 with what finished, which wakes the idle session. Exits 0 when
++/// nothing is pending.
++pub fn watch(main: &str, ci: &str) -> io::Result<i32> {
++    io::stdin().read_to_end(&mut Vec::new())?;
++    let started = Instant::now();
++    let mut waiting: BTreeMap<String, String> = BTreeMap::new();
++    for (branch, sha) in tips(main)? {
++        if status(ci, &sha)? == "pending" {
++            waiting.insert(branch, sha);
++        }
++    }
++    while !waiting.is_empty() && started.elapsed() < GIVE_UP {
++        sleep(POLL);
++        let now = tips(main)?;
++        let mut finished = vec![];
++        for (branch, sha) in waiting.clone() {
++            if now.get(&branch) != Some(&sha) {
++                waiting.remove(&branch);
++                if let Some(new) = now.get(&branch) {
++                    waiting.insert(branch, new.clone());
++                }
++                continue;
++            }
++            let s = status(ci, &sha)?;
++            if s != "pending" {
++                waiting.remove(&branch);
++                finished.push(format!("{branch} {} {s}", &sha[..7]));
++            }
++        }
++        if !finished.is_empty() {
++            let rest: Vec<&str> = waiting.keys().map(String::as_str).collect();
++            eprintln!(
++                "CI finished: {}.{}",
++                finished.join(", "),
++                if rest.is_empty() { String::new() } else { format!(" Still pending: {}.", rest.join(", ")) }
++            );
++            return Ok(2);
++        }
++    }
++    Ok(0)
++}
