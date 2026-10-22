@@ -89,4 +89,30 @@ The clean minimum is 1 intervention, the rename decision.
 - **What:** `reeve ask "<question, options, recommendation>"`, run with `run_in_background`, writes the question to `$REEVE_HOME/asks/` and waits for the answer. The agent keeps working, and the answer lands in the session as a background-task notification. `reeve asks` lists open questions; `reeve answer <id> <text>` answers one ([src/ask.rs](../src/ask.rs)). One appended system-prompt line tells the agent about it ([arms/c3/system.md](arms/c3/system.md)). In the bench, the simulated user reads the queue even while the session is busy, with the same 4-minute latency.
 - **Hypothesis:** in batch 4, vanilla always finished the rename last. It wrote the question inside a long CI-waiting turn, and the user only saw it when the turn ended. A queue the user reads across sessions surfaces it at once, and the agent keeps working while it waits, so time to done should fall at 1 intervention and B0's cost.
 - **Control, C3b:** B0 plus one line and no code: "ask as soon as you know, then end your turn".
-- Results follow below.
+- **Result (batch 5, stopped early at 7 of 12 runs because the plan's usage ran out; n=2 for B0, C3, C3b and n=1 for B1):**
+
+| Arm | Interventions | Min to done | Cost $ | Rename landed at (min) |
+|---|---|---|---|---|
+| B0 | 1, 1 | 16.6, 12.4 | 1.27, 0.85 | 16.5, 12.4 (last both times) |
+| B1 | 1 | 23.9 | 7.33 | 19.0 |
+| C3 | 1, 2 | 10.7, 21.8 | 1.21, 1.10 | 10.6, 14.7 (not last in run 2) |
+| C3b | 1, 1 | 19.9, 26.6 | 1.56, 2.08 | 19.8, 26.6 (last both times) |
+
+- **Verdict: not proven; promising.**
+  - **The mechanism works.** Both C3 runs queued the rename question as one of their first commands. The answer came back while the agent kept working, and the rename stopped being the last item.
+  - **Run 1 beat everything:** 10.7 min, against B0's best of 12.4, at B0's cost.
+  - **Run 2:** the auto-mode classifier denied a merge into main. That cost a recovery intervention and about 10 minutes, so the median (16.2) lands above B0's (14.5).
+  - **The no-code control (C3b) was worst on time.** Ending the turn to ask stalls every other item. A one-line instruction does not get the effect; the queue does.
+  - **C3 clearly beats B1** on time and cost.
+  - **Against B0, n=2 can't separate C3 from noise.** The noise is mostly the sporadic classifier denial C1 was built for.
+- **Next:** run C3 together with C1's narrow allow rules for landing (no gate), so that classifier denials stop adding noise, at n≥5 against B0. Also measure "time from question to answer" separately from total time.
+
+## What we learned so far
+
+- **Vanilla is the bar to beat, not the communicator.** On one repo with six small asks, B0 is fastest and cheapest. The comm skill (B1) costs 5–7x and is slower, with the same interventions.
+- **Vanilla already waits on CI** with until-loops, Monitor and background tasks. Wake hooks tie.
+- **The gaps that showed up:**
+  - sporadic auto-mode classifier denials of merges into main, which cost recovery interventions and minutes;
+  - decisions that sit unseen inside long busy turns.
+- **Next step:** C3 (a decision queue) addresses the second gap, and C1's allow rules the first. Neither is proven at n≤3.
+- **The bench floors at 1 intervention**, so wins have to show up in time and cost unless the scenario adds more decisions.
