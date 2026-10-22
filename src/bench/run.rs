@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TOTAL_MS: i64 = 40 * 60_000;
-const REPLY_DELAY_MS: i64 = 20_000;
+const REPLY_DELAY_MS: i64 = 4 * 60_000;
 const POLL_AFTER_MS: i64 = 6 * 60_000;
 const CLAIM_GRACE_MS: i64 = 5 * 60_000;
 const MAX_INTERVENTIONS: usize = 10;
@@ -350,6 +350,15 @@ fn read_stderr(mut err: impl Read, path: PathBuf) {
     }
 }
 
+fn open_asks(dir: &Path) -> Vec<Value> {
+    let Ok(entries) = fs::read_dir(dir) else { return vec![] };
+    entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json") && !p.with_extension("answer").exists())
+        .filter_map(|p| serde_json::from_str(&fs::read_to_string(p).ok()?).ok())
+        .collect()
+}
+
 fn falsy(v: &Value) -> bool {
     v.is_null() || *v == false || *v == 0 || *v == ""
 }
@@ -366,12 +375,17 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
     let mut env: Vec<(OsString, OsString)> = std::env::vars_os()
         .filter(|(k, _)| {
             let k = k.to_string_lossy();
-            !["HERDR_", "ORCH_", "CLAUDECODE", "CLAUDE_CODE_"]
+            !["HERDR_", "ORCH_", "CLAUDECODE", "CLAUDE_CODE_", "PATH", "REEVE_HOME"]
                 .iter()
                 .any(|p| k.starts_with(p))
         })
         .collect();
     env.push(("ORCH_HOME".into(), trials.join(".orch-sink").into()));
+    let exe_dir = std::env::current_exe()?.parent().map(PathBuf::from).unwrap_or_default();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    env.push(("PATH".into(), std::env::join_paths(std::iter::once(exe_dir).chain(std::env::split_paths(&path))).map_err(io::Error::other)?));
+    let queue = trials.join("logs").join(&run).join("reeve");
+    env.push(("REEVE_HOME".into(), queue.clone().into()));
     let mut b = Bench {
         logs: trials.join("logs").join(&run),
         base: base.to_string_lossy().into_owned(),
@@ -497,7 +511,7 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         }
     };
     let (mut last_check, mut last_poll, mut last_blocked, mut ended) = (0, clock(), clock(), false);
-    let error = loop {
+    let error = 'run: loop {
         if ended {
             break None;
         }
@@ -548,6 +562,35 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         if now - t0 > TOTAL_MS {
             result["timeout"] = true.into();
             break None;
+        }
+        // Questions in the decision queue are read even while the session is busy.
+        for q in open_asks(&queue.join("asks")) {
+            if now - q["askedAt"].as_i64().unwrap_or(now) < REPLY_DELAY_MS {
+                continue;
+            }
+            let question = js_str(q.get("question"));
+            history.push(("communicator (decision queue)", question.clone()));
+            let sim = Sim {
+                asks: &asks,
+                key: &key,
+                items: &ITEMS,
+                history: &history,
+                silent_minutes: 0,
+                env: &b.env,
+                cwd: &trials,
+            };
+            let s = match simulate(&sim).or_else(|_| simulate(&sim)) {
+                Ok(s) => s,
+                Err(e) => break 'run Some(e.to_string()),
+            };
+            let reply = s["reply"].as_str().filter(|r| !r.is_empty()).unwrap_or("your call").to_string();
+            b.log("queue-answer", &json!({ "question": question, "text": reply }));
+            push(&mut result["interventions"], json!({ "t": now - t0, "kind": "answer", "via": "queue", "text": reply }));
+            history.push(("user", reply.clone()));
+            let id = js_str(q.get("id"));
+            if let Err(e) = fs::write(queue.join("asks").join(format!("{id}.answer")), reply) {
+                break 'run Some(e.to_string());
+            }
         }
         let (busy, last_event) = {
             let c = state.lock().unwrap();

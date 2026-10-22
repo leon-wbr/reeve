@@ -1,4 +1,5 @@
 mod bench;
+mod ask;
 mod gate;
 mod run;
 mod sandbox;
@@ -44,6 +45,12 @@ enum Top {
     /// Protect a branch so it only moves to commits whose CI passed (a git reference-transaction hook)
     #[command(subcommand)]
     Gate(Gate),
+    /// Queue a question for the user and wait for the answer (run it in the background and keep working)
+    Ask { question: String },
+    /// List open questions
+    Asks,
+    /// Answer an open question
+    Answer { id: String, text: String },
 }
 
 #[derive(Subcommand)]
@@ -198,6 +205,9 @@ fn main() -> ExitCode {
             .map(|c| println!("{c}"))
             .map(|_| 0),
         Top::Gate(Gate::Install { protect, ci }) => gate::install(&protect, &ci).map(|_| 0),
+        Top::Ask { question } => ask::ask(&question),
+        Top::Asks => ask::list(),
+        Top::Answer { id, text } => ask::answer(&id, &text),
         Top::Gate(Gate::Hook { state }) => gate::hook(&state).map(|ok| if ok { 0 } else { 1 }),
     };
     match result {
