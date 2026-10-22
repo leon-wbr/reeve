@@ -14,7 +14,7 @@ const store = join(resolve(git('rev-parse', '--git-common-dir')), 'ci');
 mkdirSync(store, { recursive: true });
 const file = join(store, `${sha}.json`);
 let rec = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { startedAt: Number(git('show', '-s', '--format=%ct', sha)) * 1000 };
-if (flag === '--rerun') rec = { startedAt: Date.now() };
+if (flag === '--rerun') rec = { startedAt: Date.now(), everPassed: rec.everPassed || rec.status === 'pass' };
 const left = Math.ceil((rec.startedAt + delay * 1000 - Date.now()) / 1000);
 if (!rec.status && left > 0) {
   writeFileSync(file, JSON.stringify(rec));
@@ -28,6 +28,7 @@ if (!rec.status) {
     execFileSync('tar', ['-xf', 'snap.tar'], { cwd: dir });
     execFileSync('npm', ['run', '-s', 'ci'], { cwd: dir, stdio: 'pipe' });
     rec.status = 'pass';
+    rec.everPassed = true;
   } catch (e) {
     rec.status = 'fail';
     rec.log = `${e.stdout ?? ''}${e.stderr ?? ''}`.split('\n').slice(-40).join('\n');

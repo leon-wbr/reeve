@@ -164,7 +164,7 @@ impl Bench {
             fs::read_to_string(store.join(format!("{sha}.json")))
                 .ok()
                 .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                .is_some_and(|r| r["status"] == "pass")
+                .is_some_and(|r| r["status"] == "pass" || r["everPassed"] == true)
         };
         let start = self.git([
             "-C",

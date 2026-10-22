@@ -36,6 +36,7 @@ pub fn score(only: &[String]) -> io::Result<String> {
         "workers",
         "failed starts",
         "blocked min",
+        "unchecked landings",
         "cost $",
     ];
     let mut rows: Vec<Vec<String>> = vec![header.map(String::from).to_vec()];
@@ -71,6 +72,7 @@ pub fn score(only: &[String]) -> io::Result<String> {
                 .sum::<i64>()
                 .to_string(),
             col(&|r| Some(blocked_ms(r) / 60e3), 1),
+            col(&|r| r["uncheckedLandings"].as_f64(), 0),
             col(&|r| r["costUsd"].as_f64(), 2),
         ]);
     }
