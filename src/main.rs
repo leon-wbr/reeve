@@ -1,3 +1,4 @@
+mod bench;
 mod run;
 mod sandbox;
 
@@ -36,6 +37,19 @@ enum Top {
     /// Manage sandboxes started by `reeve run --sandbox`
     #[command(subcommand)]
     Sandbox(Sandbox),
+    /// Benchmark a communicator setup on a fixed scenario with a simulated user
+    #[command(subcommand)]
+    Bench(Bench),
+}
+
+#[derive(Subcommand)]
+enum Bench {
+    /// One run of an arm (bench/arms/<ARM>), named rv-<ARM>-<N>
+    Run { arm: String, n: String },
+    /// Aggregate results per arm
+    Score { arms: Vec<String> },
+    /// Done-check a branch of a repo and print it as JSON
+    Check { repo: PathBuf, branch: String },
 }
 
 #[derive(Subcommand)]
@@ -157,6 +171,13 @@ fn main() -> ExitCode {
             .and_then(|cwd| sandbox::exec(&name, &cwd, &cmd))
             .map(|s| s.code().unwrap_or(1)),
         Top::Sandbox(Sandbox::Down { name }) => sandbox::down(&name).map(|_| 0),
+        Top::Bench(Bench::Run { arm, n }) => bench::run::run(&arm, &n),
+        Top::Bench(Bench::Score { arms }) => bench::score::score(&arms)
+            .map(|t| println!("{t}"))
+            .map(|_| 0),
+        Top::Bench(Bench::Check { repo, branch }) => bench::check::check(&repo, &branch)
+            .map(|c| println!("{c}"))
+            .map(|_| 0),
     };
     match result {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
