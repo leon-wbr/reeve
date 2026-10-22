@@ -12,7 +12,7 @@ Before changing anything, read [PHILOSOPHY.md](PHILOSOPHY.md). The principles th
 
 When working here:
 
-- Don't add technical design or code ahead of its step; each piece is designed when it's about to be built.
+- Build one small piece at a time, and don't write up designs for pieces nobody is building yet.
 - Keep the docs short and plain. Say each thing in one place and link to it from elsewhere.
 - Use conventional commits (`docs:`, `feat:`, `fix:`, `chore:`).
 - Propose changes as a PR that follows [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -1,13 +1,15 @@
 # Contributing
 
-## Share your use case
+Code, features, fixes, ideas and use cases are all welcome as PRs. If it's good, it gets merged.
 
-There is no code yet, so the most useful contribution is how you would use reeve. Open a PR that adds a short file to [docs/use-cases/](docs/use-cases/). Describe the kind of work you hand to agents, where you track it, what done means in your projects, and any steps you'd want between your request and the result. Good ones get merged and shape what gets built.
+## Use cases
 
-## What a change needs
+Knowing how people would use reeve helps decide what to build next. Add a short file to [docs/use-cases/](docs/use-cases/) describing the kind of work you hand to agents, where you track it, what done means in your projects, and any steps you'd want between your request and the result.
 
-- **The native option, checked.** Say which agent CLI or existing tool you looked at, and why it doesn't already cover the change.
-- **A number, for new capabilities.** Say which metric in [docs/metrics.md](docs/metrics.md) it should move, and show it moving across repeated benchmark runs. Fixes, docs and simplifications don't need one. Until the benchmark is public, open an issue first and the maintainer runs it.
-- **Nothing new becomes required.** It plugs in like everything else around the core (see principle 2), and it keeps reeve local by default.
+## Code and features
 
-Design happens one piece at a time, when that piece is about to be built, so there is no big design document to follow.
+Send the PR, even if it builds something the docs haven't designed yet; a working piece is a fine way to propose a design. It helps if it:
+
+- **checks the native option.** Say which agent CLI or existing tool you looked at, and why it doesn't already cover this.
+- **names the number.** For a new capability, say which metric in [docs/metrics.md](docs/metrics.md) it should move. Until the benchmark is public, the maintainer runs it on your PR. Fixes, docs and simplifications don't need a number.
+- **stays optional.** It plugs in like everything else around the core (principle 2) and keeps reeve local by default.
