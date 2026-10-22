@@ -1,74 +1,88 @@
 # Metrics
 
-reeve exists only if it does better than plain Claude Code in a terminal. Every number below is collected automatically and compared against that baseline.
+How reeve is measured against the setups people already use.
+
+> First draft. The tasks, the setups, the bar and the metrics are all expected to change as it becomes clearer what matters.
 
 ## The benchmark
 
-A set of 12 real tasks, drawn fresh each time from recent work:
+### Tasks
 
-- 4 PR rebases, one of them with a conflict;
-- 2 squash-merges where CI is red at first;
+The first draft has a fixed, versioned set of 12 real tasks:
+
+- 4 PR rebases, one with a conflict;
+- 2 merges where CI fails at first;
 - 2 small fixes, one of which needs screenshots;
 - 1 research question answered as a written page;
-- 1 lookup across the ticket tracker and chat;
-- 1 change to a public repository (branch pushed, no PR);
-- 1 task that needs a decision from the user halfway through.
+- 1 lookup across a ticket tracker and chat;
+- 1 change to a public repository;
+- 1 task that needs a decision halfway through.
 
-The tasks are run two ways, with the same opening message and the same answers from the user:
+The repositories are sandbox forks frozen at fixed commits, so a rebase or a failing check plays out the same way every time and nothing touches real projects. A few fresh tasks from recent work are added each round as a held-out check, so reeve isn't tuned to the fixed set. The set includes tasks where reeve shouldn't help at all. Anyone adopting reeve is expected to swap in tasks from their own work.
 
-- **A, plain Claude Code:** one `claude` session in a terminal, free to use every built-in (background sessions, subagents, worktrees, agent view).
-- **B, reeve:** plain Claude Code plus reeve's commands, hooks and rules.
+### Setups
 
-Run A once to set the bar, then run both after every feature lands and after every Claude Code release.
+- **Plain Claude Code**, set up by someone who knows it well. It gets the same definition of done in its project instructions, hooks where they help, and `/loop` or scheduled tasks for "merge when green". This is the main baseline.
+- **Other setups**, such as Conductor, the Codex app and Claude Squad.
+- **reeve**, on top of plain Claude Code.
 
-**The bar.** Against A, B needs:
+All setups use the same model, effort and permission mode where they can. A setup that can't use the same model (Codex) is reported as a separate comparison.
 
-- at least 40% fewer user touches;
-- no slower to verified done;
-- zero false "done";
-- zero questions about reeve's own trouble.
+### Running it
 
-If B misses the bar, building stops until it clears it. A feature that doesn't move a number is removed.
+- **The person's answers come from a written key** of facts and decisions per task. Someone other than reeve's author gives them, with a fixed reply delay. A question the key doesn't cover gets "your call" and still counts.
+- **An intervention is any action the person takes:** a message, an answer, a permission approval, a click to merge, overriding an automation. Time spent only looking is recorded separately, as attention time.
+- **Answers an agent gives on the person's behalf** are counted in their own column and checked against the key. A wrong one counts against the setup.
+- **Repetition:** each setup runs each task at least 3 times. Results are paired per task and reported as median and range.
 
-## Definitions
+### The bar
 
-| Metric | Definition | Collected from | Target |
-| --- | --- | --- | --- |
-| **User touches per item** (headline) | Prompts and answers the user gives about an item, from creation to verified done. Agents acting for the user don't count | `UserPromptSubmit` hook and reeve commands, each event tagged with its actor | ≤ 60% of A |
-| **Zero-touch share** (headline) | Share of items verified done with no user input after the message that created them | Event log | rising; > 50% |
-| **Request to merged PR** | Item created → the PR's `mergedAt` on GitHub, split into time waiting on the user and time waiting on the machine | Event log + GitHub | not slower than A |
-| **Created to done** | Item created → its done-check holds (all kinds of item) | Event log | not slower than A |
-| **False done** | Items marked done whose done-check fails | Sync with GitHub on every reeve run | 0 |
-| **Stale items** | Open items whose PR is already merged or closed | Same | 0 after any reeve run |
-| **Questions about reeve's own trouble** | Questions to the user about disk, failed starts, permissions, held branches or stuck sessions, tagged by kind when raised | Event log | 0; each one is a bug |
-| **Questions per day** | Merge decisions (reeve) and worker questions (sessions needing input), counted separately | Event log, `claude agents --json` | ≤ 15 a day |
-| **Answer time** | Question raised → answered | Event log | track only |
-| **Permission stalls per item** | Permission prompts a session waited on | `Notification` hook | falling; each points at a rule to add |
-| **Failed starts** | Background sessions with no first response within 2 minutes | Launcher, plus the first line in the transcript | < 2% |
-| **Sessions per item** | Sessions started per item, and who restarted them | Event log | median 1, p90 2 |
-| **Rule outcomes** | Per rule: fired, succeeded (confirmed on GitHub), failed, skipped, overridden (the user stepped in within 24 h) | Event log | overridden < 2% |
-| **Trigger to done** | E.g. CI green → merged, base moved → rebased | Event log | median ≤ 10 min |
-| **Sessions avoided** | Actions done by a fixed command instead of an agent session, and the tokens saved | Event log, transcripts | track only |
-| **Throughput** | PRs merged and items done per working day | GitHub, event log | ≥ before reeve |
-| **Heavy-command wait** | Queue wait per build or test command; every refusal for disk or load logged | The heavy-command queue's log | p90 ≤ 120 s |
-| **Cost** | Tokens per item and per benchmark task | Session transcripts | ≤ 1.2× A |
+For each metric, reeve is compared with the best other setup on that metric. It has to show:
+
+- at least 40% fewer interventions;
+- time to done no more than 10% slower;
+- no false "done";
+- no questions about its own trouble.
+
+## Benchmark metrics
+
+The words below are neutral so every setup can be measured. An *item* is one benchmark task. A setup's *done* is its final claim, or the point it marks the work ready. The *done-check* is the project's own definition, applied by the scorer.
+
+| Metric | Meaning | Target |
+| --- | --- | --- |
+| **Interventions per item** (headline) | Actions by the person until the done-check passes | the bar |
+| **Hands-off share** | Items that pass the done-check with no intervention after the request | > 50% |
+| **Time to done** | Request → done-check passes, split into waiting on the person and waiting on the machine | the bar |
+| **False done** | Items claimed done that fail the done-check | 0 |
+| **Questions about the setup's own trouble** | Questions about disk, failed starts, permissions or stuck sessions | 0 |
+| **Failed starts** | Agent sessions that never get going | < 2% |
+| **Cost** | Tokens, or the share of the plan's limit used, per task | ≤ 1.2× the best setup |
+
+## Field metrics
+
+These come from everyday use, not the benchmark. They're measured locally, and nothing is sent anywhere.
+
+| Metric | Meaning | Target |
+| --- | --- | --- |
+| **Stale items** | Items still open although their work has landed | 0 |
+| **Questions per day** | Decisions asked of the person, by kind | ≤ 20, all real decisions |
+| **Sessions per item** | Sessions started per item, and who restarted them | median 1 |
+| **Rule outcomes** | Per automation: fired, succeeded, failed, overridden | overridden < 2% |
+| **Throughput** | Items done per working day | tracked, no target |
 
 ## Starting point
 
-The system reeve replaces was measured over its last four days (20–22 Oct 2026). Its records were thin, so these numbers are rough:
+The author's previous setup was a custom orchestrator built on Claude Code (not plain Claude Code). It was measured over its last few days in October 2026. Its records were thin, so these numbers are rough:
 
 | | Before reeve |
 | --- | --- |
-| Failed starts | 23% (98 of 428) |
-| Request to merged PR | median 2.1 h, p90 13.3 h (25 PRs) |
-| Created to done | median 1.0 h, p90 11 h |
-| Questions about its own trouble | 44% of 440 |
+| Failed starts | 23% |
+| Time to done, PRs only | median 2.1 h, p90 13.3 h |
+| Questions about its own trouble | 44% of all questions |
 | Questions per day | 100–150 |
-| False done | 1.3% of done items with a PR |
+| False done | ~1% of finished items |
 | Stale items | 42% of open items with a PR |
-| Sessions per item | median 5, p90 9 |
-| Throughput | about 15 PRs merged a day |
-| Heavy-command wait | p90 75 s; refusals not logged |
-| User touches, cost | not measurable: actors weren't told apart, cost wasn't recorded |
+| Sessions per item | median 5 |
+| Interventions, cost | not measurable |
 
-That last row is the main lesson: reeve records the actor, the time, the first response, the GitHub state and every refusal from day one.
+The last row is the lesson: record who acted, and when, from the start.
