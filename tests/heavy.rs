@@ -7,6 +7,7 @@ fn heavy(state: &Path, args: &[&str]) -> Command {
     c.arg("heavy")
         .args(args)
         .env("REEVE_HEAVY_DIR", state)
+        .env("REEVE_EVENTS", state.join("events.jsonl"))
         .stdin(Stdio::null())
         .env_remove("REEVE_HEAVY")
         .env_remove("REEVE_HEAVY_SLOTS");
@@ -255,6 +256,7 @@ fn in_a_terminal_the_command_can_read_from_it() {
         ])
         .args(["sh", "-c", "read x; echo read it"])
         .env("REEVE_HEAVY_DIR", d.path())
+        .env("REEVE_EVENTS", d.path().join("events.jsonl"))
         .env_remove("REEVE_HEAVY")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

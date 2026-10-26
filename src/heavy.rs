@@ -2,6 +2,7 @@
 //! one machine don't run them all at once. There is no daemon: every waiter and runner is a JSON
 //! file under the state dir, and a file lock held for a few milliseconds makes each claim atomic.
 
+use crate::events::Event;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
@@ -230,7 +231,7 @@ enum Sub {
     Ls,
 }
 
-pub fn main(args: Args) -> io::Result<i32> {
+pub fn main(args: Args, ev: &mut Event) -> io::Result<i32> {
     let q = Queue::at(Queue::default_root());
     if let Some(Sub::Ls) = args.sub {
         print!("{}", ls(&q.running(), &q.waiting(), now_ms()));
@@ -245,10 +246,16 @@ pub fn main(args: Args) -> io::Result<i32> {
         || default_slots(std::thread::available_parallelism().map_or(1, |n| n.get())),
         |n| n as usize,
     );
+    // Without a label only the program's name is logged, not its arguments.
+    ev.label = Some(args.label.clone().unwrap_or_else(|| {
+        Path::new(&args.cmd[0])
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+    }));
     let label = args
         .label
         .unwrap_or_else(|| args.cmd.join(" ").chars().take(40).collect());
-    run(&q, label, &args.cmd, slots)
+    run(&q, label, &args.cmd, slots, ev)
 }
 
 static STOP: AtomicI32 = AtomicI32::new(0);
@@ -263,16 +270,19 @@ fn stopped() -> Option<i32> {
     Some(STOP.load(Ordering::SeqCst)).filter(|&s| s != 0)
 }
 
-fn run(q: &Queue, label: String, cmd: &[String], slots: usize) -> io::Result<i32> {
+fn run(q: &Queue, label: String, cmd: &[String], slots: usize, ev: &mut Event) -> io::Result<i32> {
     let command = || {
         let mut c = Command::new(&cmd[0]);
         c.args(&cmd[1..]).env(ENV, "1");
         c
     };
     if std::env::var_os(ENV).is_some_and(|v| !v.is_empty()) {
+        // exec doesn't come back, so this run is logged now, without an exit code.
+        ev.ms = crate::events::now_ms().saturating_sub(ev.ts);
+        crate::events::log(ev);
         let err = command().exec();
         eprintln!("reeve heavy: could not start {}: {err}", cmd[0]);
-        return Ok(127);
+        std::process::exit(127);
     }
     for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         unsafe { libc::signal(sig, on_signal as *const () as libc::sighandler_t) };
@@ -284,15 +294,20 @@ fn run(q: &Queue, label: String, cmd: &[String], slots: usize) -> io::Result<i32
         cwd: std::env::current_dir().map_or_else(|_| String::new(), |d| d.display().to_string()),
         since: now_ms(),
     };
+    let queued = Instant::now();
     let mut ticket = q.enqueue(&me)?;
     let mut said = None;
     let mut slot = loop {
         if let Some(sig) = stopped() {
+            ev.heavy_wait_ms = Some(queued.elapsed().as_millis() as u64);
             q.drop(ticket);
             return Ok(128 + sig);
         }
         match q.try_claim(&mut ticket, slots)? {
-            Claim::Slot(slot) => break slot,
+            Claim::Slot(slot) => {
+                ev.heavy_wait_ms = Some(queued.elapsed().as_millis() as u64);
+                break slot;
+            }
             Claim::Ahead(n) if said != Some(n) => {
                 eprintln!("reeve heavy: waiting for a slot: {n} ahead");
                 said = Some(n);
@@ -337,7 +352,9 @@ fn run(q: &Queue, label: String, cmd: &[String], slots: usize) -> io::Result<i32
     } else {
         -(child.id() as i32)
     };
+    let ran = Instant::now();
     let status = wait(&mut child, target);
+    ev.heavy_run_ms = Some(ran.elapsed().as_millis() as u64);
     if !interactive {
         kill_group(target);
     }

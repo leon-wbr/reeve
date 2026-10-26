@@ -1,10 +1,14 @@
+mod events;
+mod feedback;
 mod heavy;
 mod run;
 mod sandbox;
+mod stats;
 mod workers;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
+use events::Event;
 use run::Target;
 use std::io;
 use std::path::PathBuf;
@@ -59,6 +63,25 @@ enum Top {
     Sandbox(Sandbox),
     /// Run a heavy command (build, test suite, install) once a slot is free, so agents queue
     Heavy(heavy::Args),
+    /// Sum up the event log: workers, heavy waits and runs, handoffs, errors and who ran reeve
+    Stats {
+        /// How many days back to look
+        #[arg(long, default_value_t = 7)]
+        days: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a note about reeve itself, with its version, OS and last 20 events, and offer to post
+    /// it as a GitHub issue (with gh after a yes, or from a prefilled page)
+    Feedback {
+        text: String,
+        /// Keep paths in the attached events
+        #[arg(long)]
+        with_paths: bool,
+        /// Open the prefilled new-issue page in the browser
+        #[arg(long)]
+        open: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -153,8 +176,37 @@ fn start(
     }
 }
 
+/// The subcommand path, e.g. `sandbox build`, without any arguments.
+fn command_path(mut m: &ArgMatches) -> String {
+    let mut parts = vec![];
+    while let Some((name, sub)) = m.subcommand() {
+        parts.push(name);
+        m = sub;
+    }
+    parts.join(" ")
+}
+
+/// A command line that doesn't parse is logged by its first word, if that names a command.
+fn log_usage_error(e: &clap::Error) {
+    if !e.use_stderr() {
+        return;
+    }
+    let first = std::env::args().nth(1).unwrap_or_default();
+    let known = Cli::command()
+        .get_subcommands()
+        .any(|s| s.get_name() == first);
+    let mut ev = Event::start(if known { &first } else { "unknown" });
+    ev.finish(e.exit_code(), None);
+    ev.error = Some("usage".into());
+    events::log(&ev);
+}
+
 fn main() -> ExitCode {
-    let matches = Cli::command().get_matches();
+    let matches = Cli::command().try_get_matches().unwrap_or_else(|e| {
+        log_usage_error(&e);
+        e.exit()
+    });
+    let mut ev = Event::start(&command_path(&matches));
     let explicit = matches
         .subcommand_matches("run")
         .is_some_and(sandbox_opts_given);
@@ -171,14 +223,17 @@ fn main() -> ExitCode {
             args,
             ..
         } => {
+            ev.worker = Some(name.clone());
             let backend = workers::Backend::choose(
                 pane,
                 bg,
                 std::env::var("HERDR_ENV").is_ok_and(|v| v == "1"),
             );
-            workers()
-                .and_then(|r| workers::run(&r, &name, backend, &args))
-                .map(|_| 0)
+            let started = workers().and_then(|r| workers::run(&r, &name, backend, &args));
+            if started.is_ok() {
+                ev.handoff_ms = Some(events::now_ms().saturating_sub(ev.ts));
+            }
+            started.map(|_| 0)
         }
         Top::Run {
             bg,
@@ -186,18 +241,27 @@ fn main() -> ExitCode {
             opts,
             args,
             ..
-        } => start(bg, sandbox, &opts, explicit, &args),
+        } => {
+            ev.label = sandbox.clone().flatten();
+            start(bg, sandbox, &opts, explicit, &args)
+        }
         Top::Ls => workers()
             .and_then(|r| workers::ls(&r))
             .map(|out| println!("{out}"))
             .map(|_| 0),
-        Top::Wait { name, timeout } => workers()
-            .and_then(|r| workers::wait(&r, &name, timeout))
-            .map(|_| 0),
-        Top::Report { name } => workers()
-            .and_then(|r| workers::report(&r, &name))
-            .map(|out| print!("{out}"))
-            .map(|_| 0),
+        Top::Wait { name, timeout } => {
+            ev.worker = Some(name.clone());
+            workers()
+                .and_then(|r| workers::wait(&r, &name, timeout))
+                .map(|_| 0)
+        }
+        Top::Report { name } => {
+            ev.worker = Some(name.clone());
+            workers()
+                .and_then(|r| workers::report(&r, &name))
+                .map(|out| print!("{out}"))
+                .map(|_| 0)
+        }
         Top::Sandbox(Sandbox::Build { claude_version }) => {
             let v = claude_version.unwrap_or_else(|| sandbox::Opts::default_version().into());
             sandbox::build(&v).map(|tag| println!("{tag}")).map(|_| 0)
@@ -207,13 +271,27 @@ fn main() -> ExitCode {
             name,
             workspace,
             cmd,
-        }) => workspace
-            .map_or_else(|| sandbox::workspace_of(&name), std::fs::canonicalize)
-            .and_then(|cwd| sandbox::exec(&name, &cwd, &cmd))
-            .map(|s| s.code().unwrap_or(1)),
-        Top::Sandbox(Sandbox::Down { name }) => sandbox::down(&name).map(|_| 0),
-        Top::Heavy(args) => heavy::main(args),
+        }) => {
+            ev.label = Some(name.clone());
+            workspace
+                .map_or_else(|| sandbox::workspace_of(&name), std::fs::canonicalize)
+                .and_then(|cwd| sandbox::exec(&name, &cwd, &cmd))
+                .map(|s| s.code().unwrap_or(1))
+        }
+        Top::Sandbox(Sandbox::Down { name }) => {
+            ev.label = Some(name.clone());
+            sandbox::down(&name).map(|_| 0)
+        }
+        Top::Heavy(args) => heavy::main(args, &mut ev),
+        Top::Stats { days, json } => stats(days, json),
+        Top::Feedback {
+            text,
+            with_paths,
+            open,
+        } => feedback::main(&text, with_paths, open),
     };
+    ev.finish(*result.as_ref().unwrap_or(&1), result.as_ref().err());
+    events::log(&ev);
     match result {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
         Err(e) => {
@@ -221,6 +299,18 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn stats(days: u64, json: bool) -> io::Result<i32> {
+    let r = workers::Registry::at(workers::Registry::default_dir()?);
+    let state = |name: &str| r.get(name).ok().map(|w| workers::state(&w));
+    let s = stats::summarize(&events::read()?, events::now_ms(), days, state);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&s)?);
+    } else {
+        print!("{}", stats::render(&s));
+    }
+    Ok(0)
 }
 
 #[cfg(test)]
