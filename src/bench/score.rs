@@ -98,7 +98,7 @@ fn blocked_ms(r: &Value) -> f64 {
         .map_or(0.0, |m| m.values().filter_map(Value::as_f64).sum())
 }
 
-fn median(xs: &[f64]) -> Option<f64> {
+pub(super) fn median(xs: &[f64]) -> Option<f64> {
     let mut s = xs.to_vec();
     s.sort_by(f64::total_cmp);
     let m = s.len() / 2;
@@ -110,7 +110,7 @@ fn median(xs: &[f64]) -> Option<f64> {
 }
 
 /// `median [min–max]` of the values present.
-fn fmt(xs: &[Option<f64>], d: usize) -> String {
+pub(super) fn fmt(xs: &[Option<f64>], d: usize) -> String {
     let v: Vec<f64> = xs.iter().flatten().copied().collect();
     let Some(m) = median(&v) else {
         return "–".into();

@@ -1,0 +1,1 @@
+Four investigations for the parser project, ids t1 to t4. Each one is a long job: `reeve bench task <id>` runs it and prints its finding when it finishes, which takes from 20 minutes to 3 hours. Start all four at once. When all four findings are in, write them to FINAL.md in this directory, one line per finding, as the command printed it, and tell me.

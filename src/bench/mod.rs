@@ -2,6 +2,7 @@
 //! and scores the runs. Results are laid out as by the Node harness it replaces, so both compare.
 
 pub mod check;
+pub mod handoff;
 pub mod run;
 pub mod score;
 mod sim;

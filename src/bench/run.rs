@@ -22,7 +22,7 @@ const POLL_AFTER_MS: i64 = 6 * 60_000;
 const CLAIM_GRACE_MS: i64 = 5 * 60_000;
 const MAX_INTERVENTIONS: usize = 10;
 
-fn clock() -> i64 {
+pub(super) fn clock() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -193,7 +193,7 @@ impl Bench {
     }
 }
 
-fn append(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(super) fn append(path: &Path, bytes: &[u8]) -> io::Result<()> {
     OpenOptions::new()
         .create(true)
         .append(true)
@@ -220,7 +220,7 @@ fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 /// Sums token usage over a session's transcript and its subagents; cost uses Sonnet list prices.
-fn usage(session_id: &str) -> Map<String, Value> {
+pub(super) fn usage(session_id: &str) -> Map<String, Value> {
     let projects = home().join(".claude/projects");
     let sorted = |d: &Path| -> Vec<OsString> {
         let mut v: Vec<OsString> = fs::read_dir(d)
@@ -289,14 +289,14 @@ fn usage(session_id: &str) -> Map<String, Value> {
 }
 
 #[derive(Default)]
-struct Comm {
-    busy: bool,
-    last_event: i64,
-    session: Option<Value>,
-    unread: Vec<String>,
+pub(super) struct Comm {
+    pub(super) busy: bool,
+    pub(super) last_event: i64,
+    pub(super) session: Option<Value>,
+    pub(super) unread: Vec<String>,
 }
 
-fn say(
+pub(super) fn say(
     stdin: &mut ChildStdin,
     comm: &Mutex<Comm>,
     history: &mut Vec<(&'static str, String)>,
@@ -310,7 +310,7 @@ fn say(
     c.last_event = clock();
 }
 
-fn read_stdout(out: impl Read, path: PathBuf, comm: Arc<Mutex<Comm>>) {
+pub(super) fn read_stdout(out: impl Read, path: PathBuf, comm: Arc<Mutex<Comm>>) {
     let mut r = BufReader::new(out);
     let mut buf = vec![];
     while r.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
@@ -345,7 +345,7 @@ fn read_stdout(out: impl Read, path: PathBuf, comm: Arc<Mutex<Comm>>) {
     }
 }
 
-fn read_stderr(mut err: impl Read, path: PathBuf) {
+pub(super) fn read_stderr(mut err: impl Read, path: PathBuf) {
     let mut buf = [0u8; 8192];
     while let Ok(n) = err.read(&mut buf) {
         if n == 0 {
@@ -372,15 +372,9 @@ fn falsy(v: &Value) -> bool {
     v.is_null() || *v == false || *v == 0 || *v == ""
 }
 
-pub fn run(arm: &str, n: &str) -> io::Result<i32> {
-    let here = root();
-    let base = std::env::var_os("REEVE_BENCH_BASE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join("work/reeve-vanilla-trial"));
-    let trials = trials();
-    let run = format!("rv-{arm}-{n}");
-    let dir = trials.join(&run);
-    let arm_dir = here.join("arms").join(arm);
+/// The environment bench sessions run in: the caller's, minus anything that would tie them to
+/// the caller's own orchestration or session, with this binary first on PATH.
+pub(super) fn bench_env() -> io::Result<Vec<(OsString, OsString)>> {
     let mut env: Vec<(OsString, OsString)> = std::env::vars_os()
         .filter(|(k, _)| {
             let k = k.to_string_lossy();
@@ -391,12 +385,14 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
                 "CLAUDE_CODE_",
                 "PATH",
                 "REEVE_HOME",
+                "REEVE_BENCH_SIM",
+                "XDG_STATE_HOME",
             ]
             .iter()
             .any(|p| k.starts_with(p))
         })
         .collect();
-    env.push(("ORCH_HOME".into(), trials.join(".orch-sink").into()));
+    env.push(("ORCH_HOME".into(), trials().join(".orch-sink").into()));
     let exe_dir = std::env::current_exe()?
         .parent()
         .map(PathBuf::from)
@@ -407,6 +403,19 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         std::env::join_paths(std::iter::once(exe_dir).chain(std::env::split_paths(&path)))
             .map_err(io::Error::other)?,
     ));
+    Ok(env)
+}
+
+pub fn run(arm: &str, n: &str) -> io::Result<i32> {
+    let here = root();
+    let base = std::env::var_os("REEVE_BENCH_BASE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join("work/reeve-vanilla-trial"));
+    let trials = trials();
+    let run = format!("rv-{arm}-{n}");
+    let dir = trials.join(&run);
+    let arm_dir = here.join("arms").join(arm);
+    let mut env = bench_env()?;
     let queue = trials.join("logs").join(&run).join("reeve");
     env.push(("REEVE_HOME".into(), queue.clone().into()));
     let mut b = Bench {
