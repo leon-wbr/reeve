@@ -580,7 +580,7 @@ pub fn ls(r: &Registry) -> io::Result<String> {
             w.name,
             state.to_string(),
             age(now().saturating_sub(w.started)),
-            w.cwd.display()
+            crate::setup::tilde(&w.cwd)
         );
     }
     Ok(out)

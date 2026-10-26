@@ -268,7 +268,16 @@ pub struct Opts {
     pub timeout: u64,
 }
 
-fn run_one(case: Case, dir: &Path, o: &Opts) -> io::Result<Row> {
+/// The hook as `reeve setup claude` writes it, for `claude --settings` when it isn't installed.
+pub fn hook_settings() -> String {
+    serde_json::json!({ "hooks": { "SessionStart": [{
+        "matcher": setup::MATCHER,
+        "hooks": [{ "type": "command", "command": setup::hook_command() }]
+    }] } })
+    .to_string()
+}
+
+fn run_one(case: Case, dir: &Path, o: &Opts, settings: Option<&str>) -> io::Result<Row> {
     let ws = dir.join("ws");
     workspace(&ws)?;
     let path = std::env::var("PATH").unwrap_or_default();
@@ -298,6 +307,9 @@ fn run_one(case: Case, dir: &Path, o: &Opts) -> io::Result<Row> {
     ]);
     if let Some(m) = &o.model {
         c.args(["--model", m]);
+    }
+    if let Some(s) = settings {
+        c.args(["--settings", s]);
     }
     let mut child = c
         .current_dir(&ws)
@@ -332,13 +344,15 @@ fn run_one(case: Case, dir: &Path, o: &Opts) -> io::Result<Row> {
 
 pub fn main(o: &Opts, version: &str) -> io::Result<i32> {
     let paths = setup::Paths::at(&setup::Paths::default_dir()?);
-    if setup::check(&paths, version)?
-        .iter()
-        .any(|(_, p)| *p != Piece::Ok)
-    {
-        return Err(io::Error::other(
-            "the bench measures the setup from `reeve setup claude`; run it first",
-        ));
+    let [(_, hook), (_, stub)] = setup::check(&paths, version)?;
+    let settings = (hook != Piece::Ok).then(hook_settings);
+    if settings.is_some() {
+        eprintln!("reeve bench: the hook isn't installed; each session gets it through --settings");
+    }
+    if stub != Piece::Ok {
+        eprintln!(
+            "reeve bench: the skill stub isn't installed or current, so sessions run without it; `reeve setup claude` adds it"
+        );
     }
     let root: PathBuf = workers::Registry::default_dir()?
         .join("bench/entry")
@@ -348,7 +362,7 @@ pub fn main(o: &Opts, version: &str) -> io::Result<i32> {
         for i in 1..=o.n {
             let dir = root.join(format!("{}-{i}", case.name()));
             eprintln!("reeve bench: {} run {i} in {}", case.name(), dir.display());
-            let mut row = run_one(case, &dir, o)?;
+            let mut row = run_one(case, &dir, o, settings.as_deref())?;
             row.run = i;
             rows.push(row);
         }
@@ -439,6 +453,14 @@ mod tests {
         assert!(out.contains("n/a"), "{out}");
         assert!(out.contains("long: 1 of 1 fit"), "{out}");
         assert!(!out.contains("short:"), "{out}");
+    }
+
+    #[test]
+    fn the_fallback_settings_carry_the_hook_setup_writes() {
+        let mut s: Value = serde_json::from_str(&hook_settings()).unwrap();
+        assert_eq!(setup::hook_state(&s), Piece::Ok);
+        assert!(setup::remove_hook(&mut s));
+        assert_eq!(s, serde_json::json!({}));
     }
 
     #[test]
