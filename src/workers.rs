@@ -473,11 +473,104 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
     Ok(())
 }
 
+/// Workers older than this show in the brief listing only while they still have an agent.
+const BRIEF_DAYS: u64 = 7;
+const BRIEF_NAMES: usize = 8;
+/// Far below the 10,000 characters Claude Code takes from a hook.
+pub const BRIEF_MAX: usize = 1000;
+
+/// One line for a session-start hook, e.g. `reeve: 2 workers: a running, b done (report
+/// ready).`, or nothing when there is nothing worth telling.
+pub fn brief(workers: &[(&str, State, u64)]) -> String {
+    let shown: Vec<_> = workers
+        .iter()
+        .filter(|(_, s, age)| {
+            matches!(s, State::Running | State::Idle | State::Unknown) || *age < BRIEF_DAYS * 86400
+        })
+        .collect();
+    if shown.is_empty() {
+        return String::new();
+    }
+    let mut parts: Vec<String> = shown
+        .iter()
+        .take(BRIEF_NAMES)
+        .map(|(name, s, _)| {
+            let what = match s {
+                State::Running => "running",
+                State::Idle => "idle (may be waiting for input)",
+                State::Done => "done (report ready)",
+                State::Gone => "gone without a report",
+                State::Unknown => "state unknown",
+            };
+            format!("{name} {what}")
+        })
+        .collect();
+    if shown.len() > BRIEF_NAMES {
+        parts.push(format!("{} more", shown.len() - BRIEF_NAMES));
+    }
+    let n = shown.len();
+    let mut out = format!(
+        "reeve: {n} worker{}: {}. `reeve ls` shows details",
+        if n == 1 { "" } else { "s" },
+        parts.join(", ")
+    );
+    if shown.iter().any(|(_, s, _)| *s == State::Done) {
+        out += "; `reeve report NAME` prints a report";
+    }
+    out.push('.');
+    if out.len() > BRIEF_MAX {
+        let cut = out.floor_char_boundary(BRIEF_MAX - 1);
+        out.truncate(cut);
+        out.push('…');
+    }
+    out
+}
+
+/// States for many workers, asking `claude agents` only once.
+fn states(all: &[Worker]) -> Vec<State> {
+    let mut bg: Option<Result<String, String>> = None;
+    all.iter()
+        .map(|w| {
+            let agent = match w.backend {
+                Backend::Pane => agent(w),
+                Backend::Bg => {
+                    let p = bg.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
+                    bg_agent(p.as_deref().map_err(|e| e.as_str()), &w.handle)
+                }
+            };
+            State::of(agent, w.report.is_file())
+        })
+        .collect()
+}
+
+pub fn ls_brief(r: &Registry) -> io::Result<String> {
+    let all = r.all()?;
+    let states = states(&all);
+    let now = now();
+    let rows: Vec<_> = all
+        .iter()
+        .zip(states)
+        .map(|(w, s)| (w.name.as_str(), s, now.saturating_sub(w.started)))
+        .collect();
+    Ok(brief(&rows))
+}
+
+/// Named workers that are gone without having written a report.
+pub fn gone(r: &Registry) -> io::Result<Vec<String>> {
+    let all = r.all()?;
+    Ok(all
+        .iter()
+        .zip(states(&all))
+        .filter(|(_, s)| *s == State::Gone)
+        .map(|(w, _)| w.name.clone())
+        .collect())
+}
+
 pub fn ls(r: &Registry) -> io::Result<String> {
     let all = r.all()?;
     let width = all.iter().map(|w| w.name.len()).max().unwrap_or(0).max(4);
     let mut out = format!("{:width$}  STATE    BACKEND  AGE  CWD", "NAME");
-    for w in &all {
+    for (w, state) in all.iter().zip(states(&all)) {
         let backend = match w.backend {
             Backend::Pane => "pane",
             Backend::Bg => "bg",
@@ -485,7 +578,7 @@ pub fn ls(r: &Registry) -> io::Result<String> {
         out += &format!(
             "\n{:width$}  {:7}  {backend:7}  {:>3}  {}",
             w.name,
-            state(w).to_string(),
+            state.to_string(),
             age(now().saturating_sub(w.started)),
             w.cwd.display()
         );
@@ -744,6 +837,44 @@ mod tests {
         assert_eq!(bg_agent(Ok(json), "nope"), Agent::Absent);
         assert_eq!(bg_agent(Ok("not json"), "a1"), Agent::Unknown);
         assert_eq!(bg_agent(Err("claude: boom"), "a1"), Agent::Unknown);
+    }
+
+    #[test]
+    fn brief_names_each_worker_with_what_it_is_doing() {
+        assert_eq!(brief(&[]), "");
+        assert_eq!(
+            brief(&[("fix-x", State::Running, 60)]),
+            "reeve: 1 worker: fix-x running. `reeve ls` shows details."
+        );
+        assert_eq!(
+            brief(&[("a", State::Running, 60), ("b", State::Done, 60)]),
+            "reeve: 2 workers: a running, b done (report ready). `reeve ls` shows details; \
+             `reeve report NAME` prints a report."
+        );
+    }
+
+    #[test]
+    fn brief_leaves_out_old_finished_workers_but_never_live_ones() {
+        let old = 8 * 86400;
+        assert_eq!(
+            brief(&[("a", State::Done, old), ("b", State::Gone, old)]),
+            ""
+        );
+        let live = brief(&[("a", State::Idle, old), ("b", State::Gone, 3600)]);
+        assert!(live.starts_with("reeve: 2 workers: a idle"), "{live}");
+        assert!(live.contains("b gone without a report"), "{live}");
+    }
+
+    #[test]
+    fn brief_is_capped_however_many_workers_there_are() {
+        let names: Vec<String> = (0..500).map(|i| format!("{i:0>32}")).collect();
+        let rows: Vec<_> = names
+            .iter()
+            .map(|n| (n.as_str(), State::Running, 1))
+            .collect();
+        let b = brief(&rows);
+        assert!(b.len() <= BRIEF_MAX + 3, "{}", b.len());
+        assert!(b.contains("492 more"), "{b}");
     }
 
     #[test]
