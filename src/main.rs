@@ -1,3 +1,4 @@
+mod heavy;
 mod run;
 mod sandbox;
 mod workers;
@@ -56,6 +57,8 @@ enum Top {
     /// Manage sandboxes started by `reeve run --sandbox`
     #[command(subcommand)]
     Sandbox(Sandbox),
+    /// Run a heavy command (build, test suite, install) once a slot is free, so agents queue
+    Heavy(heavy::Args),
 }
 
 #[derive(Subcommand)]
@@ -209,6 +212,7 @@ fn main() -> ExitCode {
             .and_then(|cwd| sandbox::exec(&name, &cwd, &cmd))
             .map(|s| s.code().unwrap_or(1)),
         Top::Sandbox(Sandbox::Down { name }) => sandbox::down(&name).map(|_| 0),
+        Top::Heavy(args) => heavy::main(args),
     };
     match result {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
