@@ -147,7 +147,13 @@ pub fn stub_state(text: Option<&str>, version: &str) -> Piece {
 
 /// `~/…` for paths under the home dir.
 pub fn tilde(p: &Path) -> String {
-    match std::env::home_dir().and_then(|h| p.strip_prefix(h).ok().map(Path::to_path_buf)) {
+    let home = std::env::home_dir();
+    let real = home.as_deref().and_then(|h| fs::canonicalize(h).ok());
+    match [home, real]
+        .into_iter()
+        .flatten()
+        .find_map(|h| p.strip_prefix(h).ok().map(Path::to_path_buf))
+    {
         Some(rest) => format!("~/{}", rest.display()),
         None => p.display().to_string(),
     }
