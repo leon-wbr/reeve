@@ -45,6 +45,15 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 | Gas Town | A durable record of work across many agents | Heavyweight; many agents in tmux |
 | Claude Squad, Superset, cmux | Managing many agent terminals | No tracking to done |
 
+## Commands
+
+- `reeve run`: start an agent, in the foreground or the background, on the host or in a sandbox; `--name` makes it a worker any session can find.
+- `reeve ls`, `reeve wait`, `reeve report`: list named workers, wait for one to finish, print its report.
+- `reeve sandbox`: build, list, use and remove sandboxes.
+- `reeve heavy`: queue builds and test suites so agents take turns ([docs/heavy.md](docs/heavy.md)).
+- `reeve stats`: sum up reeve's local event log ([docs/events.md](docs/events.md)).
+- `reeve feedback "text"`: save a note about reeve itself and offer to post it as an issue ([docs/events.md](docs/events.md)).
+
 ## Words used here
 
 - **Item:** one request, tracked until done.
@@ -58,3 +67,4 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [docs/use-cases/](docs/use-cases/)
 - [docs/metrics.md](docs/metrics.md)
+- [docs/events.md](docs/events.md)
