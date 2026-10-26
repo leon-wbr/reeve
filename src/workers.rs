@@ -109,6 +109,10 @@ impl Registry {
         self.dir.join("reports").join(format!("{name}.md"))
     }
 
+    pub fn handoff_path(&self, name: &str) -> PathBuf {
+        self.dir.join("handoffs").join(format!("{name}.md"))
+    }
+
     fn file(&self) -> PathBuf {
         self.dir.join("workers.json")
     }

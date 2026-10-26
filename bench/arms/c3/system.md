@@ -1,0 +1,1 @@
+To ask the user for a decision, run `reeve ask "<question, the options, your recommendation>"` with the Bash tool's `run_in_background`, then keep working on everything that doesn't depend on the answer. The user reads these questions even while you are busy, and the answer arrives when that background task finishes. Ask as soon as you know you need the decision.

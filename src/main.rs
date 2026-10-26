@@ -1,7 +1,11 @@
+mod ask;
+mod bench;
 mod bench_entry;
 mod doctor;
 mod events;
 mod feedback;
+mod gate;
+mod handoff;
 mod heavy;
 mod run;
 mod sandbox;
@@ -76,6 +80,25 @@ enum Top {
     },
     /// Print a named worker's report
     Report { name: String },
+    /// Hand off to a successor: write a handoff file from your notes and the named workers, and
+    /// start the successor as a named worker told to read it. Stop once it returns
+    Handoff {
+        /// The successor's worker name
+        #[arg(long)]
+        name: String,
+        /// Your handoff notes: goal, what's done, what's next, open questions
+        #[arg(long)]
+        notes: PathBuf,
+        /// Start the successor in a new Herdr pane
+        #[arg(long, conflicts_with = "bg")]
+        pane: bool,
+        /// Start it as a Claude Code background session
+        #[arg(long)]
+        bg: bool,
+        /// Arguments passed to the successor's claude
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
     /// Manage sandboxes started by `reeve run --sandbox`
     #[command(subcommand)]
     Sandbox(Sandbox),
@@ -105,9 +128,34 @@ enum Top {
     Setup(Setup),
     /// Check PATH, the Claude Code setup, the state dir, the agent CLIs and gone workers
     Doctor,
-    /// Measure how agents choose with reeve installed
+    /// Benchmark a communicator setup on a fixed scenario with a simulated user, and measure how
+    /// agents choose with reeve installed
     #[command(subcommand)]
     Bench(Bench),
+    /// Protect a branch so it only moves to commits whose CI passed (a git reference-transaction hook)
+    #[command(subcommand)]
+    Gate(Gate),
+    /// Queue a question for the user and wait for the answer (run it in the background and keep working)
+    Ask { question: String },
+    /// List open questions
+    Asks,
+    /// Answer an open question
+    Answer { id: String, text: String },
+}
+
+#[derive(Subcommand)]
+enum Gate {
+    /// Install the gate in the current repository
+    Install {
+        /// The branch to protect
+        #[arg(long)]
+        protect: String,
+        /// CI status command; `{rev}` is replaced by the commit. Exit 0 pass, 2 pending, else fail
+        #[arg(long)]
+        ci: String,
+    },
+    /// Run as the reference-transaction hook (installed by `reeve gate install`)
+    Hook { state: String },
 }
 
 #[derive(Subcommand)]
@@ -143,6 +191,24 @@ enum Bench {
         #[arg(long, default_value_t = 240)]
         timeout: u64,
     },
+    /// One run of an arm (bench/arms/<ARM>), named rv-<ARM>-<N>
+    Run { arm: String, n: String },
+    /// Aggregate results per arm
+    Score { arms: Vec<String> },
+    /// Done-check a branch of a repo and print it as JSON
+    Check { repo: PathBuf, branch: String },
+    /// One run of the handoff scenario (bench/handoff/arms/<ARM>), named rh-<ARM>-<N>
+    Handoff {
+        arm: String,
+        n: String,
+        /// Don't jump the clock; tasks last a sixtieth of their simulated time
+        #[arg(long)]
+        real: bool,
+    },
+    /// Aggregate handoff runs per arm
+    HandoffScore { arms: Vec<String> },
+    /// A handoff-scenario task: waits out its simulated duration, then prints its result
+    Task { id: String },
 }
 
 #[derive(Subcommand)]
@@ -262,6 +328,10 @@ fn log_usage_error(e: &clap::Error) {
     events::log(&ev);
 }
 
+fn in_herdr() -> bool {
+    std::env::var("HERDR_ENV").is_ok_and(|v| v == "1")
+}
+
 fn main() -> ExitCode {
     let matches = Cli::command().try_get_matches().unwrap_or_else(|e| {
         log_usage_error(&e);
@@ -292,11 +362,7 @@ fn main() -> ExitCode {
             ..
         } => {
             ev.worker = Some(name.clone());
-            let backend = workers::Backend::choose(
-                pane,
-                bg,
-                std::env::var("HERDR_ENV").is_ok_and(|v| v == "1"),
-            );
+            let backend = workers::Backend::choose(pane, bg, in_herdr());
             let started = workers().and_then(|r| workers::run(&r, &name, backend, &args));
             if started.is_ok() {
                 ev.handoff_ms = Some(events::now_ms().saturating_sub(ev.ts));
@@ -322,6 +388,18 @@ fn main() -> ExitCode {
                         println!("{out}");
                     }
                 })
+                .map(|_| 0)
+        }
+        Top::Handoff {
+            name,
+            notes,
+            pane,
+            bg,
+            args,
+        } => {
+            let backend = workers::Backend::choose(pane, bg, in_herdr());
+            workers()
+                .and_then(|r| handoff::handoff(&r, &name, backend, &notes, &args))
                 .map(|_| 0)
         }
         Top::Ls { brief: false } => workers()
@@ -391,6 +469,23 @@ fn main() -> ExitCode {
             };
             bench_entry::main(&opts, VERSION)
         }
+        Top::Bench(Bench::Run { arm, n }) => bench::run::run(&arm, &n),
+        Top::Bench(Bench::Handoff { arm, n, real }) => bench::handoff::run(&arm, &n, real),
+        Top::Bench(Bench::HandoffScore { arms }) => bench::handoff::score(&arms)
+            .map(|out| println!("{out}"))
+            .map(|_| 0),
+        Top::Bench(Bench::Task { id }) => bench::handoff::task(&id),
+        Top::Bench(Bench::Score { arms }) => bench::score::score(&arms)
+            .map(|t| println!("{t}"))
+            .map(|_| 0),
+        Top::Bench(Bench::Check { repo, branch }) => bench::check::check(&repo, &branch)
+            .map(|c| println!("{c}"))
+            .map(|_| 0),
+        Top::Gate(Gate::Install { protect, ci }) => gate::install(&protect, &ci).map(|_| 0),
+        Top::Ask { question } => ask::ask(&question),
+        Top::Asks => ask::list(),
+        Top::Answer { id, text } => ask::answer(&id, &text),
+        Top::Gate(Gate::Hook { state }) => gate::hook(&state).map(|ok| if ok { 0 } else { 1 }),
     };
     ev.finish(*result.as_ref().unwrap_or(&1), result.as_ref().err());
     events::log(&ev);
@@ -492,6 +587,21 @@ mod tests {
         assert!(Cli::try_parse_from(["reeve", "--skill", "ls"]).is_err());
         assert!(Cli::try_parse_from(["reeve"]).is_err());
         assert!(Cli::try_parse_from(["reeve", "setup", "claude", "--check", "--remove"]).is_err());
+    }
+
+    #[test]
+    fn handoff_needs_a_successor_name_and_notes() {
+        let parse =
+            |args: &[&str]| Cli::try_parse_from(["reeve", "handoff"].iter().chain(args)).is_ok();
+        assert!(parse(&[
+            "--name", "next", "--notes", "n.md", "--", "--model", "sonnet"
+        ]));
+        assert!(parse(&["--name", "next", "--notes", "n.md", "--bg"]));
+        assert!(!parse(&["--name", "next"]));
+        assert!(!parse(&["--notes", "n.md"]));
+        assert!(!parse(&[
+            "--name", "next", "--notes", "n.md", "--pane", "--bg"
+        ]));
     }
 
     #[test]

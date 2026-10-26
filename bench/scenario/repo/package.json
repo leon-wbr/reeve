@@ -1,0 +1,9 @@
+{
+  "name": "stats-kit",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "ci": "node --test && node scripts/check-docs.mjs"
+  }
+}

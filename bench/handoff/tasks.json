@@ -1,0 +1,6 @@
+[
+  { "id": "t1", "minutes": 20, "result": "found the bug in parse(): it drops a trailing comma" },
+  { "id": "t2", "minutes": 45, "result": "the slow path is the regex in tokenize(), 80% of the time" },
+  { "id": "t3", "minutes": 90, "result": "the flaky test races on a shared temp dir" },
+  { "id": "t4", "minutes": 180, "result": "the memory leak is the cache in render(), never evicted" }
+]
