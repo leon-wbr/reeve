@@ -2,7 +2,36 @@
 
 A small, local tool for handing many tasks to coding agents at once and following each one until it meets your definition of done.
 
-> Status: idea and principles. No design and no code yet.
+> Status: early. Named workers, a shared queue for heavy commands, sandboxes and the Claude Code setup work today; items and rules for done don't exist yet.
+
+```console
+$ git clone https://github.com/leon-wbr/reeve && cd reeve && cargo install --path .
+…
+   Installed package `reeve v0.1.0 (/private/tmp/reeve)` (executable `reeve`)
+
+$ reeve run --name summary --bg -- "Summarise ./README.md in two sentences. The report is just those two sentences."
+backgrounded · d38de0ff · summary
+  claude agents             list sessions
+  claude attach d38de0ff    open in this terminal
+  claude logs d38de0ff      show recent output
+  claude stop d38de0ff      stop this session
+reeve: worker summary started; `reeve wait summary` blocks until its report is written
+
+$ reeve ls
+NAME     STATE    BACKEND  AGE  CWD
+summary  done     bg        7s  ~/work/reeve/.claude/worktrees/entry
+
+$ reeve report summary
+reeve is a small, local tool that gives many tasks to coding agents and tracks each one as an item until it meets that project's own definition of done. Only a core of items, agents and a done-check is fixed and everything else can be swapped out, because it aims to add what plain Claude Code lacks: items that last beyond a single session, one persistent queue of decisions across repositories, and per-project rules and pipelines.
+
+$ reeve setup claude
+backed up ~/.claude/settings.json to ~/.claude/settings.json.reeve-1793022575.bak
+wrote ~/.claude/settings.json: SessionStart hook `reeve ls --brief`
+wrote ~/.claude/skills/reeve/SKILL.md
+`reeve setup claude --remove` takes both out again
+```
+
+`reeve setup claude` touches only those two files. The hook prints one line about your workers at the start of each Claude Code session and nothing when there are none. The skill stub points agents at `reeve --skill`, the manual in [docs/skill.md](docs/skill.md). `reeve doctor` checks the install.
 
 ## What it is for
 
@@ -53,6 +82,10 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - `reeve heavy`: queue builds and test suites so agents take turns ([docs/heavy.md](docs/heavy.md)).
 - `reeve stats`: sum up reeve's local event log ([docs/events.md](docs/events.md)).
 - `reeve feedback "text"`: save a note about reeve itself and offer to post it as an issue ([docs/events.md](docs/events.md)).
+- `reeve setup claude [--check] [--remove]`: add, check or remove the session-start hook and the skill stub.
+- `reeve --skill`: print the manual for agents.
+- `reeve doctor`: check PATH, the setup's version, the state dir, the agent CLIs and gone workers.
+- `reeve bench entry`: run fresh sessions on four cases and report whether each chose well, which can mean not using reeve.
 
 ## Words used here
 

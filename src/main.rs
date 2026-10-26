@@ -1,8 +1,11 @@
+mod bench_entry;
+mod doctor;
 mod events;
 mod feedback;
 mod heavy;
 mod run;
 mod sandbox;
+mod setup;
 mod stats;
 mod workers;
 
@@ -16,11 +19,22 @@ use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Parser)]
-#[command(name = "reeve", version)]
+#[command(
+    name = "reeve",
+    version,
+    arg_required_else_help = true,
+    args_conflicts_with_subcommands = true
+)]
 struct Cli {
+    /// Print the manual for agents: what reeve offers and when each part helps
+    #[arg(long, exclusive = true)]
+    skill: bool,
     #[command(subcommand)]
-    command: Top,
+    command: Option<Top>,
 }
+
+const SKILL: &str = include_str!("../docs/skill.md");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Subcommand)]
 enum Top {
@@ -48,7 +62,11 @@ enum Top {
         args: Vec<String>,
     },
     /// List named workers and whether each is running, done or gone
-    Ls,
+    Ls {
+        /// One short line for a session-start hook, and nothing when there are no workers
+        #[arg(long)]
+        brief: bool,
+    },
     /// Block until a named worker has written its report
     Wait {
         name: String,
@@ -81,6 +99,49 @@ enum Top {
         /// Open the prefilled new-issue page in the browser
         #[arg(long)]
         open: bool,
+    },
+    /// Install reeve's pieces into an agent's setup
+    #[command(subcommand)]
+    Setup(Setup),
+    /// Check PATH, the Claude Code setup, the state dir, the agent CLIs and gone workers
+    Doctor,
+    /// Measure how agents choose with reeve installed
+    #[command(subcommand)]
+    Bench(Bench),
+}
+
+#[derive(Subcommand)]
+enum Setup {
+    /// Add a SessionStart hook to ~/.claude/settings.json that runs `reeve ls --brief`, and a
+    /// skill stub at ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`
+    Claude {
+        /// Only report whether both pieces are installed and current
+        #[arg(long, conflicts_with = "remove")]
+        check: bool,
+        /// Take both pieces out again
+        #[arg(long)]
+        remove: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum Bench {
+    /// Fresh `claude -p` sessions on four cases (long, short, successor, missing), with the
+    /// choice each one made
+    Entry {
+        /// Runs per case
+        #[arg(long, default_value_t = 1)]
+        n: usize,
+        /// Only these cases
+        #[arg(long = "case", value_name = "CASE", value_parser = bench_entry::Case::parse)]
+        cases: Vec<bench_entry::Case>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        max_turns: u32,
+        /// Seconds before a session is stopped
+        #[arg(long, default_value_t = 240)]
+        timeout: u64,
     },
 }
 
@@ -206,13 +267,20 @@ fn main() -> ExitCode {
         log_usage_error(&e);
         e.exit()
     });
-    let mut ev = Event::start(&command_path(&matches));
+    let path = command_path(&matches);
+    let mut ev = Event::start(if path.is_empty() { "skill" } else { &path });
     let explicit = matches
         .subcommand_matches("run")
         .is_some_and(sandbox_opts_given);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let workers = || workers::Registry::default_dir().map(workers::Registry::at);
-    let result: io::Result<i32> = match cli.command {
+    let Some(command) = cli.command else {
+        print!("{SKILL}");
+        ev.finish(0, None);
+        events::log(&ev);
+        return ExitCode::SUCCESS;
+    };
+    let result: io::Result<i32> = match command {
         Top::Run { name: Some(_), .. } if explicit => {
             Err(io::Error::other("sandbox options need --sandbox"))
         }
@@ -245,7 +313,18 @@ fn main() -> ExitCode {
             ev.label = sandbox.clone().flatten();
             start(bg, sandbox, &opts, explicit, &args)
         }
-        Top::Ls => workers()
+        Top::Ls { brief: true } => {
+            ev.label = Some("brief".into());
+            workers()
+                .and_then(|r| workers::ls_brief(&r))
+                .map(|out| {
+                    if !out.is_empty() {
+                        println!("{out}");
+                    }
+                })
+                .map(|_| 0)
+        }
+        Top::Ls { brief: false } => workers()
             .and_then(|r| workers::ls(&r))
             .map(|out| println!("{out}"))
             .map(|_| 0),
@@ -289,6 +368,29 @@ fn main() -> ExitCode {
             with_paths,
             open,
         } => feedback::main(&text, with_paths, open),
+        Top::Setup(Setup::Claude { check, remove }) => setup_claude(check, remove),
+        Top::Doctor => doctor::main(VERSION),
+        Top::Bench(Bench::Entry {
+            n,
+            cases,
+            model,
+            max_turns,
+            timeout,
+        }) => {
+            let cases = if cases.is_empty() {
+                bench_entry::CASES.to_vec()
+            } else {
+                cases
+            };
+            let opts = bench_entry::Opts {
+                n,
+                cases,
+                model,
+                max_turns,
+                timeout,
+            };
+            bench_entry::main(&opts, VERSION)
+        }
     };
     ev.finish(*result.as_ref().unwrap_or(&1), result.as_ref().err());
     events::log(&ev);
@@ -299,6 +401,30 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn setup_claude(check: bool, remove: bool) -> io::Result<i32> {
+    let paths = setup::Paths::at(&setup::Paths::default_dir()?);
+    if check {
+        let pieces = setup::check(&paths, VERSION)?;
+        println!("{}", setup::render_check(&pieces));
+        return Ok(i32::from(
+            pieces.iter().any(|(_, p)| *p != setup::Piece::Ok),
+        ));
+    }
+    let now = events::now_ms() / 1000;
+    let lines = if remove {
+        setup::remove(&paths, now)?
+    } else {
+        setup::install(&paths, VERSION, now)?
+    };
+    for l in lines {
+        println!("{l}");
+    }
+    if !remove {
+        println!("`reeve setup claude --remove` takes both out again");
+    }
+    Ok(0)
 }
 
 fn stats(days: u64, json: bool) -> io::Result<i32> {
@@ -334,6 +460,38 @@ mod tests {
         assert!(!parse(&["--pane"]));
         assert!(!parse(&["--name", "x", "--pane", "--bg"]));
         assert!(!parse(&["--name", "x", "--sandbox", "sb"]));
+    }
+
+    #[test]
+    fn the_manual_for_agents_stays_under_800_tokens() {
+        assert!(SKILL.len() / 4 <= 800, "about {} tokens", SKILL.len() / 4);
+        for part in [
+            "reeve run --name",
+            "reeve ls",
+            "reeve wait",
+            "reeve report",
+            "reeve heavy",
+        ] {
+            assert!(SKILL.contains(part), "{part}");
+        }
+        for part in [
+            "Handoffs",
+            "Sandbox",
+            "reeve feedback",
+            "When not to bother",
+        ] {
+            assert!(SKILL.contains(part), "{part}");
+        }
+        let lower = SKILL.to_lowercase();
+        assert!(!lower.contains("must") && !lower.contains("instead of the agent tool"));
+    }
+
+    #[test]
+    fn skill_stands_alone_and_bare_reeve_shows_help() {
+        assert!(Cli::try_parse_from(["reeve", "--skill"]).unwrap().skill);
+        assert!(Cli::try_parse_from(["reeve", "--skill", "ls"]).is_err());
+        assert!(Cli::try_parse_from(["reeve"]).is_err());
+        assert!(Cli::try_parse_from(["reeve", "setup", "claude", "--check", "--remove"]).is_err());
     }
 
     #[test]
