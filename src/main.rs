@@ -1,7 +1,10 @@
+mod ask;
+mod bench;
 mod bench_entry;
 mod doctor;
 mod events;
 mod feedback;
+mod gate;
 mod heavy;
 mod run;
 mod sandbox;
@@ -105,9 +108,34 @@ enum Top {
     Setup(Setup),
     /// Check PATH, the Claude Code setup, the state dir, the agent CLIs and gone workers
     Doctor,
-    /// Measure how agents choose with reeve installed
+    /// Benchmark a communicator setup on a fixed scenario with a simulated user, and measure how
+    /// agents choose with reeve installed
     #[command(subcommand)]
     Bench(Bench),
+    /// Protect a branch so it only moves to commits whose CI passed (a git reference-transaction hook)
+    #[command(subcommand)]
+    Gate(Gate),
+    /// Queue a question for the user and wait for the answer (run it in the background and keep working)
+    Ask { question: String },
+    /// List open questions
+    Asks,
+    /// Answer an open question
+    Answer { id: String, text: String },
+}
+
+#[derive(Subcommand)]
+enum Gate {
+    /// Install the gate in the current repository
+    Install {
+        /// The branch to protect
+        #[arg(long)]
+        protect: String,
+        /// CI status command; `{rev}` is replaced by the commit. Exit 0 pass, 2 pending, else fail
+        #[arg(long)]
+        ci: String,
+    },
+    /// Run as the reference-transaction hook (installed by `reeve gate install`)
+    Hook { state: String },
 }
 
 #[derive(Subcommand)]
@@ -143,6 +171,12 @@ enum Bench {
         #[arg(long, default_value_t = 240)]
         timeout: u64,
     },
+    /// One run of an arm (bench/arms/<ARM>), named rv-<ARM>-<N>
+    Run { arm: String, n: String },
+    /// Aggregate results per arm
+    Score { arms: Vec<String> },
+    /// Done-check a branch of a repo and print it as JSON
+    Check { repo: PathBuf, branch: String },
 }
 
 #[derive(Subcommand)]
@@ -391,6 +425,18 @@ fn main() -> ExitCode {
             };
             bench_entry::main(&opts, VERSION)
         }
+        Top::Bench(Bench::Run { arm, n }) => bench::run::run(&arm, &n),
+        Top::Bench(Bench::Score { arms }) => bench::score::score(&arms)
+            .map(|t| println!("{t}"))
+            .map(|_| 0),
+        Top::Bench(Bench::Check { repo, branch }) => bench::check::check(&repo, &branch)
+            .map(|c| println!("{c}"))
+            .map(|_| 0),
+        Top::Gate(Gate::Install { protect, ci }) => gate::install(&protect, &ci).map(|_| 0),
+        Top::Ask { question } => ask::ask(&question),
+        Top::Asks => ask::list(),
+        Top::Answer { id, text } => ask::answer(&id, &text),
+        Top::Gate(Gate::Hook { state }) => gate::hook(&state).map(|ok| if ok { 0 } else { 1 }),
     };
     ev.finish(*result.as_ref().unwrap_or(&1), result.as_ref().err());
     events::log(&ev);

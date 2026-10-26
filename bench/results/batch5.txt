@@ -1,0 +1,5 @@
+arm  n  interventions  kinds                done  false done  min to done       workers  failed starts  blocked min    unchecked landings  cost $          
+b0   2  1 [1–1]        answer:2             2/2   0           14.5 [12.4–16.6]  0 [0–0]  0              0.0 [0.0–0.0]  0 [0–0]             1.06 [0.85–1.27]
+b1   1  1 [1–1]        answer:1             1/1   0           23.9 [23.9–23.9]  6 [6–6]  0              0.0 [0.0–0.0]  1 [1–1]             7.33 [7.33–7.33]
+c3   2  2 [1–2]        answer:2 recovery:1  2/2   0           16.2 [10.7–21.8]  0 [0–0]  0              0.0 [0.0–0.0]  0 [0–0]             1.16 [1.10–1.21]
+c3b  2  1 [1–1]        answer:2             2/2   0           23.2 [19.9–26.6]  0 [0–0]  0              0.0 [0.0–0.0]  0 [0–0]             1.82 [1.56–2.08]
