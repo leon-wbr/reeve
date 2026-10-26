@@ -19,6 +19,21 @@ reeve run [--bg] [--sandbox [NAME]] [sandbox options] -- <claude args>
 
 Sandboxes are managed with `reeve sandbox`: `ls`, `exec --name NAME -- <cmd>` (for example `-- claude agents --json`; it runs in the sandbox's workspace), `down --name NAME`, and `build`.
 
+## Named workers
+
+A subagent belongs to the session that started it, so a session that hands off has to wait for it or orphan it. A named worker runs in its own session instead, and any later session can find it:
+
+```sh
+reeve run --name fix-x [--pane | --bg] -- [claude args] "<prompt>"
+reeve ls                  # each worker: running, idle, done, gone or unknown
+reeve wait fix-x          # blocks until its report exists
+reeve report fix-x        # prints the report
+```
+
+The worker runs in a new Herdr pane (the default inside Herdr, `HERDR_ENV=1`) or as a Claude Code background session (`--bg`, the default elsewhere). The last claude argument is the prompt. reeve adds an instruction to write the final report to `~/.local/state/reeve/reports/NAME.md`, and claude flags that let the worker write that file (`--add-dir` and an `Edit` allow rule for it) and name the session. These come after your own flags so none of them swallows the prompt. The prompt is passed when claude starts, never typed into a running session. Herdr can't pass newlines as launch arguments, so a multi-line prompt is saved next to the report as `NAME.prompt.md` and the worker is told to read it.
+
+Workers are recorded in `~/.local/state/reeve/workers.json` (`$XDG_STATE_HOME` is honoured). A worker is done once its report exists. Otherwise it is running while Herdr or `claude agents` shows it working, idle while it waits for input, gone once its pane or session has ended, and unknown when that check fails. `reeve wait` fails if the worker is gone, or stays idle without a report, which usually means it is asking a question. A name can be reused once its old pane or session is closed. Named workers don't run in sandboxes yet.
+
 ## What a sandbox gets
 
 - **Files:** the workspace (`--workspace`, default the current dir), mounted read-write at its host path, and nothing else from the host. The workspace should be a repo or worktree root: for a worktree, its common `.git` dir is mounted too so git works. The `hooks` and `config` of the git dir and its submodules are read-only, so the agent can't plant code that git on the host would run. `--ro` adds read-only mounts; `--state` keeps the container's Claude config dir (transcripts) on the host.
