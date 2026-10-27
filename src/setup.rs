@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 /// for a marker of our own.
 pub const MARKER: &str = "# reeve setup claude";
 pub const MATCHER: &str = "startup|resume|clear|compact";
-pub const DESCRIPTION: &str = "reeve is installed: named workers that outlive this session, a \
-shared queue for heavy commands, handoffs. Read when long or parallel work, a handoff or a busy \
-machine comes up.";
+pub const DESCRIPTION: &str = "reeve is installed: test suites, e2e, builds and installs go \
+through `reeve heavy`; named workers outlive this session; `reeve handoff` starts your successor. \
+Read before a heavy command, long or parallel work, or a handoff.";
 const STUB_LINE: &str = "Written by `reeve setup claude` for reeve ";
 
 pub fn hook_command() -> String {

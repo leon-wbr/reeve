@@ -1,6 +1,6 @@
 # reeve, for agents
 
-reeve is a small local CLI that runs coding agents beside your session. Each part is optional: use what helps with the task in front of you and skip the rest.
+reeve is a small local CLI that runs coding agents beside your session. Two parts aren't optional: heavy commands go through `reeve heavy`, and at a handoff threshold you run `reeve handoff`. Use the rest where it helps.
 
 ## Named workers: work that outlives this session
 
@@ -15,15 +15,21 @@ reeve report fix-flaky   # prints the report
 
 Inside Herdr a worker gets its own pane in a new tab labelled NAME instead (`--pane`, the default there). Your focus stays where it is; there is nothing to move.
 
-Workers tend to help with work that may take longer than this session lasts, with several independent tasks that can run side by side without filling your context, and with anything a successor should be able to pick up. For short work whose answer you need in this session, a subagent is simpler and a fine choice.
+Workers help with work that may outlast this session, independent tasks that can run side by side without filling your context, and anything a successor should pick up. For short work whose answer you need now, a subagent is simpler.
 
 ## Handoffs
 
-Workers keep running across a handoff. Naming them in the handoff note lets the next session check `reeve ls` and `reeve report NAME` before it redoes anything. With `reeve setup claude` installed, each new session also starts with a one-line summary of the workers, and nothing when there are none.
+When your session reaches its handoff threshold, hand off yourself; don't wait to be asked:
+
+```sh
+reeve handoff --name NAME-2 --notes "goal, what's done, what's next, open questions"
+```
+
+It writes the handoff file with your workers and starts the successor as a named worker told to read it. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` before redoing anything.
 
 ## Heavy commands on a shared machine
 
-When several agents share one machine, their builds and test suites slow each other down. `reeve heavy` waits for a free slot (a quarter of the cores by default), runs the command and exits with its code:
+Agents share this machine. Always run heavy commands through `reeve heavy`: test suites, e2e (even one spec: it starts a server or browser), local CI, workspace typecheck or lint, builds and installs. It waits for a free slot, runs the command and exits with its code. Waits can be long; run it in the background where you can:
 
 ```sh
 reeve heavy -- cargo test
@@ -31,7 +37,7 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs and who waits
 ```
 
-It is worth it for builds, full test suites and installs. Quick commands such as `git status` or a single test don't need it.
+You decide what's heavy; when in doubt, queue it. Only quick commands such as `git status` or one unit test skip it.
 
 ## Sandbox
 
@@ -43,12 +49,12 @@ It is worth it for builds, full test suites and installs. Quick commands such as
 reeve feedback "what you ran, what happened, what you expected"
 ```
 
-This saves a note with reeve's version and recent events, then offers to file it as an issue. Nothing is posted without a yes.
+This saves a note with reeve's version and recent events and offers to file it as an issue, never without a yes.
 
 ## When not to bother
 
 - A task you'll finish in this session: do it directly or with a subagent.
-- A quick command: just run it.
+- A quick command (not a suite or build): just run it.
 - `reeve` isn't on PATH: carry on without it.
 
 `reeve doctor` checks the install, and `reeve --help` lists every command.

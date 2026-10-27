@@ -2,9 +2,10 @@
 
 use crate::setup::{self, Piece, tilde};
 use crate::workers::Registry;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +72,29 @@ pub fn path_checks(
         ));
     }
     out
+}
+
+/// Another build later on PATH: `cargo install` puts reeve in ~/.cargo/bin, while an older
+/// symlink in ~/.local/bin keeps winning, and both report the same version.
+pub fn shadow_check(path: &OsStr) -> Option<Check> {
+    let found: Vec<PathBuf> = std::env::split_paths(path)
+        .map(|d| d.join("reeve"))
+        .filter(|p| p.is_file())
+        .collect();
+    let first = found.first()?;
+    let used = fs::read(first).ok()?;
+    let other = found[1..]
+        .iter()
+        .find(|p| fs::read(p).is_ok_and(|b| b != used))?;
+    Some(problem(
+        Status::Fail,
+        format!(
+            "{} shadows a different reeve build at {}",
+            tilde(first),
+            tilde(other)
+        ),
+        "remove the one you don't want, or `ln -sf` it to the other",
+    ))
 }
 
 /// `stub` is the skill stub's text, `hook` the hook's state in settings.json.
@@ -197,6 +221,7 @@ pub fn main(version: &str) -> io::Result<i32> {
         which_reeve(true).as_deref(),
         version,
     );
+    checks.extend(shadow_check(&std::env::var_os("PATH").unwrap_or_default()));
 
     let paths = setup::Paths::at(&setup::Paths::default_dir()?);
     match setup::check(&paths, version) {
@@ -263,6 +288,30 @@ mod tests {
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].status, Status::Fail);
         assert!(missing[0].fix.is_some());
+    }
+
+    #[test]
+    fn a_different_reeve_later_on_path_is_shadowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, c) = (
+            dir.path().join("a"),
+            dir.path().join("b"),
+            dir.path().join("c"),
+        );
+        for (d, body) in [(&a, "old"), (&b, "new"), (&c, "old")] {
+            fs::create_dir(d).unwrap();
+            fs::write(d.join("reeve"), body).unwrap();
+        }
+        let path = std::env::join_paths([&a, &c]).unwrap();
+        assert_eq!(shadow_check(&path), None);
+        let path = std::env::join_paths([&a, &b, &c]).unwrap();
+        let shadowed = shadow_check(&path).unwrap();
+        assert_eq!(shadowed.status, Status::Fail);
+        assert!(
+            shadowed.what.contains(&tilde(&b.join("reeve"))),
+            "{}",
+            shadowed.what
+        );
     }
 
     #[test]
