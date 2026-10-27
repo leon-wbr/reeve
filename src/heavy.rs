@@ -17,6 +17,8 @@ pub const ENV: &str = "REEVE_HEAVY";
 const POLL: Duration = Duration::from_millis(250);
 /// How long a command may take to stop after a forwarded signal before it is killed.
 const GRACE: Duration = Duration::from_secs(5);
+const BACKGROUND_HINT: &str = " (agents: start reeve heavy in the background and keep working; \
+                               you are told when it ends)";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
@@ -294,6 +296,10 @@ fn run(q: &Queue, label: String, cmd: &[String], slots: usize, ev: &mut Event) -
         cwd: std::env::current_dir().map_or_else(|_| String::new(), |d| d.display().to_string()),
         since: now_ms(),
     };
+    // In a terminal's foreground job the command shares our process group, so Ctrl-C, Ctrl-Z and
+    // reads from the terminal work as usual. Elsewhere (agents) it gets its own group, which is
+    // killed when it ends so no test workers outlive it.
+    let interactive = unsafe { libc::isatty(0) == 1 && libc::tcgetpgrp(0) == libc::getpgrp() };
     let queued = Instant::now();
     let mut ticket = q.enqueue(&me)?;
     let mut said = None;
@@ -309,7 +315,14 @@ fn run(q: &Queue, label: String, cmd: &[String], slots: usize, ev: &mut Event) -
                 break slot;
             }
             Claim::Ahead(n) if said != Some(n) => {
-                eprintln!("reeve heavy: waiting for a slot: {n} ahead");
+                // An agent can't do anything while its shell waits, and sees this line only
+                // once the command is done; it is told once so that the next call goes better.
+                let hint = if interactive || said.is_some() {
+                    ""
+                } else {
+                    BACKGROUND_HINT
+                };
+                eprintln!("reeve heavy: waiting for a slot: {n} ahead{hint}");
                 said = Some(n);
             }
             Claim::Ahead(_) => {}
@@ -323,10 +336,6 @@ fn run(q: &Queue, label: String, cmd: &[String], slots: usize, ev: &mut Event) -
         q.drop(slot);
         return Ok(128 + sig);
     }
-    // In a terminal's foreground job the command shares our process group, so Ctrl-C, Ctrl-Z and
-    // reads from the terminal work as usual. Elsewhere (agents) it gets its own group, which is
-    // killed when it ends so no test workers outlive it.
-    let interactive = unsafe { libc::isatty(0) == 1 && libc::tcgetpgrp(0) == libc::getpgrp() };
     let mut c = command();
     if !interactive {
         c.process_group(0);
