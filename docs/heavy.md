@@ -7,7 +7,7 @@ reeve heavy [--label L] [--slots N] -- <command...>
 reeve heavy ls
 ```
 
-The command runs as soon as a slot is free and reeve heavy exits with its code. While it waits it prints one line to stderr when its place changes (`waiting for a slot: 2 ahead`) and is quiet otherwise. `reeve heavy ls` shows who runs and who waits, in order, with label, pid, age and working dir.
+The command runs as soon as a slot is free, as a child of reeve heavy with the caller's environment, PATH and working dir unchanged (plus `REEVE_HEAVY=1`), so version managers such as proto resolve the same tools as without it. reeve heavy exits with its code. While it waits it prints one line to stderr when its place changes (`waiting for a slot: 2 ahead`) and is quiet otherwise. `reeve heavy ls` shows who runs and who waits, in order, with label, pid, age and working dir.
 
 - **Slots:** a quarter of the cores, at least 1. `--slots` or `REEVE_HEAVY_SLOTS` overrides it; every caller should use the same number.
 - **State:** one JSON file per waiter or runner under `~/.local/state/reeve/heavy/` (or `$XDG_STATE_HOME/reeve/heavy`, or `REEVE_HEAVY_DIR`). There is no daemon. Each file stays locked while its owner lives; whoever reads an unlocked one next removes it, so a crashed agent never holds a slot, and a reused pid can't keep one. A short lock on the whole dir makes taking a slot atomic.

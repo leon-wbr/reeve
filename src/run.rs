@@ -22,6 +22,23 @@ pub fn target(sandbox: Option<Option<String>>, bg: bool, pid: u32) -> Result<Tar
     }
 }
 
+/// A worker started outside any repository loads no project's .claude/ settings, skills or hooks.
+pub fn cwd_warning(dir: &std::path::Path) -> Option<String> {
+    let in_repo = std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    (!in_repo).then(|| {
+        format!(
+            "{} is not in a git repository, so the worker loads no project's .claude/ settings, skills or hooks; pass --cwd <project dir> to start it in the project",
+            crate::setup::tilde(dir)
+        )
+    })
+}
+
 /// The claude command line; in a sandbox it skips permission prompts.
 pub fn claude_argv(bg: bool, sandboxed: bool, args: &[String]) -> Vec<String> {
     let flags = [(sandboxed, "--dangerously-skip-permissions"), (bg, "--bg")];

@@ -96,6 +96,34 @@ fn the_command_sees_reeve_heavy_set() {
 }
 
 #[test]
+fn the_command_runs_with_the_callers_env_path_and_cwd() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let here = d.path().canonicalize().unwrap().join("project");
+    let bin = d.path().join("bin");
+    std::fs::create_dir_all(&here).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("tool"), "#!/bin/sh\necho pinned\n").unwrap();
+    std::fs::set_permissions(bin.join("tool"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let o = heavy(
+        d.path(),
+        &["--", "sh", "-c", "tool; echo $PROJECT_PIN; pwd -P"],
+    )
+    .current_dir(&here)
+    .env("PATH", &path)
+    .env("PROJECT_PIN", "1.4.0")
+    .output()
+    .unwrap();
+    assert_eq!(
+        stdout(&o),
+        format!("pinned\n1.4.0\n{}\n", here.display()),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+#[test]
 fn a_nested_call_skips_the_queue() {
     let d = tempfile::tempdir().unwrap();
     let holder = hold(d.path(), "outer");
