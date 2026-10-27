@@ -178,8 +178,9 @@ pub fn split_prompt(args: &[String]) -> Result<(&[String], &str), String> {
 
 pub fn with_report(prompt: &str, report: &Path) -> String {
     format!(
-        "{prompt} When you are finished, write your final report as Markdown to {}. Write that \
-         file last and only once: its existence tells reeve that you are done.",
+        "{prompt} Run test suites, e2e, builds and installs through `reeve heavy -- <command>`. \
+         When you are finished, write your final report as Markdown to {}. Write that file last \
+         and only once: its existence tells reeve that you are done.",
         report.display()
     )
 }
@@ -282,9 +283,17 @@ pub fn pane_start_args(name: &str, pane: &str, claude: &[String]) -> Vec<String>
 /// A launch prompt keeps claude busy, and `herdr agent start` times out waiting for it to
 /// become idle.
 pub fn busy_at_start(err: &str) -> bool {
-    err.strip_prefix("herdr: ")
-        .and_then(|j| serde_json::from_str::<Value>(j).ok())
-        .is_some_and(|v| v["error"]["code"] == "timeout")
+    herdr_error_code(err).is_some_and(|c| c == "timeout")
+}
+
+/// A new pane's shell isn't up yet; herdr refuses before typing anything, so retrying is safe.
+pub fn pane_not_ready(err: &str) -> bool {
+    herdr_error_code(err).is_some_and(|c| c == "agent_pane_busy")
+}
+
+fn herdr_error_code(err: &str) -> Option<String> {
+    let v = serde_json::from_str::<Value>(err.strip_prefix("herdr: ")?).ok()?;
+    v["error"]["code"].as_str().map(String::from)
 }
 
 pub fn bg_argv(claude: &[String], prompt: &str) -> Vec<String> {
@@ -380,7 +389,18 @@ fn start_pane(name: &str, cwd: &Path, claude: &[String]) -> io::Result<String> {
     let created = herdr(tab_create_args(name, &cwd, workspace.as_deref()))?;
     let (tab, pane) = created_tab(&created)
         .ok_or_else(|| io::Error::other("herdr tab create returned no pane id"))?;
-    let started = match herdr(pane_start_args(name, &pane, claude)) {
+    let start = || herdr(pane_start_args(name, &pane, claude));
+    let mut started = start();
+    for _ in 0..20 {
+        match &started {
+            Err(e) if pane_not_ready(&e.to_string()) => {
+                std::thread::sleep(Duration::from_millis(250));
+                started = start();
+            }
+            _ => break,
+        }
+    }
+    let started = match started {
         Err(e) if busy_at_start(&e.to_string()) => wait_for_claude(&pane)
             .and_then(|_| herdr(["agent", "rename", &pane, name]))
             .map_err(|_| e),
@@ -514,6 +534,9 @@ const BRIEF_NAMES: usize = 8;
 /// Far below the 10,000 characters Claude Code takes from a hook.
 pub const BRIEF_MAX: usize = 1000;
 
+/// The brief shows only when other workers share the machine, which is when the queue matters.
+const HEAVY_REMINDER: &str = " Heavy commands go through `reeve heavy`.";
+
 /// One line for a session-start hook, e.g. `reeve: 2 workers: a running, b done (report
 /// ready).`, or nothing when there is nothing worth telling.
 pub fn brief(workers: &[(&str, State, u64)]) -> String {
@@ -553,12 +576,13 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
         out += "; `reeve report NAME` prints a report";
     }
     out.push('.');
-    if out.len() > BRIEF_MAX {
-        let cut = out.floor_char_boundary(BRIEF_MAX - 1);
+    let max = BRIEF_MAX - HEAVY_REMINDER.len();
+    if out.len() > max {
+        let cut = out.floor_char_boundary(max - 1);
         out.truncate(cut);
         out.push('…');
     }
-    out
+    out + HEAVY_REMINDER
 }
 
 /// States for many workers, asking `claude agents` only once.
@@ -759,6 +783,7 @@ mod tests {
         assert!(p.starts_with("fix it "));
         assert!(!p.contains('\n'));
         assert!(p.contains("/st/reports/x.md"));
+        assert!(p.contains("reeve heavy"));
     }
 
     #[test]
@@ -849,6 +874,15 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_is_not_ready_while_herdr_says_its_shell_is_busy() {
+        let busy = r#"herdr: {"error":{"code":"agent_pane_busy","message":"pane w1-2 is not an available shell"},"id":"cli:agent:start"}"#;
+        let timeout = r#"herdr: {"error":{"code":"timeout","message":"timed out waiting for agent startup"},"id":"cli:agent:start"}"#;
+        assert!(pane_not_ready(busy));
+        assert!(!pane_not_ready(timeout));
+        assert!(!pane_not_ready("herdr: agent_pane_busy"));
+    }
+
+    #[test]
     fn a_multi_line_prompt_reaches_a_pane_through_a_file() {
         let f = Path::new("/st/reports/x.prompt.md");
         assert_eq!(pane_prompt("fix it", f), None);
@@ -932,12 +966,13 @@ mod tests {
         assert_eq!(brief(&[]), "");
         assert_eq!(
             brief(&[("fix-x", State::Running, 60)]),
-            "reeve: 1 worker: fix-x running. `reeve ls` shows details."
+            "reeve: 1 worker: fix-x running. `reeve ls` shows details. Heavy commands go \
+             through `reeve heavy`."
         );
         assert_eq!(
             brief(&[("a", State::Running, 60), ("b", State::Done, 60)]),
             "reeve: 2 workers: a running, b done (report ready). `reeve ls` shows details; \
-             `reeve report NAME` prints a report."
+             `reeve report NAME` prints a report. Heavy commands go through `reeve heavy`."
         );
     }
 
@@ -963,6 +998,7 @@ mod tests {
         let b = brief(&rows);
         assert!(b.len() <= BRIEF_MAX + 3, "{}", b.len());
         assert!(b.contains("492 more"), "{b}");
+        assert!(b.ends_with(HEAVY_REMINDER), "{b}");
     }
 
     #[test]
