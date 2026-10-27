@@ -13,7 +13,7 @@ reeve wait fix-flaky     # blocks until the report exists; fails if the worker g
 reeve report fix-flaky   # prints the report
 ```
 
-Inside Herdr a worker gets its own pane instead (`--pane`, the default there).
+Inside Herdr a worker gets its own pane in a new tab labelled NAME instead (`--pane`, the default there). Your focus stays where it is; there is nothing to move.
 
 Workers tend to help with work that may take longer than this session lasts, with several independent tasks that can run side by side without filling your context, and with anything a successor should be able to pick up. For short work whose answer you need in this session, a subagent is simpler and a fine choice.
 

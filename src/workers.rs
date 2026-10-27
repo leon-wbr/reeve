@@ -243,9 +243,21 @@ pub fn claude_args(name: &str, report: &Path, flags: &[String]) -> Vec<String> {
     flags.iter().cloned().chain(own).collect()
 }
 
-/// Terminal cells are about twice as tall as wide.
-pub fn split_direction(width: u64, height: u64) -> &'static str {
-    if width >= 2 * height { "right" } else { "down" }
+pub fn tab_create_args(name: &str, cwd: &str, workspace: Option<&str>) -> Vec<String> {
+    ["tab", "create", "--label", name, "--cwd", cwd, "--no-focus"]
+        .into_iter()
+        .chain(workspace.into_iter().flat_map(|w| ["--workspace", w]))
+        .map(String::from)
+        .collect()
+}
+
+/// The tab ID and root pane ID from `herdr tab create`.
+pub fn created_tab(out: &Value) -> Option<(String, String)> {
+    let r = &out["result"];
+    Some((
+        r["tab"]["tab_id"].as_str()?.to_string(),
+        r["root_pane"]["pane_id"].as_str()?.to_string(),
+    ))
 }
 
 pub fn pane_start_args(name: &str, pane: &str, claude: &[String]) -> Vec<String> {
@@ -359,30 +371,15 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Splits the calling pane (or the focused one outside a pane) and starts claude in the new
-/// pane with the prompt as its argument. Returns the pane ID; the pane is closed again if
-/// claude didn't start.
+/// Opens a tab labelled NAME in the caller's workspace without focusing it and starts claude
+/// in its pane with the prompt as its argument. Returns the pane ID; the tab is closed again
+/// if claude didn't start.
 fn start_pane(name: &str, cwd: &Path, claude: &[String]) -> io::Result<String> {
-    let here = std::env::var("HERDR_PANE_ID").ok();
-    let direction = here
-        .as_ref()
-        .and_then(|p| {
-            let l = herdr(["pane", "layout", "--pane", p]).ok()?;
-            let panes = l["result"]["layout"]["panes"].as_array()?;
-            let r = &panes.iter().find(|x| x["pane_id"] == p.as_str())?["rect"];
-            Some(split_direction(r["width"].as_u64()?, r["height"].as_u64()?))
-        })
-        .unwrap_or("right");
-    let mut split = vec!["pane", "split"];
-    if here.is_some() {
-        split.push("--current");
-    }
+    let workspace = std::env::var("HERDR_WORKSPACE_ID").ok();
     let cwd = cwd.display().to_string();
-    split.extend(["--direction", direction, "--cwd", &cwd, "--no-focus"]);
-    let pane = herdr(split)?["result"]["pane"]["pane_id"]
-        .as_str()
-        .ok_or_else(|| io::Error::other("herdr pane split returned no pane id"))?
-        .to_string();
+    let created = herdr(tab_create_args(name, &cwd, workspace.as_deref()))?;
+    let (tab, pane) = created_tab(&created)
+        .ok_or_else(|| io::Error::other("herdr tab create returned no pane id"))?;
     let started = match herdr(pane_start_args(name, &pane, claude)) {
         Err(e) if busy_at_start(&e.to_string()) => wait_for_claude(&pane)
             .and_then(|_| herdr(["agent", "rename", &pane, name]))
@@ -390,7 +387,7 @@ fn start_pane(name: &str, cwd: &Path, claude: &[String]) -> io::Result<String> {
         r => r,
     };
     if let Err(e) = started {
-        let _ = herdr(["pane", "close", &pane]);
+        let _ = herdr(["tab", "close", &tab]);
         return Err(e);
     }
     Ok(pane)
@@ -786,10 +783,38 @@ mod tests {
     }
 
     #[test]
-    fn wide_panes_split_right_and_tall_ones_down() {
-        assert_eq!(split_direction(188, 63), "right");
-        assert_eq!(split_direction(94, 63), "down");
-        assert_eq!(split_direction(94, 31), "right");
+    fn a_worker_gets_a_labelled_tab_without_focus() {
+        assert_eq!(
+            tab_create_args("x", "/w", Some("w1")),
+            s(&[
+                "tab",
+                "create",
+                "--label",
+                "x",
+                "--cwd",
+                "/w",
+                "--no-focus",
+                "--workspace",
+                "w1"
+            ])
+        );
+        assert_eq!(
+            tab_create_args("x", "/w", None),
+            s(&["tab", "create", "--label", "x", "--cwd", "/w", "--no-focus"])
+        );
+    }
+
+    #[test]
+    fn a_created_tab_names_its_root_pane() {
+        let out: Value = serde_json::from_str(
+            r#"{"result":{"root_pane":{"pane_id":"w1:p2"},"tab":{"tab_id":"w1:t3"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            created_tab(&out),
+            Some(("w1:t3".to_string(), "w1:p2".to_string()))
+        );
+        assert_eq!(created_tab(&serde_json::json!({"result":{}})), None);
     }
 
     #[test]

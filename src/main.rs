@@ -48,11 +48,12 @@ enum Top {
         #[arg(long)]
         bg: bool,
         /// Start a named worker that any session finds with `reeve ls`. It runs in a Herdr pane
-        /// inside Herdr and as a background session otherwise, and is told to write its report
+        /// in its own tab labelled NAME (not focused) inside Herdr and as a background session
+        /// otherwise, and is told to write its report
         /// to ~/.local/state/reeve/reports/NAME.md. The last claude argument is its prompt
         #[arg(long, value_name = "NAME", conflicts_with = "sandbox")]
         name: Option<String>,
-        /// Run the named worker in a new Herdr pane
+        /// Run the named worker in a new Herdr tab
         #[arg(long, requires = "name", conflicts_with = "bg")]
         pane: bool,
         /// Run it in a sandbox with --dangerously-skip-permissions. Without NAME the sandbox is
@@ -89,7 +90,7 @@ enum Top {
         /// Your handoff notes: goal, what's done, what's next, open questions
         #[arg(long)]
         notes: PathBuf,
-        /// Start the successor in a new Herdr pane
+        /// Start the successor in a new Herdr tab
         #[arg(long, conflicts_with = "bg")]
         pane: bool,
         /// Start it as a Claude Code background session
