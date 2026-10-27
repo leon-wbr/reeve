@@ -187,12 +187,44 @@ pub fn with_report(prompt: &str, report: &Path) -> String {
 /// Herdr refuses launch arguments it can't encode for the pane's shell, such as newlines, so
 /// such a prompt is written to `file` and the pane is told to read it.
 pub fn pane_prompt(prompt: &str, file: &Path) -> Option<String> {
-    prompt.chars().any(char::is_control).then(|| {
-        format!(
-            "Read your task from {} and do it. Follow every instruction in it.",
-            file.display()
-        )
-    })
+    prompt.chars().any(char::is_control).then(|| pointer(file))
+}
+
+fn pointer(file: &Path) -> String {
+    format!(
+        "Read your task from {} and do it. Follow every instruction in it.",
+        file.display()
+    )
+}
+
+/// `herdr agent start` types the claude command into the new pane's shell. Typed before the
+/// shell's line editor is up, it lands in the tty's line buffer, which macOS caps at 1024
+/// bytes (MAX_CANON): the rest, Enter included, is dropped and claude never starts.
+pub const TYPED_MAX: usize = 1000;
+
+/// Length of the command herdr types, each argument single-quoted.
+pub fn typed_len(argv: &[String]) -> usize {
+    argv.iter()
+        .map(|a| 3 + a.len() + 3 * a.matches('\'').count())
+        .sum::<usize>()
+        + "claude".len()
+}
+
+/// Claude's argv for a pane. A prompt that can't be typed whole goes through `file`, which
+/// the caller writes; flags too long to type are an error.
+pub fn pane_argv(flags: &[String], prompt: &str, file: &Path) -> Result<Vec<String>, String> {
+    let with = |p: String| -> Vec<String> { flags.iter().cloned().chain([p]).collect() };
+    let argv = with(prompt.into());
+    if pane_prompt(prompt, file).is_none() && typed_len(&argv) <= TYPED_MAX {
+        return Ok(argv);
+    }
+    let argv = with(pointer(file));
+    match typed_len(&argv) {
+        n if n <= TYPED_MAX => Ok(argv),
+        n => Err(format!(
+            "claude's flags are too long to type into a pane ({n} bytes, at most {TYPED_MAX})"
+        )),
+    }
 }
 
 /// Claude args for a worker: it may write its report, and is shown under its name. reeve's
@@ -446,12 +478,14 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
     let started = match backend {
         Backend::Pane => {
             let file = reports.join(format!("{name}.prompt.md"));
-            let prompt = match pane_prompt(&prompt, &file) {
-                Some(p) => fs::write(&file, &prompt).map(|_| p)?,
-                None => prompt,
-            };
-            let argv: Vec<String> = claude.into_iter().chain([prompt]).collect();
-            start_pane(name, &cwd, &argv)
+            pane_argv(&claude, &prompt, &file)
+                .map_err(io::Error::other)
+                .and_then(|argv| {
+                    if argv.last() != Some(&prompt) {
+                        fs::write(&file, &prompt)?;
+                    }
+                    start_pane(name, &cwd, &argv)
+                })
         }
         Backend::Bg => start_bg(&claude, &prompt),
     };
@@ -797,6 +831,31 @@ mod tests {
         assert!(p.contains("/st/reports/x.prompt.md"));
         assert!(!p.chars().any(char::is_control));
         assert!(pane_prompt("a\tb", f).is_some());
+    }
+
+    #[test]
+    fn a_long_prompt_reaches_a_pane_through_a_file_so_the_typed_command_fits_the_tty() {
+        let f = Path::new("/st/reports/x.prompt.md");
+        let flags = claude_args("x", Path::new("/st/reports/x.md"), &s(&["--model", "opus"]));
+        let long = "it's \"quoted\" (and) https://example.com/?a=1&b=2 ".repeat(40);
+        let argv = pane_argv(&flags, &long, f).unwrap();
+        assert!(typed_len(&argv) <= TYPED_MAX);
+        assert!(argv.last().unwrap().contains("/st/reports/x.prompt.md"));
+        let short = pane_argv(&flags, "fix it", f).unwrap();
+        assert_eq!(short.last().unwrap(), "fix it");
+    }
+
+    #[test]
+    fn typed_len_counts_the_quoting_herdr_types() {
+        assert_eq!(typed_len(&s(&["-n", "x"])), "claude '-n' 'x'".len());
+        assert_eq!(typed_len(&s(&["it's"])), r"claude 'it'\''s'".len());
+    }
+
+    #[test]
+    fn flags_too_long_to_type_fail_before_any_pane_opens() {
+        let f = Path::new("/st/reports/x.prompt.md");
+        let flags = s(&["--append-system-prompt", &"x".repeat(TYPED_MAX)]);
+        assert!(pane_argv(&flags, "fix it", f).is_err());
     }
 
     #[test]
