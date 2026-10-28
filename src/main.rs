@@ -1,6 +1,7 @@
 mod ask;
 mod bench;
 mod bench_entry;
+mod context;
 mod doctor;
 mod events;
 mod feedback;
@@ -146,6 +147,19 @@ enum Top {
     Asks,
     /// Answer an open question
     Answer { id: String, text: String },
+    /// Run as a Claude Code hook (installed by `reeve setup claude`)
+    #[command(subcommand)]
+    Hook(Hook),
+    /// Drop a worker that is gone or done from `reeve ls`; its report stays
+    Rm { name: String },
+}
+
+#[derive(Subcommand)]
+enum Hook {
+    /// Read the hook's JSON on stdin and, past the handoff threshold, tell the session to hand
+    /// off. The threshold is REEVE_HANDOFF_TOKENS, else `handoff_tokens` in
+    /// ~/.config/reeve/config.json, else 350000
+    Context,
 }
 
 #[derive(Subcommand)]
@@ -165,15 +179,20 @@ enum Gate {
 
 #[derive(Subcommand)]
 enum Setup {
-    /// Add a SessionStart hook to ~/.claude/settings.json that runs `reeve ls --brief`, and a
-    /// skill stub at ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`
+    /// Add hooks to ~/.claude/settings.json that run `reeve ls --brief` at session start and
+    /// `reeve hook context` on prompts and tool calls, and a skill stub at
+    /// ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`
     Claude {
-        /// Only report whether both pieces are installed and current
+        /// Only report whether each piece is installed and current
         #[arg(long, conflicts_with = "remove")]
         check: bool,
-        /// Take both pieces out again
+        /// Take every piece out again, the CLAUDE.md block included
         #[arg(long)]
         remove: bool,
+        /// Also add a short marked block to ~/.claude/CLAUDE.md that tells every session reeve is
+        /// installed and states its two rules
+        #[arg(long, conflicts_with = "remove")]
+        claude_md: bool,
     },
 }
 
@@ -348,6 +367,13 @@ fn main() -> ExitCode {
         .subcommand_matches("run")
         .is_some_and(sandbox_opts_given);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // Runs on every prompt and tool call, so it stays out of the event log.
+    if let Some(Top::Hook(Hook::Context)) = cli.command {
+        if let Some(out) = context::hook(io::stdin()) {
+            println!("{out}");
+        }
+        return ExitCode::SUCCESS;
+    }
     let workers = || workers::Registry::default_dir().map(workers::Registry::at);
     let Some(command) = cli.command else {
         print!("{SKILL}");
@@ -430,6 +456,11 @@ fn main() -> ExitCode {
                 .and_then(|r| workers::wait(&r, &name, timeout))
                 .map(|_| 0)
         }
+        Top::Rm { name } => {
+            ev.worker = Some(name.clone());
+            workers().and_then(|r| workers::rm(&r, &name)).map(|_| 0)
+        }
+        Top::Hook(Hook::Context) => unreachable!("answered before the event log"),
         Top::Report { name } => {
             ev.worker = Some(name.clone());
             workers()
@@ -464,7 +495,11 @@ fn main() -> ExitCode {
             with_paths,
             open,
         } => feedback::main(&text, with_paths, open),
-        Top::Setup(Setup::Claude { check, remove }) => setup_claude(check, remove),
+        Top::Setup(Setup::Claude {
+            check,
+            remove,
+            claude_md,
+        }) => setup_claude(check, remove, claude_md),
         Top::Doctor => doctor::main(VERSION),
         Top::Bench(Bench::Entry {
             n,
@@ -516,11 +551,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn setup_claude(check: bool, remove: bool) -> io::Result<i32> {
+fn setup_claude(check: bool, remove: bool, claude_md: bool) -> io::Result<i32> {
     let paths = setup::Paths::at(&setup::Paths::default_dir()?);
     if check {
-        let pieces = setup::check(&paths, VERSION)?;
-        println!("{}", setup::render_check(&pieces));
+        let pieces = setup::check(&paths, VERSION, claude_md)?;
+        println!("{}", setup::render_check(&pieces, claude_md));
         return Ok(i32::from(
             pieces.iter().any(|(_, p)| *p != setup::Piece::Ok),
         ));
@@ -529,13 +564,13 @@ fn setup_claude(check: bool, remove: bool) -> io::Result<i32> {
     let lines = if remove {
         setup::remove(&paths, now)?
     } else {
-        setup::install(&paths, VERSION, now)?
+        setup::install(&paths, VERSION, claude_md, now)?
     };
     for l in lines {
         println!("{l}");
     }
     if !remove {
-        println!("`reeve setup claude --remove` takes both out again");
+        println!("`reeve setup claude --remove` takes it all out again");
     }
     Ok(0)
 }
@@ -576,14 +611,25 @@ mod tests {
     }
 
     #[test]
-    fn the_manual_for_agents_stays_under_800_tokens() {
-        assert!(SKILL.len() / 4 <= 800, "about {} tokens", SKILL.len() / 4);
+    fn the_manual_for_agents_stays_under_1200_tokens() {
+        assert!(SKILL.len() / 4 <= 1200, "about {} tokens", SKILL.len() / 4);
         for part in [
             "reeve run --name",
             "reeve ls",
             "reeve wait",
             "reeve report",
-            "reeve heavy",
+            "reeve rm NAME",
+            "--cwd DIR",
+            "-- --model sonnet \"",
+            "`reeve heavy -- <command>`",
+            "not a lock",
+            "`reeve handoff --name NAME --notes FILE`",
+            "REEVE_HANDOFF_TOKENS",
+            "~/.config/reeve/config.json",
+            "Context check",
+            "reeve ask",
+            "reeve asks",
+            "reeve answer",
         ] {
             assert!(SKILL.contains(part), "{part}");
         }
@@ -605,6 +651,16 @@ mod tests {
         assert!(Cli::try_parse_from(["reeve", "--skill", "ls"]).is_err());
         assert!(Cli::try_parse_from(["reeve"]).is_err());
         assert!(Cli::try_parse_from(["reeve", "setup", "claude", "--check", "--remove"]).is_err());
+    }
+
+    #[test]
+    fn rm_the_hook_and_the_claude_md_block_parse() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["reeve"].iter().chain(args)).is_ok();
+        assert!(parse(&["rm", "x"]));
+        assert!(parse(&["hook", "context"]));
+        assert!(parse(&["setup", "claude", "--claude-md"]));
+        assert!(parse(&["setup", "claude", "--check", "--claude-md"]));
+        assert!(!parse(&["setup", "claude", "--remove", "--claude-md"]));
     }
 
     #[test]

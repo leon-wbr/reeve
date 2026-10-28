@@ -26,12 +26,12 @@ reeve is a small, local tool that gives many tasks to coding agents and tracks e
 
 $ reeve setup claude
 backed up ~/.claude/settings.json to ~/.claude/settings.json.reeve-1793022575.bak
-wrote ~/.claude/settings.json: SessionStart hook `reeve ls --brief`
+wrote ~/.claude/settings.json: hooks `reeve ls --brief` (session start) and `reeve hook context` (prompts and tool calls)
 wrote ~/.claude/skills/reeve/SKILL.md
-`reeve setup claude --remove` takes both out again
+`reeve setup claude --remove` takes it all out again
 ```
 
-`reeve setup claude` touches only those two files. The hook prints one line about your workers at the start of each Claude Code session and nothing when there are none. The skill stub points agents at `reeve --skill`, the manual in [docs/skill.md](docs/skill.md). `reeve doctor` checks the install.
+`reeve setup claude` touches only those two files. One hook prints a line about your workers at the start of each Claude Code session, and nothing when there are none. The other tells a session once it has used more context than its handoff threshold: 350,000 tokens, or `REEVE_HANDOFF_TOKENS`, or else `handoff_tokens` in `~/.config/reeve/config.json`. The skill stub states the two rules, `reeve heavy` (in the background) and `reeve handoff`, and points agents at `reeve --skill`, the manual in [docs/skill.md](docs/skill.md). `--claude-md` also adds a short marked block with the same rules to `~/.claude/CLAUDE.md` (under `CLAUDE_CONFIG_DIR` when set), so every session knows reeve is there; setup never touches text outside its markers. `reeve doctor` checks the install.
 
 ## What it is for
 
@@ -76,13 +76,15 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 
 ## Commands
 
-- `reeve run`: start an agent, in the foreground or the background, on the host or in a sandbox; `--name` makes it a worker any session can find.
-- `reeve ls`, `reeve wait`, `reeve report`: list named workers, wait for one to finish, print its report.
+- `reeve run`: start an agent, in the foreground or the background, on the host or in a sandbox; `--name` makes it a worker any session can find, and `--cwd DIR` starts it in its project.
+- `reeve ls`, `reeve wait`, `reeve report`, `reeve rm`: list named workers, wait for one to finish, print its report, drop a gone one from the list.
+- `reeve handoff`: hand off to a successor started as a named worker.
+- `reeve ask`, `reeve asks`, `reeve answer`: queue a question for the user, list open ones, answer one.
 - `reeve sandbox`: build, list, use and remove sandboxes.
 - `reeve heavy`: queue builds and test suites so agents take turns ([docs/heavy.md](docs/heavy.md)).
 - `reeve stats`: sum up reeve's local event log ([docs/events.md](docs/events.md)).
 - `reeve feedback "text"`: save a note about reeve itself and offer to post it as an issue ([docs/events.md](docs/events.md)).
-- `reeve setup claude [--check] [--remove]`: add, check or remove the session-start hook and the skill stub.
+- `reeve setup claude [--claude-md] [--check] [--remove]`: add, check or remove the hooks, the skill stub and, with `--claude-md`, the CLAUDE.md block.
 - `reeve --skill`: print the manual for agents.
 - `reeve doctor`: check PATH, the setup's version, the state dir, the agent CLIs and gone workers.
 - `reeve bench entry`: run fresh sessions on four cases and report whether each chose well, which can mean not using reeve.

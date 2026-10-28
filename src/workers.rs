@@ -135,14 +135,29 @@ impl Registry {
     /// Adds `w`, replacing any worker of the same name. Concurrent runs take turns on a lock
     /// file, and the registry is replaced by a rename so readers never see half of it.
     pub fn put(&self, w: Worker) -> io::Result<()> {
+        self.update(|all| match all.iter_mut().find(|x| x.name == w.name) {
+            Some(x) => *x = w,
+            None => all.push(w),
+        })
+    }
+
+    /// Drops the worker of that name; returns whether there was one.
+    pub fn remove(&self, name: &str) -> io::Result<bool> {
+        let mut found = false;
+        self.update(|all| {
+            let before = all.len();
+            all.retain(|w| w.name != name);
+            found = all.len() != before;
+        })?;
+        Ok(found)
+    }
+
+    fn update(&self, f: impl FnOnce(&mut Vec<Worker>)) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
         let lock = File::create(self.dir.join("workers.lock"))?;
         lock.lock()?;
         let mut all = self.all()?;
-        match all.iter_mut().find(|x| x.name == w.name) {
-            Some(x) => *x = w,
-            None => all.push(w),
-        }
+        f(&mut all);
         let tmp = self
             .dir
             .join(format!("workers.json.{}", std::process::id()));
@@ -667,6 +682,21 @@ pub fn wait(r: &Registry, name: &str, timeout: Option<u64>) -> io::Result<()> {
     }
 }
 
+/// Drops a worker whose agent has gone from the registry; its report and prompt files stay.
+pub fn rm(r: &Registry, name: &str) -> io::Result<()> {
+    let w = r.get(name)?;
+    let a = agent(&w);
+    if a != Agent::Absent {
+        return Err(io::Error::other(format!(
+            "worker {name} is {}; reeve drops only workers whose agent has gone",
+            State::of(a, w.report.is_file())
+        )));
+    }
+    r.remove(name)?;
+    eprintln!("reeve: dropped worker {name}");
+    Ok(())
+}
+
 pub fn report(r: &Registry, name: &str) -> io::Result<String> {
     let w = r.get(name)?;
     match fs::read_to_string(&w.report) {
@@ -724,6 +754,10 @@ mod tests {
                 .contains("no worker c")
         );
         assert_eq!(r.report_path("a"), dir.join("reports/a.md"));
+        assert!(again.remove("a").unwrap());
+        assert!(!again.remove("a").unwrap());
+        let names: Vec<_> = r.all().unwrap().into_iter().map(|w| w.name).collect();
+        assert_eq!(names, ["b"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -104,7 +104,7 @@ pub fn setup_check(stub: Option<&str>, hook: Piece, version: &str) -> Check {
         (None, Piece::Missing) => problem(
             Status::Note,
             "Claude Code setup isn't installed (optional)",
-            "`reeve setup claude` adds a session-start hook and a skill stub",
+            "`reeve setup claude` adds session hooks and a skill stub",
         ),
         _ if stub_version == Some(version) && hook == Piece::Ok => {
             ok(format!("Claude Code setup matches reeve {version}"))
@@ -116,9 +116,9 @@ pub fn setup_check(stub: Option<&str>, hook: Piece, version: &str) -> Check {
                 (Some(_), Some(v)) => format!("skill stub for reeve {v}"),
             };
             let hook = match hook {
-                Piece::Ok => "hook ok",
-                Piece::Missing => "hook missing",
-                Piece::Stale => "hook changed",
+                Piece::Ok => "hooks ok",
+                Piece::Missing => "hooks missing",
+                Piece::Stale => "hooks changed",
             };
             problem(
                 Status::Fail,
@@ -224,8 +224,9 @@ pub fn main(version: &str) -> io::Result<i32> {
     checks.extend(shadow_check(&std::env::var_os("PATH").unwrap_or_default()));
 
     let paths = setup::Paths::at(&setup::Paths::default_dir()?);
-    match setup::check(&paths, version) {
-        Ok([(_, hook), _]) => {
+    match setup::check(&paths, version, false) {
+        Ok(pieces) => {
+            let hook = pieces[0].1;
             let stub = fs::read_to_string(&paths.skill).ok();
             checks.push(setup_check(stub.as_deref(), hook, version));
         }
@@ -328,7 +329,7 @@ mod tests {
             old.what
         );
         let no_hook = setup_check(Some(&stub), Piece::Missing, v);
-        assert!(no_hook.what.contains("hook missing"), "{}", no_hook.what);
+        assert!(no_hook.what.contains("hooks missing"), "{}", no_hook.what);
         assert_eq!(setup_check(None, Piece::Ok, v).status, Status::Fail);
     }
 

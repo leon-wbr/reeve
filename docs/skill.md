@@ -1,6 +1,11 @@
 # reeve, for agents
 
-reeve is a small local CLI that runs coding agents beside your session. Two parts aren't optional: heavy commands go through `reeve heavy` in the background, and at a handoff threshold you run `reeve handoff`. Use the rest where it helps.
+reeve is a small local CLI that runs coding agents beside your session. Two rules aren't optional:
+
+- Run test suites, e2e, builds and installs through `reeve heavy -- <command>`, started in the background.
+- When a "Context check" tells you that you passed the handoff threshold, run `reeve handoff --name NAME --notes FILE` and stop.
+
+Use the rest where it helps.
 
 ## Named workers: work that outlives this session
 
@@ -8,21 +13,26 @@ reeve is a small local CLI that runs coding agents beside your session. Two part
 
 ```sh
 reeve run --name fix-flaky --bg --cwd ~/app -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."
+reeve run --name review --bg -- --model sonnet "Review the diff on this branch."
 reeve ls                 # every worker: running, idle, done or gone
 reeve wait fix-flaky     # blocks until the report exists; fails if the worker goes idle or away
 reeve report fix-flaky   # prints the report
 ```
 
+The last argument after `--` is the prompt; claude flags such as `--model` go before it. Without `--cwd` it starts in your current directory. It works in that checkout as it is, beside you; for one of its own, pass claude's `-w NAME`.
+
 Inside Herdr a worker gets its own pane in a new tab labelled NAME instead (`--pane`, the default there). Your focus stays where it is.
+
+A **gone** worker stopped without a report. See what it left (`claude logs NAME` for a background session, or its transcript under `~/.claude/projects/`), then restart it under the same name with a prompt that says where to pick up, or report it lost. `reeve rm NAME` drops it from `reeve ls`.
 
 Workers help with work that may outlast this session, independent tasks that can run side by side without filling your context, and anything a successor should pick up. For short work whose answer you need now, a subagent is simpler.
 
 ## Handoffs
 
-When your session reaches its handoff threshold, hand off yourself; don't wait to be asked:
+Your handoff threshold is 350,000 tokens of context, unless `REEVE_HANDOFF_TOKENS` or else `handoff_tokens` in `~/.config/reeve/config.json` sets another. You don't see your own usage: the hook `reeve setup claude` installs adds a "Context check" line to your prompt, or to the tool result that crossed it. Then finish the step in hand, write your notes to a file and hand off yourself; don't wait to be asked:
 
 ```sh
-reeve handoff --name NAME-2 --notes "goal, what's done, what's next, open questions"
+reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
 It writes the handoff file with your workers and starts the successor as a named worker told to read it. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` before redoing anything.
@@ -37,7 +47,11 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs and who waits
 ```
 
-You decide what's heavy; when in doubt, queue it. Only quick commands such as `git status` or one unit test skip it.
+You decide what's heavy; when in doubt, queue it. Only quick commands such as `git status` or one unit test skip it. `reeve heavy` limits load on the machine; it is not a lock: two commands that share one e2e database or port can still run at once. `reeve heavy ls` is for looking, not for deciding whether to start.
+
+## Questions for the user
+
+`reeve ask "QUESTION"` queues a question and blocks until it is answered, then prints the answer; run it in the background and keep working. `reeve asks` lists open questions and `reeve answer ID "TEXT"` answers one.
 
 ## Sandbox
 

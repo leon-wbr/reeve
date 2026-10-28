@@ -270,11 +270,9 @@ pub struct Opts {
 
 /// The hook as `reeve setup claude` writes it, for `claude --settings` when it isn't installed.
 pub fn hook_settings() -> String {
-    serde_json::json!({ "hooks": { "SessionStart": [{
-        "matcher": setup::MATCHER,
-        "hooks": [{ "type": "command", "command": setup::hook_command() }]
-    }] } })
-    .to_string()
+    let mut s = serde_json::json!({});
+    setup::add_hook(&mut s).expect("an empty object takes the hooks");
+    s.to_string()
 }
 
 fn run_one(case: Case, dir: &Path, o: &Opts, settings: Option<&str>) -> io::Result<Row> {
@@ -344,7 +342,8 @@ fn run_one(case: Case, dir: &Path, o: &Opts, settings: Option<&str>) -> io::Resu
 
 pub fn main(o: &Opts, version: &str) -> io::Result<i32> {
     let paths = setup::Paths::at(&setup::Paths::default_dir()?);
-    let [(_, hook), (_, stub)] = setup::check(&paths, version)?;
+    let pieces = setup::check(&paths, version, false)?;
+    let (hook, stub) = (pieces[0].1, pieces[1].1);
     let settings = (hook != Piece::Ok).then(hook_settings);
     if settings.is_some() {
         eprintln!("reeve bench: the hook isn't installed; each session gets it through --settings");
