@@ -93,13 +93,14 @@ pub fn actor(var: impl Fn(&str) -> Option<String>) -> (&'static str, Option<&'st
 }
 
 /// Messages carry names and paths, so only a fixed kind is logged.
-const KINDS: [(&str, &str); 17] = [
+const KINDS: [(&str, &str); 18] = [
     ("no worker ", "no_worker"),
     ("must match [a-z]", "bad_name"),
     ("needs its prompt", "no_prompt"),
     ("still has an agent", "worker_busy"),
     ("is gone without", "worker_gone"),
     ("is idle without a report", "worker_idle"),
+    ("is waiting for the user", "worker_blocked"),
     ("has no report yet", "no_report"),
     ("timed out", "timeout"),
     ("need --sandbox", "usage"),
@@ -237,8 +238,12 @@ mod tests {
             "worker_gone"
         );
         assert_eq!(
-            kind("worker x is idle without a report; it may be asking a question"),
+            kind("worker x is idle without a report; send it a message, then wait again"),
             "worker_idle"
+        );
+        assert_eq!(
+            kind("worker x is waiting for the user, such as a permission prompt"),
+            "worker_blocked"
         );
         assert_eq!(kind("worker x timed out"), "timeout");
         assert_eq!(kind("worker x has no report yet (running)"), "no_report");
