@@ -1,0 +1,13 @@
+arm	role	case	run	fits	skill_first	skill	suite_heavy	suite_direct	workers	goal	auto	sandbox	rejected	bg	handoff	subagent	turns	cost_usd
+a1	orch	short	1	yes	no	no	0	0	0	0	0	0	0	0	no	no	3	0.020
+a1	orch	short	2	yes	no	no	0	0	0	0	0	0	0	0	no	no	3	0.020
+a1	orch	short	3	yes	no	no	0	0	0	0	0	0	0	0	no	no	3	0.020
+a1	worker	short	1	yes	no	no	0	0	0	0	0	0	0	0	no	no	4	0.025
+a1	worker	short	2	yes	no	no	0	0	0	0	0	0	0	0	no	no	4	0.025
+a1	worker	short	3	yes	no	no	0	0	0	0	0	0	0	0	no	no	4	0.025
+a6	orch	short	1	yes	no	no	0	0	0	0	0	0	0	0	no	no	3	0.026
+a6	orch	short	2	yes	no	no	0	0	0	0	0	0	0	0	no	no	3	0.026
+a6	orch	short	3	yes	no	no	0	0	0	0	0	0	0	0	no	no	3	0.026
+a6	worker	short	1	yes	no	no	0	0	0	0	0	0	0	0	no	no	4	0.033
+a6	worker	short	2	yes	no	no	0	0	0	0	0	0	0	0	no	no	4	0.033
+a6	worker	short	3	yes	no	no	0	0	0	0	0	0	0	0	no	no	4	0.033
