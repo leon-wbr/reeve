@@ -11,11 +11,13 @@ Use the rest where it helps.
 
 `reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session and writes its report to `~/.local/state/reeve/reports/NAME.md`, where any later session finds it. Pass the project root as `--cwd` so it loads its `.claude/` setup.
 
-Inside Herdr each worker gets its own tab, labelled NAME, where the user can see and answer it; your focus stays. Start workers there with `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session; `--bg` is for that case only.
+Inside Herdr each worker gets its own tab, labelled NAME, where the user can see and answer it. Start workers there with `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session; `--bg` is for that case only.
+
+`reeve run --force` skips reeve's safety checks, such as that one.
 
 ```sh
 reeve run --name fix-flaky --cwd ~/app -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."
-reeve run --name review --cwd ~/app -- --model sonnet "Review this branch."
+reeve run --name review --cwd ~/app -- --model sonnet "Review it."
 reeve ls                 # every worker: running, idle, done or gone
 reeve wait fix-flaky     # blocks until the report exists; fails on idle or gone
 reeve report fix-flaky   # prints the report
@@ -31,7 +33,7 @@ Workers suit work that may outlast this session, independent parallel tasks, and
 
 ## Handoffs
 
-Your handoff threshold is 350,000 tokens of context, unless `REEVE_HANDOFF_TOKENS` or else `handoff_tokens` in `~/.config/reeve/config.json` sets another. You don't see your own usage: the hook `reeve setup claude` installs adds a "Context check" line to your prompt, or to the tool result that crossed it. Then finish the step in hand, write your notes to a file and hand off yourself; don't wait to be asked:
+Your handoff threshold is 350,000 tokens of context, unless `REEVE_HANDOFF_TOKENS` or else `handoff_tokens` in `~/.config/reeve/config.json` sets another. You don't see your own usage: the hook `reeve setup claude` installs adds a "Context check" line to your prompt, or to the tool result that crossed it. Then finish the step in hand, write your notes and hand off; don't wait to be asked:
 
 ```sh
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
@@ -49,7 +51,7 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs and who waits
 ```
 
-You decide what's heavy; when in doubt, queue it. Only quick commands such as `git status` or one unit test skip it. `reeve heavy` limits load on the machine; it is not a lock: two commands that share one e2e database or port can still run at once. `reeve heavy ls` is for looking, not for deciding whether to start.
+You decide what's heavy; when in doubt, queue it. Only quick commands such as `git status` or one unit test skip it. `reeve heavy` limits load on the machine; it is not a lock: two commands that share one e2e database or port can still run at once. `reeve heavy ls` is for looking only.
 
 ## Questions for the user
 

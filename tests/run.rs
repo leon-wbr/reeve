@@ -183,7 +183,7 @@ fn inside_herdr_a_background_worker_is_refused_and_nothing_starts() {
         err.contains("own Herdr tab") && err.contains("drop --bg"),
         "{err}"
     );
-    assert!(err.contains("env -u HERDR_ENV"), "{err}");
+    assert!(err.contains("--force"), "{err}");
     assert_eq!(read(root.join("claude.log")), "");
     assert_eq!(read(root.join("herdr.log")), "");
     assert_eq!(read(root.join("state/reeve/workers.json")), "");
@@ -201,4 +201,19 @@ fn inside_herdr_a_worker_without_bg_gets_its_own_tab() {
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(read(root.join("herdr.log")).starts_with("tab create"));
+}
+
+#[test]
+fn inside_herdr_force_starts_a_background_worker_anyway() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve_with(
+        &root,
+        &project,
+        &["run", "--name", "w", "--bg", "--force", "--", "go"],
+        &[("HERDR_ENV", "1")],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(read(root.join("claude.log")).contains("--bg"));
+    assert_eq!(read(root.join("herdr.log")), "");
 }

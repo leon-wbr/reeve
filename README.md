@@ -31,7 +31,7 @@ wrote ~/.claude/skills/reeve/SKILL.md
 `reeve setup claude --remove` takes it all out again
 ```
 
-`reeve setup claude` touches only those two files. One hook prints a line about your workers at the start of each Claude Code session, and nothing when there are none. The other tells a session once it has used more context than its handoff threshold: 350,000 tokens, or `REEVE_HANDOFF_TOKENS`, or else `handoff_tokens` in `~/.config/reeve/config.json`. The skill stub states the two rules, `reeve heavy` (in the background) and `reeve handoff`, shows how to start a named worker, and points agents at `reeve --skill`, the manual in [docs/skill.md](docs/skill.md). `--claude-md` also adds a short marked block with the same rules to `~/.claude/CLAUDE.md` (under `CLAUDE_CONFIG_DIR` when set), so every session knows reeve is there; setup never touches text outside its markers. `reeve doctor` checks the install.
+`reeve setup claude` touches only those two files. One hook prints a line about your workers at the start of each Claude Code session, and nothing when there are none. The other tells a session once it has used more context than its handoff threshold: 350,000 tokens, or `REEVE_HANDOFF_TOKENS`, or else `handoff_tokens` in `~/.config/reeve/config.json`. The skill stub says when to use reeve (heavy commands, long or parallel work as named workers, handoffs when a context check says so) and points agents at `reeve --skill`, the manual in [docs/skill.md](docs/skill.md); it carries no command syntax, so it can't go stale while the binary always prints the current manual. `--claude-md` also adds a short marked block with the same text to `~/.claude/CLAUDE.md` (under `CLAUDE_CONFIG_DIR` when set), so every session knows reeve is there; setup never touches text outside its markers. `reeve doctor` checks the install.
 
 ## What it is for
 
@@ -76,7 +76,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 
 ## Commands
 
-- `reeve run`: start an agent, in the foreground or the background, on the host or in a sandbox; `--name` makes it a worker any session can find, and `--cwd DIR` starts it in its project. Inside Herdr a worker gets its own tab, where you can see and answer it, and `--bg` is refused; elsewhere it is a background session.
+- `reeve run`: start an agent, in the foreground or the background, on the host or in a sandbox; `--name` makes it a worker any session can find, and `--cwd DIR` starts it in its project. Inside Herdr a worker gets its own tab, where you can see and answer it, and `--bg` is refused unless you pass `--force`, which skips reeve's safety checks; elsewhere it is a background session.
 - `reeve ls`, `reeve wait`, `reeve report`, `reeve rm`: list named workers, wait for one to finish, print its report, drop a gone one from the list.
 - `reeve handoff`: hand off to a successor started as a named worker.
 - `reeve ask`, `reeve asks`, `reeve answer`: queue a question for the user, list open ones, answer one.
