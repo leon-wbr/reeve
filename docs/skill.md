@@ -1,6 +1,6 @@
 # reeve, for agents
 
-reeve is a small local CLI that runs coding agents beside your session. Two parts aren't optional: heavy commands go through `reeve heavy`, and at a handoff threshold you run `reeve handoff`. Use the rest where it helps.
+reeve is a small local CLI that runs coding agents beside your session. Two parts aren't optional: heavy commands go through `reeve heavy` in the background, and at a handoff threshold you run `reeve handoff`. Use the rest where it helps.
 
 ## Named workers: work that outlives this session
 
@@ -29,7 +29,7 @@ It writes the handoff file with your workers and starts the successor as a named
 
 ## Heavy commands on a shared machine
 
-Agents share this machine. Always run heavy commands through `reeve heavy`: test suites, e2e (even one spec: it starts a server or browser), local CI, workspace typecheck or lint, builds and installs. It waits for a free slot, runs the command and exits with its code. Waits can be long; run it in the background where you can:
+Agents share this machine. Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. Waits can be long, so never run it in the foreground: start it in the background (Claude Code: `run_in_background`; Codex: a background terminal) and keep working; you're told when it ends.
 
 ```sh
 reeve heavy -- cargo test
@@ -54,7 +54,6 @@ This saves a note with reeve's version and recent events and offers to file it a
 ## When not to bother
 
 - A task you'll finish in this session: do it directly or with a subagent.
-- A quick command (not a suite or build): just run it.
 - `reeve` isn't on PATH: carry on without it.
 
 `reeve doctor` checks the install, and `reeve --help` lists every command.

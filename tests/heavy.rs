@@ -158,6 +158,37 @@ fn waiters_say_how_many_are_ahead_and_ls_shows_them_in_order() {
     assert!(String::from_utf8_lossy(&second.stderr).contains("1 ahead"));
 }
 
+#[test]
+fn a_waiter_outside_a_terminal_says_once_to_run_it_in_the_background() {
+    let d = tempfile::tempdir().unwrap();
+    let holder = hold(d.path(), "holder");
+    let first = heavy(
+        d.path(),
+        &["--slots", "1", "--label", "first", "--", "sleep", "0.5"],
+    )
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+    wait_for("the first waiter to queue", || {
+        files(d.path(), "queue") == 1
+    });
+    let second = heavy(
+        d.path(),
+        &["--slots", "1", "--label", "second", "--", "true"],
+    )
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    wait_for("the second waiter to queue", || {
+        files(d.path(), "queue") == 2
+    });
+    stop(holder);
+    finish(first, 5);
+    let err = String::from_utf8_lossy(&finish(second, 5).stderr).into_owned();
+    assert!(err.contains("1 ahead") && err.contains("0 ahead"), "{err}");
+    assert_eq!(err.matches("in the background").count(), 1, "{err}");
+}
+
 /// A shell snippet that starts `sleep 30` in the background and records its pid in `bg.pid`.
 fn background_sleep(state: &Path) -> String {
     let f = state.join("bg.pid");
