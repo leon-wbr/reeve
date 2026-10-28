@@ -119,16 +119,16 @@ The clean minimum is 1 intervention, the rename decision.
 
 ## Block bench: does the CLAUDE.md block get sessions to use reeve?
 
-`reeve bench block` ([src/bench_block.rs](../src/bench_block.rs)) asks whether the block `reeve setup claude --claude-md` writes is enough on its own, for an orchestrator and for a worker under Herdr. It builds on `reeve bench entry`: fresh `claude -p` sessions, a shimmed `reeve` that logs its calls and starts nothing, and the same scratch workspace.
+`reeve bench block` ([src/bench_block.rs](../src/bench_block.rs)) asks whether the block `reeve setup claude --claude-md` wrote (dropped since, see align-heavy-n3) is enough on its own, for an orchestrator and for a worker under Herdr. It builds on `reeve bench entry`: fresh `claude -p` sessions, a shimmed `reeve` that logs its calls and starts nothing, and the same scratch workspace.
 
 ### Setup
 
-- **Arms:** the only instruction text a session gets, as the workspace's `.claude/CLAUDE.md`. A0 has no block. A1 is the slim block, with uses and no syntax ([setup.rs](../src/setup.rs) `block()`). A2 is the old block with command syntax (`OLD_BLOCK`, the text in CLAUDE.md files written at a3575f4). A3 is A1 plus the `reeve --skill` output pasted in. No arm gets the skill stub or the SessionStart hook: the question is the block alone, and the hook prints nothing when no workers run.
+- **Arms:** the only instruction text a session gets, as the workspace's `.claude/CLAUDE.md`. A0 has no block. A1 is the slim block, with uses and no syntax ([setup.rs](../src/setup.rs) `block()`). A2 is the old block with command syntax (`OLD_BLOCK`, the text in CLAUDE.md files written at a3575f4). A3 is A1 plus the `reeve --skill` output pasted in. A4 and A5 are A3 with a fixed manual instead of the current one: A4 has [manual-before-goal.md](manual-before-goal.md), the manual of #14, and A5 has [manual-goal-line.md](manual-goal-line.md), the manual of the blocked-workers PR before its "after `--`". In those arms the shim also answers `reeve --skill` with that manual. A6 has no block, only the skill stub `reeve setup claude` writes, so its description is the one always-loaded text. Apart from A6, no arm gets the skill stub, and none gets the SessionStart hook, which prints nothing when no workers run.
 - **Isolation:** `--setting-sources=project --strict-mcp-config --disable-slash-commands --no-session-persistence --no-chrome`, auto-memory off, and the caller's `HERDR_*`, `REEVE_*` and `CLAUDE_CODE_*` variables removed. Workspaces live under `$TMPDIR`. Claude Code reads `CLAUDE.md` and `.claude/CLAUDE.md` in every ancestor of the workspace, whatever `--setting-sources` says, so a workspace under the home dir reads `~/.claude/CLAUDE.md`. The bench refuses to start if any ancestor holds one. The entry bench isn't isolated: its sessions run under `~/.local/state` with the owner's CLAUDE.md, skills, plugins and MCP servers.
-- **Shims:** `reeve run`, `handoff` and `ask` only say they started. `heavy` runs its command at once with `REEVE_HEAVY_JOB=1`, so the suite logs whether it ran through heavy. `run --name … --bg` is refused under Herdr, as the real reeve refuses it. `herdr` is a shim that opens nothing. Only `--skill`, help and `hook` reach the real binary.
-- **Roles:** both run with `HERDR_ENV=1`. The orchestrator's brief says it coordinates several tasks for the user. The worker's brief says an orchestrator handed it one task, and it ends like `workers::with_report`, without that function's sentence on `reeve heavy`, so that only the arm speaks of reeve. Real workers also get that sentence, so worker heavy rates here are a lower bound.
-- **Cases:** *heavy* (run the suite), *parallel* (two independent multi-hour jobs), *handoff* (a Context check arrives with the prompt through a UserPromptSubmit hook, worded as `reeve hook context` words it) and *short* (a one-line typo fix).
-- **Scores:** whether the run fits its case with no false positive: the suite only through heavy, a named worker without `--bg`, `reeve handoff`, and on the short case no worker or handoff. It also scores whether `reeve --skill` came before the first act, refused `--bg` calls, false positives, turns and cost.
+- **Shims:** `reeve run`, `handoff` and `ask` only say they started. `heavy` runs its command at once with `REEVE_HEAVY_JOB=1`, so the suite logs whether it ran through heavy. `run --name … --bg` is refused under Herdr, as the real reeve refuses it. Before faking any call, the shim asks the real parser (`reeve bench parse`, hidden) and refuses, with reeve's own error, what reeve would refuse; such calls are logged as `rejected`. `herdr` is a shim that opens nothing. Only `--skill`, help and `hook` reach the real binary.
+- **Roles:** both run with `HERDR_ENV=1`. The orchestrator's brief says it coordinates several tasks for the user. The worker's brief says an orchestrator handed it one task, and it ends like `workers::with_report` once the blocked-workers PR lands: the report also when blocked, starting with `done`, `partial` or `failed`, and no sentence on `reeve heavy`, so that only the arm speaks of reeve.
+- **Cases:** *heavy* (run the suite), *parallel* (two independent multi-hour jobs), *handoff* (a Context check arrives with the prompt through a UserPromptSubmit hook, worded as `reeve hook context` words it), *short* (a one-line typo fix) and *away* (parallel, with the user away for the day).
+- **Scores:** whether the run fits its case with no false positive: the suite only through heavy, a named worker without `--bg`, `reeve handoff`, and on the short case no worker or handoff. It also scores whether `reeve --skill` came before the first act, refused `--bg` calls, rejected calls, false positives, turns and cost, and per started worker whether its prompt starts with `/goal`, whether it passes `--permission-mode auto` after `--`, and whether it runs in a sandbox.
 
 ### Smoke, Sonnet, one run per arm ([results/block-smoke.tsv](results/block-smoke.tsv))
 
@@ -144,3 +144,19 @@ The clean minimum is 1 intervention, the rename decision.
 - **Not run yet:** the full grid and the Opus pass were held back because the plan's weekly usage was at 92%.
 
 To run the full grid: `reeve bench block --n 3 --jobs 4`, then `reeve bench block --n 2 --model opus --arm <best> --arm <second>`.
+
+### Align runs, Sonnet, orchestrator unless noted
+
+| Run | Arms | Case | n | Outcome |
+|---|---|---|---|---|
+| [align-goal-smoke](results/align-goal-smoke.tsv) | A3, A4 | parallel | 1 | both fit, 2 workers each, none under `/goal` |
+| [align-away-smoke](results/align-away-smoke.tsv) | A3, A5 | away | 1 | both fit, 2/2 workers under `/goal` each, 0 in auto mode |
+| [align-away-n3](results/align-away-n3.tsv) | A3, A5 | away | 3 | 3/3 fit each; 6/6 workers under `/goal` in auto mode each; 1 of 3 runs each had 2 calls rejected, then fixed them |
+| [align-a6-parallel-smoke](results/align-a6-parallel-smoke.tsv) | A6 | parallel | 1 | fits, 2 workers |
+| [align-heavy-n3](results/align-heavy-n3.tsv) | A1, A6 | heavy, both roles | 3 | 6/6 fit each, suite only through heavy; A6 takes 2–3 more turns (6.0 vs 4.0 orch, 9.3 vs 6.3 worker) |
+| [align-short-n3](results/align-short-n3.tsv) | A1, A6 | short, both roles | 3 | 6/6 fit each, no false positive; A6 $0.026–0.033 vs A1 $0.020–0.025 |
+
+- **The checked shim changed a conclusion.** Before calls went through the real parser, the `/goal` line's workers looked as if they never start. With reeve's error shown, a run that puts `--permission-mode auto` before `--` reads it, retries once and fits. That's why the manual now says "after `--`".
+- **A3's rows in the away runs** ran on a prototype whose manual also taught a `reeve run --goal` flag, which was parked and isn't in reeve. A rerun of A3 measures a different manual. A5's rows are the manual-line answer.
+- [align-away-smoke-contaminated](results/align-away-smoke-contaminated.tsv) is kept for the record: there the shim answered `reeve --skill` with the current manual in every arm, so A3 and A5 saw the same text. The bench now answers with the arm's own manual.
+- **A1 against A6** changes no outcome on heavy or short, at a few more turns for A6. Not measured: A6 on parallel or handoff at n > 1, and any model besides Sonnet.

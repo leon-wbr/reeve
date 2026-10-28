@@ -3,8 +3,8 @@
 //! entry bench's shim, workspace and transcript reading. Each session is isolated from the
 //! owner's setup: only project settings load, so the owner's plugins, hooks and skills stay out,
 //! as do MCP servers and slash commands; the workspaces live outside the home dir, so no
-//! CLAUDE.md above them is read. The arm's text is the workspace's `.claude/CLAUDE.md`; there
-//! is no skill stub and no session-start hook in any arm.
+//! CLAUDE.md above them is read. The arm's text is the workspace's `.claude/CLAUDE.md`; only
+//! A6 has a skill stub, and no arm has a session-start hook.
 
 use crate::bench_entry::{self, Case as EntryCase};
 use crate::{context, setup};
@@ -27,9 +27,31 @@ pub enum Arm {
     A2,
     /// A1 with the manual pasted after it.
     A3,
+    /// A3 with the manual from before `/goal` and blocked workers (#14): A3's control.
+    A4,
+    /// A3 with the manual that tells agents to start the prompt with `/goal` themselves
+    /// (#14 plus the blocked-workers PR, before its "after `--`").
+    A5,
+    /// No block, only the skill stub setup writes: its description as the one always-loaded
+    /// place for the heavy rule.
+    A6,
 }
 
-pub const ARMS: [Arm; 4] = [Arm::A0, Arm::A1, Arm::A2, Arm::A3];
+pub const ARMS: [Arm; 7] = [
+    Arm::A0,
+    Arm::A1,
+    Arm::A2,
+    Arm::A3,
+    Arm::A4,
+    Arm::A5,
+    Arm::A6,
+];
+
+/// `docs/skill.md` with the `/goal` line, as A5 measured it.
+pub const GOAL_LINE_MANUAL: &str = include_str!("../bench/manual-goal-line.md");
+
+/// `docs/skill.md` before the `/goal` line, as A4 measured it.
+pub const OLD_MANUAL: &str = include_str!("../bench/manual-before-goal.md");
 
 /// `block()` as of a3575f4, the block in CLAUDE.md files written before the slim one.
 pub const OLD_BLOCK: &str = "<!-- reeve setup claude: start -->\n## reeve\n\nreeve is installed on this machine.\n\n\
@@ -49,23 +71,49 @@ impl Arm {
             Arm::A1 => "a1",
             Arm::A2 => "a2",
             Arm::A3 => "a3",
+            Arm::A4 => "a4",
+            Arm::A5 => "a5",
+            Arm::A6 => "a6",
         }
     }
 
     pub fn parse(s: &str) -> Result<Arm, String> {
         ARMS.into_iter()
             .find(|a| a.name() == s.to_lowercase())
-            .ok_or_else(|| format!("no arm {s}; arms are a0, a1, a2, a3"))
+            .ok_or_else(|| format!("no arm {s}; arms are a0, a1, a2, a3, a4, a5, a6"))
+    }
+
+    /// What `reeve --skill` prints in this arm, so a session that asks for the manual reads
+    /// the arm's version and not the binary's.
+    pub fn manual(self, current: &str) -> String {
+        match self {
+            Arm::A4 => OLD_MANUAL.into(),
+            Arm::A5 => GOAL_LINE_MANUAL.into(),
+            _ => current.into(),
+        }
+    }
+
+    /// The project skill the session gets, if any.
+    pub fn skill(self) -> Option<String> {
+        (self == Arm::A6).then(|| setup::stub(env!("CARGO_PKG_VERSION")))
     }
 
     /// The CLAUDE.md the session gets, if any.
     pub fn text(self, manual: &str) -> Option<String> {
         match self {
-            Arm::A0 => None,
+            Arm::A0 | Arm::A6 => None,
             Arm::A1 => Some(setup::block()),
             Arm::A2 => Some(OLD_BLOCK.into()),
             Arm::A3 => Some(format!(
                 "{}\n\nThe output of `reeve --skill`:\n\n{manual}",
+                setup::block()
+            )),
+            Arm::A4 => Some(format!(
+                "{}\n\nThe output of `reeve --skill`:\n\n{OLD_MANUAL}",
+                setup::block()
+            )),
+            Arm::A5 => Some(format!(
+                "{}\n\nThe output of `reeve --skill`:\n\n{GOAL_LINE_MANUAL}",
                 setup::block()
             )),
         }
@@ -97,8 +145,8 @@ impl Role {
     }
 
     /// The user turn: the case's ask, framed for the role. A worker's brief ends the way
-    /// `workers::with_report` ends it, without its sentence on `reeve heavy`, so that only the
-    /// arm's text speaks of reeve.
+    /// `workers::with_report` ends it once blocked workers land, without a sentence on
+    /// `reeve heavy`, so that only the arm's text speaks of reeve.
     pub fn prompt(self, case: Case, report: &Path) -> String {
         match self {
             Role::Orchestrator => format!(
@@ -108,8 +156,10 @@ impl Role {
             ),
             Role::Worker => format!(
                 "You are the named worker {WORKER_NAME}. An orchestrating session handed you this \
-                 one task: {} When you are finished, write your final report as Markdown to {}. \
-                 Write that file last and only once: its existence tells reeve that you are done.",
+                 one task: {} When the task is done, or you can't take it further without the \
+                 user, write your report as Markdown to {}. reeve treats that file as the end of \
+                 your work, so write it once, as your last step. Start it with one line, `done`, \
+                 `partial` or `failed`, then say what you did, how you checked it, and what is left.",
                 case.ask(),
                 report.display()
             ),
@@ -127,9 +177,17 @@ pub enum Case {
     Handoff,
     /// A one-line fix: no workers, and `reeve heavy` only if it runs the suite.
     Short,
+    /// Parallel, with the user away for the day: unattended workers fit.
+    Away,
 }
 
-pub const CASES: [Case; 4] = [Case::Heavy, Case::Parallel, Case::Handoff, Case::Short];
+pub const CASES: [Case; 5] = [
+    Case::Heavy,
+    Case::Parallel,
+    Case::Handoff,
+    Case::Short,
+    Case::Away,
+];
 
 impl Case {
     pub fn name(self) -> &'static str {
@@ -138,6 +196,7 @@ impl Case {
             Case::Parallel => "parallel",
             Case::Handoff => "handoff",
             Case::Short => "short",
+            Case::Away => "away",
         }
     }
 
@@ -145,7 +204,7 @@ impl Case {
         CASES
             .into_iter()
             .find(|c| c.name() == s)
-            .ok_or_else(|| format!("no case {s}; cases are heavy, parallel, handoff, short"))
+            .ok_or_else(|| format!("no case {s}; cases are heavy, parallel, handoff, short, away"))
     }
 
     pub fn ask(self) -> &'static str {
@@ -166,6 +225,14 @@ impl Case {
                 "Fix the typo \"recieve\" in README.md, then tell me in one sentence what you \
                  changed."
             }
+            Case::Away => {
+                "I'm away for the rest of the day and can't answer anything until tomorrow. \
+                 Two independent jobs, each several hours of work: (1) harden src/api.js \
+                 against bad input, with property tests, running the suite many times to catch \
+                 flakes; (2) make src/clock.js injectable and test every caller with a fake \
+                 clock, again running the suite many times. Get both going so they finish \
+                 without me, then tell me in two sentences what you set up."
+            }
         }
     }
 }
@@ -183,6 +250,14 @@ pub struct Score {
     /// `reeve run --name … --bg` calls without --force, which reeve refuses under Herdr.
     pub bg: usize,
     pub handoff: bool,
+    /// Started workers whose prompt starts with `/goal`.
+    pub goal: usize,
+    /// Started workers given `--permission-mode auto`.
+    pub auto: usize,
+    /// `reeve run --sandbox` calls.
+    pub sandbox: usize,
+    /// Calls the real `reeve` would have refused to parse, so nothing started.
+    pub rejected: usize,
     pub subagent: bool,
     pub turns: Option<u64>,
     pub cost: Option<f64>,
@@ -231,9 +306,15 @@ pub fn score(events: &[Value], calls: &str, suite: &str) -> Score {
                     s.bg += 1;
                 } else {
                     s.workers += 1;
+                    let after = &args[before_prompt.len().min(args.len())..];
+                    s.goal += usize::from(after.iter().any(|a| a.starts_with("/goal")));
+                    s.auto +=
+                        usize::from(after.windows(2).any(|w| w == ["--permission-mode", "auto"]));
                 }
+                s.sandbox += usize::from(before_prompt.contains(&"--sandbox"));
             }
             Some(&"handoff") => s.handoff = true,
+            Some(&"rejected") => s.rejected += 1,
             _ => {}
         }
     }
@@ -252,7 +333,7 @@ pub fn fits(case: Case, s: &Score) -> bool {
     clean
         && match case {
             Case::Heavy => s.suite_heavy > 0,
-            Case::Parallel => s.workers > 0,
+            Case::Parallel | Case::Away => s.workers > 0,
             Case::Handoff => s.handoff,
             Case::Short => s.workers == 0 && !s.handoff,
         }
@@ -279,13 +360,13 @@ fn yes(b: bool) -> &'static str {
 /// One line per run, tab-separated.
 pub fn tsv(rows: &[Row]) -> String {
     let mut out = vec![
-        "arm\trole\tcase\trun\tfits\tskill_first\tskill\tsuite_heavy\tsuite_direct\tworkers\tbg\thandoff\tsubagent\tturns\tcost_usd"
+        "arm\trole\tcase\trun\tfits\tskill_first\tskill\tsuite_heavy\tsuite_direct\tworkers\tgoal\tauto\tsandbox\trejected\tbg\thandoff\tsubagent\tturns\tcost_usd"
             .to_string(),
     ];
     for r in rows {
         let s = &r.score;
         out.push(format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             r.arm.name(),
             r.role.name(),
             r.case.name(),
@@ -296,6 +377,10 @@ pub fn tsv(rows: &[Row]) -> String {
             s.suite_heavy,
             s.suite_direct,
             s.workers,
+            s.goal,
+            s.auto,
+            s.sandbox,
+            s.rejected,
             s.bg,
             yes(s.handoff),
             yes(s.subagent),
@@ -308,8 +393,8 @@ pub fn tsv(rows: &[Row]) -> String {
 
 /// One line per arm and role: fits per case as k/n, then the shared columns.
 pub fn render(rows: &[Row]) -> String {
-    let mut out = vec!["| Arm | Role | heavy | parallel | handoff | short | skill first | --bg refused | false pos. | turns | cost $ |".to_string()];
-    out.push("|---|---|---|---|---|---|---|---|---|---|---|".into());
+    let mut out = vec!["| Arm | Role | heavy | parallel | handoff | short | away | skill first | --bg refused | false pos. | turns | cost $ |".to_string()];
+    out.push("|---|---|---|---|---|---|---|---|---|---|---|---|".into());
     let mut total = 0.0;
     for arm in ARMS {
         for role in ROLES {
@@ -411,6 +496,15 @@ pub const ISOLATION: [&str; 5] = [
     "--no-chrome",
 ];
 
+/// ISOLATION, less `--disable-slash-commands` where the arm needs its skill: the flag turns
+/// skills off too.
+pub fn isolation(arm: Arm) -> Vec<&'static str> {
+    ISOLATION
+        .into_iter()
+        .filter(|f| arm.skill().is_none() || *f != "--disable-slash-commands")
+        .collect()
+}
+
 /// Variables of the caller's own session, Herdr pane or reeve that must not reach a bench
 /// session.
 fn inherited(key: &str) -> bool {
@@ -450,6 +544,10 @@ pub struct Opts {
 fn run_one(arm: Arm, role: Role, case: Case, dir: &Path, o: &Opts) -> io::Result<Score> {
     let ws = dir.join("ws");
     workspace(&ws, arm.text(&o.manual).as_deref())?;
+    if let Some(skill) = arm.skill() {
+        fs::create_dir_all(ws.join(".claude/skills/reeve"))?;
+        fs::write(ws.join(".claude/skills/reeve/SKILL.md"), skill)?;
+    }
     let bin = dir.join("bin");
     fs::create_dir_all(&bin)?;
     let entry_case = if case == Case::Short {
@@ -457,10 +555,18 @@ fn run_one(arm: Arm, role: Role, case: Case, dir: &Path, o: &Opts) -> io::Result
     } else {
         EntryCase::Long
     };
+    fs::write(dir.join("manual.md"), arm.manual(&o.manual))?;
     for (name, text) in [
         (
             "reeve",
-            bench_entry::shim(entry_case, dir, &std::env::current_exe()?),
+            checked(
+                &skill_from_file(
+                    &bench_entry::shim(entry_case, dir, &std::env::current_exe()?),
+                    &dir.join("manual.md"),
+                ),
+                &std::env::current_exe()?,
+                &dir.join("calls.log"),
+            ),
         ),
         ("herdr", bench_entry::herdr_shim(dir)),
     ] {
@@ -480,7 +586,7 @@ fn run_one(arm: Arm, role: Role, case: Case, dir: &Path, o: &Opts) -> io::Result
     let mut c = Command::new("claude");
     c.args(["-p", &role.prompt(case, &report)])
         .args(["--output-format", "stream-json", "--verbose"])
-        .args(ISOLATION)
+        .args(isolation(arm))
         .args(["--model", &o.model])
         .args(["--max-turns", &o.max_turns.to_string()])
         .args(["--permission-mode", "acceptEdits"])
@@ -535,6 +641,27 @@ fn run_one(arm: Arm, role: Role, case: Case, dir: &Path, o: &Opts) -> io::Result
         &read(dir.join("calls.log")),
         &read(ws.join(".git/suite-runs")),
     ))
+}
+
+/// The shim refusing, with the real binary's own error, any call that binary wouldn't parse,
+/// and logging it as `rejected …` instead of faking it.
+pub fn checked(shim: &str, real: &Path, log: &Path) -> String {
+    let q = |p: &Path| bench_entry::sh_quote(&p.display().to_string());
+    let line = format!(
+        "{} bench parse -- \"$@\" || {{ printf 'rejected %s\\n' \"$*\" >> {}; exit 2; }}\n",
+        q(real),
+        q(log)
+    );
+    shim.replacen("#!/bin/sh\n", &format!("#!/bin/sh\n{line}"), 1)
+}
+
+/// The shim with `reeve --skill` answered from `manual` instead of the real binary.
+pub fn skill_from_file(shim: &str, manual: &Path) -> String {
+    let line = format!(
+        "[ \"$1\" = --skill ] && exec cat {}\n",
+        bench_entry::sh_quote(&manual.display().to_string())
+    );
+    shim.replacen("case \"$1\" in\n", &(line + "case \"$1\" in\n"), 1)
 }
 
 /// Instruction files Claude Code would load from above a workspace in `dir`: it reads
@@ -670,6 +797,51 @@ mod tests {
     }
 
     #[test]
+    fn goal_auto_and_sandbox_count_per_started_worker() {
+        let calls = "run --name a --cwd /w -- --permission-mode auto /goal tests pass 20 times\n\
+                     run --name b -- fix /goal later\n\
+                     run --name c --sandbox -- go\n\
+                     run --name d --bg -- /goal refused\n";
+        let s = score(&[], calls, "");
+        assert_eq!(
+            (s.workers, s.goal, s.auto, s.sandbox, s.bg),
+            (3, 2, 1, 1, 1)
+        );
+        let chosen = score(&[], "run --name a -- --permission-mode plan /goal x\n", "");
+        assert_eq!((chosen.workers, chosen.goal, chosen.auto), (1, 1, 0));
+        let misplaced = score(&[], "run --name a --permission-mode auto -- /goal x\n", "");
+        assert_eq!(misplaced.auto, 0);
+        assert!(fits(Case::Away, &chosen));
+        assert_eq!(Arm::A3.manual("NOW"), "NOW");
+        assert_eq!(Arm::A4.manual("NOW"), OLD_MANUAL);
+        let shim = skill_from_file(
+            "#!/bin/sh\nlog\ncase \"$1\" in\n  x) ;;\nesac\n",
+            Path::new("/d/m.md"),
+        );
+        assert!(shim.contains("[ \"$1\" = --skill ] && exec cat '/d/m.md'\ncase \"$1\" in"));
+        let checked = checked(
+            "#!/bin/sh\nlog\n",
+            Path::new("/b/reeve"),
+            Path::new("/d/c.log"),
+        );
+        assert!(checked.starts_with(
+            "#!/bin/sh\n'/b/reeve' bench parse -- \"$@\" || { printf 'rejected %s\\n' \"$*\" >> '/d/c.log'; exit 2; }\nlog\n"
+        ));
+        let rejected = score(
+            &[],
+            "rejected run --name a --permission-mode auto -- /goal x\nrun --name a -- /goal x\n",
+            "",
+        );
+        assert_eq!((rejected.workers, rejected.rejected), (1, 1));
+        assert!(!fits(
+            Case::Away,
+            &score(&[], "rejected run --name a -- go\n", "")
+        ));
+        let a5 = Arm::A5.text("M").unwrap();
+        assert!(a5.contains("start the prompt with `/goal`") && !a5.contains("--goal"));
+    }
+
+    #[test]
     fn the_suite_fits_only_through_heavy() {
         let heavy = score(&[], "heavy -- npm test\n", "heavy\n");
         assert!(fits(Case::Heavy, &heavy));
@@ -698,7 +870,14 @@ mod tests {
         assert!(a2.starts_with(setup::BLOCK_START) && a2.ends_with(setup::BLOCK_END));
         let a3 = Arm::A3.text("MANUAL").unwrap();
         assert!(a3.starts_with(&a1) && a3.ends_with("MANUAL"));
+        let a4 = Arm::A4.text("MANUAL").unwrap();
+        assert!(a4.starts_with(&a1) && a4.ends_with(OLD_MANUAL) && !a4.contains("/goal"));
         assert_eq!(Arm::parse("A2"), Ok(Arm::A2));
+        assert_eq!(Arm::A6.text("M"), None);
+        assert!(Arm::A6.skill().unwrap().contains(setup::DESCRIPTION));
+        assert_eq!(Arm::A1.skill(), None);
+        assert!(!isolation(Arm::A6).contains(&"--disable-slash-commands"));
+        assert_eq!(isolation(Arm::A3), ISOLATION);
     }
 
     #[test]
@@ -775,7 +954,7 @@ mod tests {
         ];
         let out = render(&rows);
         assert!(
-            out.contains("| A1 | worker | 1/1 | - | - | 0/1 | 0/2 | 0 | 1/2 | 3.0 | 0.20 |"),
+            out.contains("| A1 | worker | 1/1 | - | - | 0/1 | - | 0/2 | 0 | 1/2 | 3.0 | 0.20 |"),
             "{out}"
         );
         assert!(out.contains("Total cost: $0.40"), "{out}");
