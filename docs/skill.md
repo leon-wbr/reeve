@@ -4,16 +4,16 @@ reeve is a small local CLI that runs coding agents beside your session. Two part
 
 ## Named workers: work that outlives this session
 
-`reeve run --name NAME --bg -- "PROMPT"` starts a Claude Code background session under a name. It keeps going when your session ends, compacts or hands off, and writes its report to `~/.local/state/reeve/reports/NAME.md`, where any later session finds it.
+`reeve run --name NAME --bg --cwd DIR -- "PROMPT"` starts a Claude Code background session under a name. It keeps going when your session ends, compacts or hands off, and writes its report to `~/.local/state/reeve/reports/NAME.md`, where any later session finds it. Pass the project root as `--cwd` so it loads its `.claude/` setup.
 
 ```sh
-reeve run --name fix-flaky --bg -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."
+reeve run --name fix-flaky --bg --cwd ~/app -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."
 reeve ls                 # every worker: running, idle, done or gone
 reeve wait fix-flaky     # blocks until the report exists; fails if the worker goes idle or away
 reeve report fix-flaky   # prints the report
 ```
 
-Inside Herdr a worker gets its own pane in a new tab labelled NAME instead (`--pane`, the default there). Your focus stays where it is; there is nothing to move.
+Inside Herdr a worker gets its own pane in a new tab labelled NAME instead (`--pane`, the default there). Your focus stays where it is.
 
 Workers help with work that may outlast this session, independent tasks that can run side by side without filling your context, and anything a successor should pick up. For short work whose answer you need now, a subagent is simpler.
 

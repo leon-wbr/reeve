@@ -60,6 +60,10 @@ enum Top {
         /// removed when the agent exits; with NAME it is started if needed and kept running
         #[arg(long, value_name = "NAME", num_args = 0..=1)]
         sandbox: Option<Option<String>>,
+        /// Start the agent in DIR, usually the project's root, so it loads that project's
+        /// CLAUDE.md, .claude/ settings, skills and hooks from the start [default: here]
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<PathBuf>,
         #[command(flatten)]
         opts: sandbox::Opts,
         /// Arguments passed to claude
@@ -351,7 +355,14 @@ fn main() -> ExitCode {
         events::log(&ev);
         return ExitCode::SUCCESS;
     };
+    // Every backend (pane, background session, foreground, sandbox) starts from here.
+    let cd = match &command {
+        Top::Run { cwd: Some(dir), .. } => std::env::set_current_dir(dir)
+            .map_err(|e| io::Error::other(format!("--cwd {}: {e}", dir.display()))),
+        _ => Ok(()),
+    };
     let result: io::Result<i32> = match command {
+        _ if cd.is_err() => cd.map(|_| 0),
         Top::Run { name: Some(_), .. } if explicit => {
             Err(io::Error::other("sandbox options need --sandbox"))
         }
@@ -364,6 +375,12 @@ fn main() -> ExitCode {
         } => {
             ev.worker = Some(name.clone());
             let backend = workers::Backend::choose(pane, bg, in_herdr());
+            if let Some(w) = std::env::current_dir()
+                .ok()
+                .and_then(|d| run::cwd_warning(&d))
+            {
+                eprintln!("reeve: {w}");
+            }
             let started = workers().and_then(|r| workers::run(&r, &name, backend, &args));
             if started.is_ok() {
                 ev.handoff_ms = Some(events::now_ms().saturating_sub(ev.ts));

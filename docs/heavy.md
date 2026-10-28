@@ -7,7 +7,7 @@ reeve heavy [--label L] [--slots N] -- <command...>
 reeve heavy ls
 ```
 
-The command runs as soon as a slot is free and reeve heavy exits with its code. While it waits it prints one line to stderr when its place changes (`waiting for a slot: 2 ahead`) and is quiet otherwise. `reeve heavy ls` shows who runs and who waits, in order, with label, pid, age and working dir.
+The command runs as soon as a slot is free, as a child of reeve heavy with the caller's environment, PATH and working dir unchanged (plus `REEVE_HEAVY=1`), so version managers such as proto resolve the same tools as without it. reeve heavy exits with its code. While it waits it prints one line to stderr when its place changes (`waiting for a slot: 2 ahead`) and is quiet otherwise. `reeve heavy ls` shows who runs and who waits, in order, with label, pid, age and working dir.
 
 Agents start it in the background (Claude Code's `run_in_background`, a Codex background terminal) and keep working; their CLI tells them when it ends, with output and exit code. The skill, worker prompts and session-start line all say so. Outside a terminal, the first waiting line also says it, so an agent that waited in the foreground learns it for its next call. reeve has no detached mode of its own: it would duplicate what the agent CLIs already do, and lose their notification when the command ends.
 
