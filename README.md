@@ -88,6 +88,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - `reeve --skill`: print the manual for agents.
 - `reeve doctor`: check PATH, the setup's version, the state dir, the agent CLIs and gone workers.
 - `reeve bench entry`: run fresh sessions on four cases and report whether each chose well, which can mean not using reeve.
+- `reeve bench block`: run isolated sessions with only a CLAUDE.md block, as an orchestrator and as a worker, and score whether each used reeve where it fits ([bench/FINDINGS.md](bench/FINDINGS.md)).
 
 ## Words used here
 

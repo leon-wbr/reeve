@@ -116,3 +116,31 @@ The clean minimum is 1 intervention, the rename decision.
   - decisions that sit unseen inside long busy turns.
 - **Next step:** C3 (a decision queue) addresses the second gap, and C1's allow rules the first. Neither is proven at n≤3.
 - **The bench floors at 1 intervention**, so wins have to show up in time and cost unless the scenario adds more decisions.
+
+## Block bench: does the CLAUDE.md block get sessions to use reeve?
+
+`reeve bench block` ([src/bench_block.rs](../src/bench_block.rs)) asks whether the block `reeve setup claude --claude-md` writes is enough on its own, for an orchestrator and for a worker under Herdr. It builds on `reeve bench entry`: fresh `claude -p` sessions, a shimmed `reeve` that logs its calls and starts nothing, and the same scratch workspace.
+
+### Setup
+
+- **Arms:** the only instruction text a session gets, as the workspace's `.claude/CLAUDE.md`. A0 has no block. A1 is the slim block, with uses and no syntax ([setup.rs](../src/setup.rs) `block()`). A2 is the old block with command syntax (`OLD_BLOCK`, the text in CLAUDE.md files written at a3575f4). A3 is A1 plus the `reeve --skill` output pasted in. No arm gets the skill stub or the SessionStart hook: the question is the block alone, and the hook prints nothing when no workers run.
+- **Isolation:** `--setting-sources=project --strict-mcp-config --disable-slash-commands --no-session-persistence --no-chrome`, auto-memory off, and the caller's `HERDR_*`, `REEVE_*` and `CLAUDE_CODE_*` variables removed. Workspaces live under `$TMPDIR`. Claude Code reads `CLAUDE.md` and `.claude/CLAUDE.md` in every ancestor of the workspace, whatever `--setting-sources` says, so a workspace under the home dir reads `~/.claude/CLAUDE.md`. The bench refuses to start if any ancestor holds one. The entry bench isn't isolated: its sessions run under `~/.local/state` with the owner's CLAUDE.md, skills, plugins and MCP servers.
+- **Shims:** `reeve run`, `handoff` and `ask` only say they started. `heavy` runs its command at once with `REEVE_HEAVY_JOB=1`, so the suite logs whether it ran through heavy. `run --name … --bg` is refused under Herdr, as the real reeve refuses it. `herdr` is a shim that opens nothing. Only `--skill`, help and `hook` reach the real binary.
+- **Roles:** both run with `HERDR_ENV=1`. The orchestrator's brief says it coordinates several tasks for the user. The worker's brief says an orchestrator handed it one task, and it ends like `workers::with_report`, without that function's sentence on `reeve heavy`, so that only the arm speaks of reeve. Real workers also get that sentence, so worker heavy rates here are a lower bound.
+- **Cases:** *heavy* (run the suite), *parallel* (two independent multi-hour jobs), *handoff* (a Context check arrives with the prompt through a UserPromptSubmit hook, worded as `reeve hook context` words it) and *short* (a one-line typo fix).
+- **Scores:** whether the run fits its case with no false positive: the suite only through heavy, a named worker without `--bg`, `reeve handoff`, and on the short case no worker or handoff. It also scores whether `reeve --skill` came before the first act, refused `--bg` calls, false positives, turns and cost.
+
+### Smoke, Sonnet, one run per arm ([results/block-smoke.tsv](results/block-smoke.tsv))
+
+| Arm | Role, case | Fits | Skill first | Turns | Cost $ |
+|---|---|---|---|---|---|
+| A0 | orch, heavy | no: ran `npm test` directly | no | 3 | 0.017 |
+| A1 | worker, parallel | yes: two named workers, no `--bg` | yes | 6 | 0.042 |
+| A2 | orch, handoff | yes | yes | 3 | 0.034 |
+| A3 | worker, short | yes: direct fix, no reeve | no | 4 | 0.033 |
+
+- The harness works end to end, but each arm saw a different case, so this says nothing about the arms yet.
+- **Cost:** a mean of $0.032 per Sonnet run. The full run is 4 arms × 2 roles × 4 cases × n=3 = 96 runs, about $3–5. The Opus pass (two arms, n=2) is 32 runs, about $2–5. That is well under the $25 bar, so n=3 stands.
+- **Not run yet:** the full grid and the Opus pass were held back because the plan's weekly usage was at 92%.
+
+To run the full grid: `reeve bench block --n 3 --jobs 4`, then `reeve bench block --n 2 --model opus --arm <best> --arm <second>`.

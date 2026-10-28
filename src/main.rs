@@ -1,5 +1,6 @@
 mod ask;
 mod bench;
+mod bench_block;
 mod bench_entry;
 mod context;
 mod doctor;
@@ -218,6 +219,30 @@ enum Bench {
         /// Seconds before a session is stopped
         #[arg(long, default_value_t = 240)]
         timeout: u64,
+    },
+    /// Fresh `claude -p` sessions isolated from your setup, with only a CLAUDE.md block (arms
+    /// a0-a3) as an orchestrator and as a worker under Herdr, on four cases (heavy, parallel,
+    /// handoff, short), scored on whether they use reeve where it fits
+    Block {
+        /// Runs per arm, role and case
+        #[arg(long, default_value_t = 1)]
+        n: usize,
+        #[arg(long = "arm", value_name = "ARM", value_parser = bench_block::Arm::parse)]
+        arms: Vec<bench_block::Arm>,
+        #[arg(long = "role", value_name = "ROLE", value_parser = bench_block::Role::parse)]
+        roles: Vec<bench_block::Role>,
+        #[arg(long = "case", value_name = "CASE", value_parser = bench_block::Case::parse)]
+        cases: Vec<bench_block::Case>,
+        #[arg(long, default_value = "sonnet")]
+        model: String,
+        #[arg(long, default_value_t = 15)]
+        max_turns: u32,
+        /// Seconds before a session is stopped
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        /// Sessions at once
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
     },
     /// One run of an arm (bench/arms/<ARM>), named rv-<ARM>-<N>
     Run { arm: String, n: String },
@@ -537,6 +562,29 @@ fn main() -> ExitCode {
                 timeout,
             };
             bench_entry::main(&opts, VERSION)
+        }
+        Top::Bench(Bench::Block {
+            n,
+            arms,
+            roles,
+            cases,
+            model,
+            max_turns,
+            timeout,
+            jobs,
+        }) => {
+            let opts = bench_block::Opts {
+                n,
+                arms: bench_block::or_all(arms, &bench_block::ARMS),
+                roles: bench_block::or_all(roles, &bench_block::ROLES),
+                cases: bench_block::or_all(cases, &bench_block::CASES),
+                model,
+                max_turns,
+                timeout,
+                jobs,
+                manual: SKILL.into(),
+            };
+            bench_block::main(&opts)
         }
         Top::Bench(Bench::Run { arm, n }) => bench::run::run(&arm, &n),
         Top::Bench(Bench::Handoff { arm, n, real }) => bench::handoff::run(&arm, &n, real),
