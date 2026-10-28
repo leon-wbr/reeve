@@ -34,6 +34,10 @@ fn fakes(dir: &Path) -> String {
 }
 
 fn reeve(dir: &Path, from: &Path, args: &[&str]) -> Output {
+    reeve_with(dir, from, args, &[])
+}
+
+fn reeve_with(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reeve"))
         .args(args)
         .current_dir(from)
@@ -42,6 +46,7 @@ fn reeve(dir: &Path, from: &Path, args: &[&str]) -> Output {
         .env("REEVE_EVENTS", dir.join("events.jsonl"))
         .env_remove("HERDR_ENV")
         .env_remove("HERDR_WORKSPACE_ID")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
         .unwrap()
@@ -159,4 +164,56 @@ fn a_cwd_that_does_not_exist_starts_nothing() {
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("nowhere"));
     assert_eq!(read(root.join("claude.log")), "");
+}
+
+#[test]
+fn inside_herdr_a_background_worker_is_refused_and_nothing_starts() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve_with(
+        &root,
+        &project,
+        &["run", "--name", "w", "--bg", "--", "go"],
+        &[("HERDR_ENV", "1")],
+    );
+    assert_eq!(o.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(
+        err.contains("own Herdr tab") && err.contains("drop --bg"),
+        "{err}"
+    );
+    assert!(err.contains("--force"), "{err}");
+    assert_eq!(read(root.join("claude.log")), "");
+    assert_eq!(read(root.join("herdr.log")), "");
+    assert_eq!(read(root.join("state/reeve/workers.json")), "");
+}
+
+#[test]
+fn inside_herdr_a_worker_without_bg_gets_its_own_tab() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve_with(
+        &root,
+        &project,
+        &["run", "--name", "w", "--", "go"],
+        &[("HERDR_ENV", "1")],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(read(root.join("herdr.log")).starts_with("tab create"));
+}
+
+#[test]
+fn inside_herdr_force_starts_a_background_worker_anyway() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve_with(
+        &root,
+        &project,
+        &["run", "--name", "w", "--bg", "--force", "--", "go"],
+        &[("HERDR_ENV", "1")],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(read(root.join("claude.log")).contains("--bg"));
+    assert_eq!(read(root.join("herdr.log")), "");
 }

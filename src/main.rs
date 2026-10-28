@@ -45,9 +45,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 enum Top {
     /// Start an agent: in the foreground or in the background, on the host or in a sandbox
     Run {
-        /// Start it as a Claude Code background session (`claude --bg`; see `claude agents`)
+        /// Start it as a Claude Code background session (`claude --bg`; see `claude agents`).
+        /// Refused for a named worker inside Herdr, where it gets its own tab (see --force)
         #[arg(long)]
         bg: bool,
+        /// Skip reeve's safety checks, such as refusing --bg for a named worker inside Herdr
+        #[arg(long)]
+        force: bool,
         /// Start a named worker that any session finds with `reeve ls`. It runs in a Herdr pane
         /// in its own tab labelled NAME (not focused) inside Herdr and as a background session
         /// otherwise, and is told to write its report
@@ -190,7 +194,7 @@ enum Setup {
         #[arg(long)]
         remove: bool,
         /// Also add a short marked block to ~/.claude/CLAUDE.md that tells every session reeve is
-        /// installed and states its two rules
+        /// installed, when to use it, and to read `reeve --skill` for how
         #[arg(long, conflicts_with = "remove")]
         claude_md: bool,
     },
@@ -352,6 +356,9 @@ fn log_usage_error(e: &clap::Error) {
     events::log(&ev);
 }
 
+/// A background session in Herdr is out of the user's sight, permission prompts included.
+const BG_IN_HERDR: &str = "reeve: inside Herdr a worker gets its own Herdr tab, where the user can see and answer it; drop --bg, or pass --force for a background session anyway";
+
 fn in_herdr() -> bool {
     std::env::var("HERDR_ENV").is_ok_and(|v| v == "1")
 }
@@ -391,6 +398,15 @@ fn main() -> ExitCode {
         _ if cd.is_err() => cd.map(|_| 0),
         Top::Run { name: Some(_), .. } if explicit => {
             Err(io::Error::other("sandbox options need --sandbox"))
+        }
+        Top::Run {
+            name: Some(_),
+            bg: true,
+            force: false,
+            ..
+        } if in_herdr() => {
+            eprintln!("{BG_IN_HERDR}");
+            Ok(2)
         }
         Top::Run {
             name: Some(name),
@@ -630,9 +646,20 @@ mod tests {
             "reeve ask",
             "reeve asks",
             "reeve answer",
+            "Inside Herdr each worker gets its own tab",
+            "not Herdr's agent commands",
+            "`--bg` is for that case only",
+            "idle without a report",
+            "`claude agents --json`",
+            "`reeve run --force`",
         ] {
             assert!(SKILL.contains(part), "{part}");
         }
+        assert!(
+            SKILL
+                .lines()
+                .all(|l| !l.starts_with("reeve run --name") || !l.contains("--bg"))
+        );
         for part in [
             "Handoffs",
             "Sandbox",

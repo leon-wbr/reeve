@@ -147,17 +147,16 @@ pub fn add_hook(settings: &mut Value) -> Result<bool, String> {
     Ok(true)
 }
 
-/// The two rules that hold whenever reeve is installed, with their exact syntax.
-pub const RULES: &str = "- Run test suites, e2e, builds and installs through `reeve heavy -- <command>`, \
-e.g. `reeve heavy -- cargo test`, started in the background (Claude Code: `run_in_background`); \
-keep working and you're told when it ends.\n- When a \"Context check\" tells you that you passed the handoff \
-threshold (350K tokens of context unless set otherwise), write your notes (goal, what's done, what's next, open questions) to a file, run \
-`reeve handoff --name NAME --notes FILE` with a new name for your successor, and stop.\n";
+/// When to use reeve, without syntax: `reeve --skill` prints the current manual, so nothing
+/// here can go stale or teach a wrong flag.
+pub const USES: &str = "reeve is installed on this machine. Use it for:\n\n\
+- heavy commands: test suites, e2e, builds and installs;\n\
+- long or parallel work, as named workers;\n\
+- handing off to a successor when a \"Context check\" says so.\n\n\
+Run `reeve --skill` before any of these; it prints the current manual with the exact commands.\n";
 
 pub fn stub(version: &str) -> String {
-    format!(
-        "---\nname: reeve\ndescription: {DESCRIPTION}\n---\n\n{RULES}\nRun `reeve --skill` for the rest: named workers, questions, sandboxes.\n\n{STUB_LINE}{version}.\n"
-    )
+    format!("---\nname: reeve\ndescription: {DESCRIPTION}\n---\n\n{USES}\n{STUB_LINE}{version}.\n")
 }
 
 /// The reeve version a stub was written for, if setup wrote it.
@@ -179,12 +178,7 @@ pub const BLOCK_START: &str = "<!-- reeve setup claude: start -->";
 pub const BLOCK_END: &str = "<!-- reeve setup claude: end -->";
 
 pub fn block() -> String {
-    format!(
-        "{BLOCK_START}\n## reeve\n\nreeve is installed on this machine.\n\n{RULES}- Long or \
-         parallel work may go to named workers (`reeve run --name NAME --bg --cwd DIR -- \"PROMPT\"`).\n- \
-         Read `reeve --skill` before heavy, long or parallel work, or a handoff.\n\
-         {BLOCK_END}"
-    )
+    format!("{BLOCK_START}\n## reeve\n\n{USES}{BLOCK_END}")
 }
 
 /// Where setup's block sits in CLAUDE.md, end marker included.
@@ -550,12 +544,8 @@ mod tests {
     fn the_stub_is_short_and_carries_its_version() {
         let s = stub("1.2.3");
         assert!(s.starts_with("---\nname: reeve\ndescription: reeve is installed"));
-        assert!(s.contains("Run `reeve --skill` for the rest"));
-        assert!(s.contains("`reeve heavy -- <command>`"));
-        assert!(s.contains("in the background"));
-        assert!(s.contains("`reeve handoff --name NAME --notes FILE`"));
-        let default = crate::context::DEFAULT_TOKENS / 1000;
-        assert!(s.contains(&format!("({default}K tokens of context")));
+        assert!(s.contains(USES));
+        assert!(s.len() / 4 <= 160, "{}", s.len() / 4);
         assert_eq!(stub_version(&s), Some("1.2.3"));
         assert_eq!(stub_version("---\nname: reeve\n---\nmine\n"), None);
         assert!(DESCRIPTION.len() / 4 <= 60, "{}", DESCRIPTION.len() / 4);
@@ -706,20 +696,25 @@ mod tests {
     }
 
     #[test]
-    fn the_block_states_the_rules_and_points_at_the_manual() {
+    fn the_block_names_the_uses_and_points_at_the_manual() {
         let b = block();
         for part in [
             "reeve is installed",
-            "`reeve heavy -- <command>`",
-            "in the background",
-            "`reeve handoff --name NAME --notes FILE`",
-            "reeve run --name",
-            "--cwd DIR",
+            "test suites, e2e, builds and installs",
+            "named workers",
+            "Context check",
             "`reeve --skill`",
         ] {
             assert!(b.contains(part), "{part}");
         }
-        assert!(b.len() / 4 <= 200, "{}", b.len() / 4);
+        assert!(b.len() / 4 <= 100, "{}", b.len() / 4);
+    }
+
+    #[test]
+    fn the_uses_carry_no_syntax_flags_or_thresholds() {
+        let rest = USES.replace("`reeve --skill`", "").replace("e2e", "");
+        assert!(!rest.contains('`') && !rest.contains("--"), "{rest}");
+        assert!(!rest.chars().any(|c| c.is_ascii_digit()), "{rest}");
     }
 
     #[test]
