@@ -45,8 +45,10 @@ pub struct Worker {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     Working,
-    /// Waiting for input: finished its turn, or asking a question.
+    /// Finished its turn without being asked anything.
     Idle,
+    /// Waiting for the user: a permission prompt, a question or another dialog.
+    Blocked,
     Absent,
     /// The probe itself failed.
     Unknown,
@@ -56,6 +58,7 @@ pub enum Agent {
 pub enum State {
     Running,
     Idle,
+    Blocked,
     Done,
     Gone,
     Unknown,
@@ -67,6 +70,7 @@ impl State {
             (_, true) => State::Done,
             (Agent::Working, false) => State::Running,
             (Agent::Idle, false) => State::Idle,
+            (Agent::Blocked, false) => State::Blocked,
             (Agent::Absent, false) => State::Gone,
             (Agent::Unknown, false) => State::Unknown,
         }
@@ -78,6 +82,7 @@ impl fmt::Display for State {
         f.write_str(match self {
             State::Running => "running",
             State::Idle => "idle",
+            State::Blocked => "blocked",
             State::Done => "done",
             State::Gone => "gone",
             State::Unknown => "unknown",
@@ -191,11 +196,14 @@ pub fn split_prompt(args: &[String]) -> Result<(&[String], &str), String> {
     }
 }
 
+/// The caller's task, then where its report goes and what it says. One line, because a pane
+/// types it; the heavy rule comes from the skill, not from here.
 pub fn with_report(prompt: &str, report: &Path) -> String {
     format!(
-        "{prompt} Run test suites, e2e, builds and installs through `reeve heavy -- <command>`, \
-         started in the background (it may wait for a slot); keep working until it ends. When you are finished, write your final report as Markdown to {}. Write that file last \
-         and only once: its existence tells reeve that you are done.",
+        "{prompt} When the task is done, or you can't take it further without the user, write \
+         your report as Markdown to {}. reeve treats that file as the end of your work, so \
+         write it once, as your last step. Start it with one line, `done`, `partial` or \
+         `failed`, then say what you did, how you checked it, and what is left.",
         report.display()
     )
 }
@@ -340,7 +348,8 @@ pub fn pane_agent(probe: Result<&str, &str>) -> Agent {
         return Agent::Absent;
     }
     match pane["agent_status"].as_str() {
-        Some("idle" | "done" | "blocked") => Agent::Idle,
+        Some("blocked") => Agent::Blocked,
+        Some("idle" | "done") => Agent::Idle,
         _ => Agent::Working,
     }
 }
@@ -357,6 +366,8 @@ pub fn bg_agent(probe: Result<&str, &str>, id: &str) -> Agent {
         None => Agent::Absent,
         Some(a) if a["status"] == "busy" => Agent::Working,
         Some(a) if a["state"] == "stopped" || a["state"] == "failed" => Agent::Absent,
+        // Also without a process: one idle for an hour is stopped and resumes on attach.
+        Some(a) if a["state"] == "blocked" => Agent::Blocked,
         Some(_) => Agent::Idle,
     }
 }
@@ -435,7 +446,7 @@ fn wait_for_claude(pane: &str) -> io::Result<()> {
                 .as_deref()
                 .map_err(|e| e.as_str()),
         );
-        if matches!(a, Agent::Working | Agent::Idle) {
+        if matches!(a, Agent::Working | Agent::Idle | Agent::Blocked) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -558,7 +569,10 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
     let shown: Vec<_> = workers
         .iter()
         .filter(|(_, s, age)| {
-            matches!(s, State::Running | State::Idle | State::Unknown) || *age < BRIEF_DAYS * 86400
+            matches!(
+                s,
+                State::Running | State::Idle | State::Blocked | State::Unknown
+            ) || *age < BRIEF_DAYS * 86400
         })
         .collect();
     if shown.is_empty() {
@@ -570,7 +584,8 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
         .map(|(name, s, _)| {
             let what = match s {
                 State::Running => "running",
-                State::Idle => "idle (may be waiting for input)",
+                State::Idle => "idle without a report",
+                State::Blocked => "blocked (waiting for the user)",
                 State::Done => "done (report ready)",
                 State::Gone => "gone without a report",
                 State::Unknown => "state unknown",
@@ -660,8 +675,8 @@ pub fn ls(r: &Registry) -> io::Result<String> {
     Ok(out)
 }
 
-/// Fails once the worker is gone, or has sat idle without a report for a few polls, which
-/// usually means it is asking a question.
+/// Fails once the worker is gone or waits for the user, or has sat idle without a report for a
+/// few polls.
 pub fn wait(r: &Registry, name: &str, timeout: Option<u64>) -> io::Result<()> {
     let w = r.get(name)?;
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs(t));
@@ -673,13 +688,22 @@ pub fn wait(r: &Registry, name: &str, timeout: Option<u64>) -> io::Result<()> {
         match s {
             State::Done => return Ok(()),
             State::Gone => return fail("is gone without writing its report"),
+            State::Blocked => return fail(&blocked_hint(&w)),
             _ if idle >= 3 => {
-                return fail("is idle without a report; it may be asking a question");
+                return fail("is idle without a report; send it a message, then wait again");
             }
             _ if deadline.is_some_and(|d| Instant::now() >= d) => return fail("timed out"),
             _ => std::thread::sleep(Duration::from_secs(2)),
         }
     }
+}
+
+fn blocked_hint(w: &Worker) -> String {
+    let answer = match w.backend {
+        Backend::Pane => "in its tab".to_string(),
+        Backend::Bg => format!("with `claude attach {}`", w.handle),
+    };
+    format!("is waiting for the user, such as a permission prompt; answer it {answer}")
 }
 
 /// Drops a worker whose agent has gone from the registry; its report and prompt files stay.
@@ -776,11 +800,18 @@ mod tests {
 
     #[test]
     fn a_report_means_done_whatever_the_agent_does() {
-        for a in [Agent::Working, Agent::Idle, Agent::Absent, Agent::Unknown] {
+        for a in [
+            Agent::Working,
+            Agent::Idle,
+            Agent::Blocked,
+            Agent::Absent,
+            Agent::Unknown,
+        ] {
             assert_eq!(State::of(a, true), State::Done, "{a:?}");
         }
         assert_eq!(State::of(Agent::Working, false), State::Running);
         assert_eq!(State::of(Agent::Idle, false), State::Idle);
+        assert_eq!(State::of(Agent::Blocked, false), State::Blocked);
         assert_eq!(State::of(Agent::Absent, false), State::Gone);
         assert_eq!(State::of(Agent::Unknown, false), State::Unknown);
     }
@@ -817,8 +848,9 @@ mod tests {
         assert!(p.starts_with("fix it "));
         assert!(!p.contains('\n'));
         assert!(p.contains("/st/reports/x.md"));
-        assert!(p.contains("reeve heavy"));
-        assert!(p.contains("in the background"));
+        assert!(p.contains("`done`, `partial` or `failed`"));
+        assert!(p.contains("can't take it further"));
+        assert!(!p.contains("reeve heavy"));
     }
 
     #[test]
@@ -969,9 +1001,10 @@ mod tests {
         let with = |status: &str| pane(&format!(r#""agent":"claude","agent_status":"{status}","#));
         assert_eq!(pane_agent(Ok(&with("working"))), Agent::Working);
         assert_eq!(pane_agent(Ok(&with("unknown"))), Agent::Working);
-        for idle in ["idle", "done", "blocked"] {
+        for idle in ["idle", "done"] {
             assert_eq!(pane_agent(Ok(&with(idle))), Agent::Idle, "{idle}");
         }
+        assert_eq!(pane_agent(Ok(&with("blocked"))), Agent::Blocked);
         assert_eq!(pane_agent(Ok(&pane(""))), Agent::Absent);
         let closed =
             r#"herdr: {"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}"#;
@@ -986,10 +1019,12 @@ mod tests {
             {"id":"a2","kind":"background","status":"idle","state":"done"},
             {"id":"a3","kind":"background","state":"blocked"},
             {"id":"a4","kind":"background","state":"stopped"},
+            {"id":"a5","kind":"background","pid":7,"status":"waiting","state":"blocked","waitingFor":"permission prompt"},
             {"pid":1,"kind":"interactive","status":"busy"}]"#;
         assert_eq!(bg_agent(Ok(json), "a1"), Agent::Working);
         assert_eq!(bg_agent(Ok(json), "a2"), Agent::Idle);
-        assert_eq!(bg_agent(Ok(json), "a3"), Agent::Idle);
+        assert_eq!(bg_agent(Ok(json), "a3"), Agent::Blocked);
+        assert_eq!(bg_agent(Ok(json), "a5"), Agent::Blocked);
         assert_eq!(bg_agent(Ok(json), "a4"), Agent::Absent);
         assert_eq!(bg_agent(Ok(json), "nope"), Agent::Absent);
         assert_eq!(bg_agent(Ok("not json"), "a1"), Agent::Unknown);
@@ -1021,6 +1056,21 @@ mod tests {
         let live = brief(&[("a", State::Idle, old), ("b", State::Gone, 3600)]);
         assert!(live.starts_with("reeve: 2 workers: a idle"), "{live}");
         assert!(live.contains("b gone without a report"), "{live}");
+    }
+
+    #[test]
+    fn a_blocked_worker_says_where_to_answer_it() {
+        let r = Registry::at(temp("blocked"));
+        let pane = worker(&r, "fix-a", "w1:p2");
+        assert!(blocked_hint(&pane).contains("in its tab"));
+        let bg = Worker {
+            backend: Backend::Bg,
+            handle: "ab12".into(),
+            ..pane
+        };
+        assert!(blocked_hint(&bg).contains("`claude attach ab12`"));
+        let b = brief(&[("fix-a", State::Blocked, 1)]);
+        assert!(b.contains("fix-a blocked (waiting for the user)"), "{b}");
     }
 
     #[test]
