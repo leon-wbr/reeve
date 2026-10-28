@@ -9,23 +9,25 @@ Use the rest where it helps.
 
 ## Named workers: work that outlives this session
 
-`reeve run --name NAME --bg --cwd DIR -- "PROMPT"` starts a Claude Code background session under a name. It keeps going when your session ends, compacts or hands off, and writes its report to `~/.local/state/reeve/reports/NAME.md`, where any later session finds it. Pass the project root as `--cwd` so it loads its `.claude/` setup.
+`reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session and writes its report to `~/.local/state/reeve/reports/NAME.md`, where any later session finds it. Pass the project root as `--cwd` so it loads its `.claude/` setup.
+
+Inside Herdr each worker gets its own tab, labelled NAME, where the user can see and answer it; your focus stays. Start workers there with `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session; `--bg` is for that case only.
 
 ```sh
-reeve run --name fix-flaky --bg --cwd ~/app -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."
-reeve run --name review --bg -- --model sonnet "Review the diff on this branch."
+reeve run --name fix-flaky --cwd ~/app -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."
+reeve run --name review --cwd ~/app -- --model sonnet "Review this branch."
 reeve ls                 # every worker: running, idle, done or gone
-reeve wait fix-flaky     # blocks until the report exists; fails if the worker goes idle or away
+reeve wait fix-flaky     # blocks until the report exists; fails on idle or gone
 reeve report fix-flaky   # prints the report
 ```
 
-The last argument after `--` is the prompt; claude flags such as `--model` go before it. Without `--cwd` it starts in your current directory. It works in that checkout as it is, beside you; for one of its own, pass claude's `-w NAME`.
+The last argument after `--` is the prompt; claude flags such as `--model` go before it. It works in that checkout; for its own, pass claude's `-w NAME`.
 
-Inside Herdr a worker gets its own pane in a new tab labelled NAME instead (`--pane`, the default there). Your focus stays where it is.
+If `reeve wait` says idle without a report, look at the worker's tab (or `claude agents --json` for a background one) for a permission prompt or a still-running shell before re-waiting or restarting.
 
-A **gone** worker stopped without a report. See what it left (`claude logs NAME` for a background session, or its transcript under `~/.claude/projects/`), then restart it under the same name with a prompt that says where to pick up, or report it lost. `reeve rm NAME` drops it from `reeve ls`.
+A **gone** worker stopped without a report. See what it left (`claude logs NAME`, or its transcript under `~/.claude/projects/`), then restart it under the same name saying where to pick up, or report it lost. `reeve rm NAME` drops it from `reeve ls`.
 
-Workers help with work that may outlast this session, independent tasks that can run side by side without filling your context, and anything a successor should pick up. For short work whose answer you need now, a subagent is simpler.
+Workers suit work that may outlast this session, independent parallel tasks, and anything a successor should pick up. For short work whose answer you need now, a subagent is simpler.
 
 ## Handoffs
 
@@ -63,7 +65,7 @@ You decide what's heavy; when in doubt, queue it. Only quick commands such as `g
 reeve feedback "what you ran, what happened, what you expected"
 ```
 
-This saves a note with reeve's version and recent events and offers to file it as an issue, never without a yes.
+This saves a note with reeve's version and recent events and offers to file it as an issue.
 
 ## When not to bother
 

@@ -150,13 +150,17 @@ pub fn add_hook(settings: &mut Value) -> Result<bool, String> {
 /// The two rules that hold whenever reeve is installed, with their exact syntax.
 pub const RULES: &str = "- Run test suites, e2e, builds and installs through `reeve heavy -- <command>`, \
 e.g. `reeve heavy -- cargo test`, started in the background (Claude Code: `run_in_background`); \
-keep working and you're told when it ends.\n- When a \"Context check\" tells you that you passed the handoff \
-threshold (350K tokens of context unless set otherwise), write your notes (goal, what's done, what's next, open questions) to a file, run \
-`reeve handoff --name NAME --notes FILE` with a new name for your successor, and stop.\n";
+keep working; you're told when it ends.\n- When a \"Context check\" tells you that you passed the handoff \
+threshold (350K tokens of context by default), write your notes (goal, what's done, what's next, open questions) to a file, run \
+`reeve handoff --name NAME --notes FILE` with a new successor name, and stop.\n";
+
+/// Without --bg, so that inside Herdr a worker gets a tab the user can see.
+pub const WORKERS: &str = "- Named workers for long or parallel work: \
+`reeve run --name NAME --cwd DIR -- \"PROMPT\"`; in Herdr each worker gets its own tab.\n";
 
 pub fn stub(version: &str) -> String {
     format!(
-        "---\nname: reeve\ndescription: {DESCRIPTION}\n---\n\n{RULES}\nRun `reeve --skill` for the rest: named workers, questions, sandboxes.\n\n{STUB_LINE}{version}.\n"
+        "---\nname: reeve\ndescription: {DESCRIPTION}\n---\n\n{RULES}{WORKERS}\nRun `reeve --skill` for the rest: named workers, questions, sandboxes.\n\n{STUB_LINE}{version}.\n"
     )
 }
 
@@ -180,9 +184,8 @@ pub const BLOCK_END: &str = "<!-- reeve setup claude: end -->";
 
 pub fn block() -> String {
     format!(
-        "{BLOCK_START}\n## reeve\n\nreeve is installed on this machine.\n\n{RULES}- Long or \
-         parallel work may go to named workers (`reeve run --name NAME --bg --cwd DIR -- \"PROMPT\"`).\n- \
-         Read `reeve --skill` before heavy, long or parallel work, or a handoff.\n\
+        "{BLOCK_START}\n## reeve\n\nreeve is installed on this machine.\n\n{RULES}{WORKERS}- \
+         Read `reeve --skill` before heavy or parallel work or a handoff.\n\
          {BLOCK_END}"
     )
 }
@@ -554,6 +557,9 @@ mod tests {
         assert!(s.contains("`reeve heavy -- <command>`"));
         assert!(s.contains("in the background"));
         assert!(s.contains("`reeve handoff --name NAME --notes FILE`"));
+        assert!(s.contains("`reeve run --name NAME --cwd DIR -- \"PROMPT\"`"));
+        assert!(s.contains("in Herdr each worker gets its own tab"));
+        assert!(!s.contains("--bg"));
         let default = crate::context::DEFAULT_TOKENS / 1000;
         assert!(s.contains(&format!("({default}K tokens of context")));
         assert_eq!(stub_version(&s), Some("1.2.3"));
@@ -716,9 +722,11 @@ mod tests {
             "reeve run --name",
             "--cwd DIR",
             "`reeve --skill`",
+            "in Herdr each worker gets its own tab",
         ] {
             assert!(b.contains(part), "{part}");
         }
+        assert!(!b.contains("--bg"));
         assert!(b.len() / 4 <= 200, "{}", b.len() / 4);
     }
 
