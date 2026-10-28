@@ -88,6 +88,13 @@ enum Top {
         #[arg(long)]
         timeout: Option<u64>,
     },
+    /// Print a line on stdout each time a named worker becomes blocked, idle, gone or done, for
+    /// Claude Code's Monitor tool or a background shell. Without names it follows every worker
+    /// and never exits; with names it exits once each is done (0) or gone (1)
+    Watch {
+        #[arg(value_name = "NAME")]
+        names: Vec<String>,
+    },
     /// Print a named worker's report
     Report { name: String },
     /// Hand off to a successor: write a handoff file from your notes and the named workers, and
@@ -102,9 +109,13 @@ enum Top {
         /// Start the successor in a new Herdr tab
         #[arg(long, conflicts_with = "bg")]
         pane: bool,
-        /// Start it as a Claude Code background session
+        /// Start it as a Claude Code background session. Refused inside Herdr, where it gets its
+        /// own tab (see --force)
         #[arg(long)]
         bg: bool,
+        /// Skip reeve's safety checks, such as refusing --bg inside Herdr
+        #[arg(long)]
+        force: bool,
         /// Arguments passed to the successor's claude
         #[arg(last = true)]
         args: Vec<String>,
@@ -357,7 +368,11 @@ fn log_usage_error(e: &clap::Error) {
 }
 
 /// A background session in Herdr is out of the user's sight, permission prompts included.
-const BG_IN_HERDR: &str = "reeve: inside Herdr a worker gets its own Herdr tab, where the user can see and answer it; drop --bg, or pass --force for a background session anyway";
+fn bg_in_herdr(who: &str) -> String {
+    format!(
+        "reeve: inside Herdr a {who} gets its own Herdr tab, where the user can see and answer it; drop --bg, or pass --force for a background session anyway"
+    )
+}
 
 fn in_herdr() -> bool {
     std::env::var("HERDR_ENV").is_ok_and(|v| v == "1")
@@ -405,7 +420,7 @@ fn main() -> ExitCode {
             force: false,
             ..
         } if in_herdr() => {
-            eprintln!("{BG_IN_HERDR}");
+            eprintln!("{}", bg_in_herdr("worker"));
             Ok(2)
         }
         Top::Run {
@@ -423,9 +438,13 @@ fn main() -> ExitCode {
             {
                 eprintln!("reeve: {w}");
             }
-            let started = workers().and_then(|r| workers::run(&r, &name, backend, &args));
-            if started.is_ok() {
+            let started = workers().and_then(|r| {
+                workers::run(&r, &name, backend, &args)?;
+                r.get(&name)
+            });
+            if let Ok(w) = &started {
                 ev.handoff_ms = Some(events::now_ms().saturating_sub(ev.ts));
+                eprintln!("{}", workers::started(w));
             }
             started.map(|_| 0)
         }
@@ -451,11 +470,20 @@ fn main() -> ExitCode {
                 .map(|_| 0)
         }
         Top::Handoff {
+            bg: true,
+            force: false,
+            ..
+        } if in_herdr() => {
+            eprintln!("{}", bg_in_herdr("successor"));
+            Ok(2)
+        }
+        Top::Handoff {
             name,
             notes,
             pane,
             bg,
             args,
+            ..
         } => {
             let backend = workers::Backend::choose(pane, bg, in_herdr());
             workers()
@@ -472,6 +500,9 @@ fn main() -> ExitCode {
                 .and_then(|r| workers::wait(&r, &name, timeout))
                 .map(|_| 0)
         }
+        Top::Watch { names } => workers()
+            .and_then(|r| workers::watch(&r, &names))
+            .map(|all_done| i32::from(!all_done)),
         Top::Rm { name } => {
             ev.worker = Some(name.clone());
             workers().and_then(|r| workers::rm(&r, &name)).map(|_| 0)
@@ -651,7 +682,7 @@ mod tests {
             "not Herdr's agent commands",
             "`--bg` is for that case only",
             "idle without a report",
-            "`claude agents --json`",
+            "reeve watch fix-flaky",
             "`reeve run --force`",
         ] {
             assert!(SKILL.contains(part), "{part}");
@@ -699,6 +730,9 @@ mod tests {
             "--name", "next", "--notes", "n.md", "--", "--model", "sonnet"
         ]));
         assert!(parse(&["--name", "next", "--notes", "n.md", "--bg"]));
+        assert!(parse(&[
+            "--name", "next", "--notes", "n.md", "--bg", "--force"
+        ]));
         assert!(!parse(&["--name", "next"]));
         assert!(!parse(&["--notes", "n.md"]));
         assert!(!parse(&[

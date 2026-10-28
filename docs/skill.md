@@ -19,7 +19,8 @@ Inside Herdr each worker gets its own tab, labelled NAME, where the user can see
 reeve run --name fix-flaky --cwd ~/app -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."
 reeve run --name review --cwd ~/app -- --model sonnet "Review it."
 reeve ls                 # every worker: running, blocked, idle, done or gone
-reeve wait fix-flaky     # blocks until the report exists; fails on blocked, idle or gone
+reeve wait fix-flaky     # exits on the report, or on blocked, idle or gone
+reeve watch fix-flaky    # a line per change: blocked, idle, gone, done
 reeve report fix-flaky   # prints the report
 ```
 
@@ -27,11 +28,11 @@ The last argument after `--` is the prompt; claude flags such as `--model` go be
 
 For unattended work with a clear end, start the prompt with `/goal` and pass `--permission-mode auto` after `--`: a separate model checks it after each turn, so name the check.
 
-A **blocked** worker waits for the user, such as a permission prompt: answer it in its tab, or with `claude attach ID` for a background one. If `reeve wait` says idle without a report, it ended its turn early: send it a message, then wait again (`claude agents --json` shows a background one).
+A **blocked** worker waits for the user, such as a permission prompt: answer it in its tab, or with `claude attach ID` for a background one. If `reeve wait` says idle without a report, it ended its turn early: send it a message, then wait again.
 
 A **gone** worker stopped without a report. See what it left (`claude logs NAME`, or its transcript under `~/.claude/projects/`), then restart it under the same name saying where to pick up, or report it lost. `reeve rm NAME` drops it from `reeve ls`.
 
-Workers suit work that may outlast this session, independent parallel tasks, and anything a successor should pick up. For short work whose answer you need now, a subagent is simpler.
+Workers suit long or parallel work, and anything a successor should pick up. For short work whose answer you need now, a subagent is simpler.
 
 ## Handoffs
 
