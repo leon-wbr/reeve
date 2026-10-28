@@ -383,3 +383,56 @@ fn in_a_terminal_without_gh_feedback_prints_the_url() {
     assert!(!out.contains("[y/N]"), "{out}");
     assert!(out.contains("issues/new?title=it%20hangs&body="), "{out}");
 }
+
+#[test]
+fn the_context_hook_answers_from_the_transcript_and_stays_out_of_the_log() {
+    use std::io::Write;
+    let d = tempfile::tempdir().unwrap();
+    let transcript = d.path().join("t.jsonl");
+    let usage = r#"{"message":{"usage":{"input_tokens":5,"cache_read_input_tokens":2000}}}"#;
+    std::fs::write(&transcript, usage).unwrap();
+    std::fs::create_dir_all(d.path().join("cfg/reeve")).unwrap();
+    std::fs::write(
+        d.path().join("cfg/reeve/config.json"),
+        r#"{"handoff_tokens": 1000}"#,
+    )
+    .unwrap();
+    let hook = |payload: &str, env: Option<&str>| {
+        let mut c = reeve(d.path(), &["hook", "context"]);
+        c.env("XDG_CONFIG_HOME", d.path().join("cfg"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        match env {
+            Some(v) => c.env("REEVE_HANDOFF_TOKENS", v),
+            None => c.env_remove("REEVE_HANDOFF_TOKENS"),
+        };
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let prompt = serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": transcript,
+    })
+    .to_string();
+    let o = hook(&prompt, None);
+    assert!(o.status.success());
+    let out: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let notice = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        notice.contains("2K tokens, past the 1K handoff threshold"),
+        "{notice}"
+    );
+    assert_eq!(stdout(&hook(&prompt, Some("5000"))), "");
+    let bad = hook("not json", None);
+    assert!(bad.status.success());
+    assert_eq!(stdout(&bad), "");
+    assert!(log(d.path()).is_empty());
+}

@@ -1,5 +1,6 @@
 //! `reeve setup claude`: a SessionStart hook that tells each new Claude Code session about
-//! running workers, and a skill stub that says what reeve offers. Both are marked so that
+//! running workers, prompt and tool hooks that tell it when to hand off, a skill stub that says
+//! what reeve offers and, with `--claude-md`, a block in CLAUDE.md. All are marked so that
 //! `--check` and `--remove` find exactly what setup wrote.
 
 use serde_json::{Value, json};
@@ -20,11 +21,24 @@ pub fn hook_command() -> String {
     format!("command -v reeve >/dev/null && reeve ls --brief || true {MARKER}")
 }
 
-fn group() -> Value {
-    json!({
-        "matcher": MATCHER,
-        "hooks": [{ "type": "command", "command": hook_command() }]
-    })
+pub fn context_command() -> String {
+    format!("command -v reeve >/dev/null && reeve hook context || true {MARKER}")
+}
+
+/// Each hook event setup writes to, with the one group it adds there.
+fn groups() -> [(&'static str, Value); 3] {
+    let context = || json!({ "hooks": [{ "type": "command", "command": context_command() }] });
+    [
+        (
+            "SessionStart",
+            json!({
+                "matcher": MATCHER,
+                "hooks": [{ "type": "command", "command": hook_command() }]
+            }),
+        ),
+        ("UserPromptSubmit", context()),
+        ("PostToolUse", context()),
+    ]
 }
 
 fn ours(hook: &Value) -> bool {
@@ -46,53 +60,58 @@ pub enum Piece {
 }
 
 pub fn hook_state(settings: &Value) -> Piece {
-    let groups: Vec<&Value> = settings["hooks"]["SessionStart"]
-        .as_array()
-        .map(|gs| gs.iter().filter(|g| has_ours(g)).collect())
-        .unwrap_or_default();
-    match groups[..] {
-        [] => Piece::Missing,
-        [g] if *g == group() => Piece::Ok,
-        _ => Piece::Stale,
+    let found: Vec<Vec<&Value>> = groups()
+        .iter()
+        .map(|(event, _)| {
+            settings["hooks"][event]
+                .as_array()
+                .map(|gs| gs.iter().filter(|g| has_ours(g)).collect())
+                .unwrap_or_default()
+        })
+        .collect();
+    if found.iter().all(Vec::is_empty) {
+        return Piece::Missing;
     }
+    let current = groups()
+        .iter()
+        .zip(&found)
+        .all(|((_, want), got)| matches!(got[..], [g] if g == want));
+    if current { Piece::Ok } else { Piece::Stale }
 }
 
-/// Takes out every hook carrying the marker, and any group, `SessionStart` list or `hooks`
-/// object left empty by that. Returns whether anything changed.
+/// Takes out every hook carrying the marker, and any group, event list or `hooks` object left
+/// empty by that. Returns whether anything changed.
 pub fn remove_hook(settings: &mut Value) -> bool {
-    let Some(groups) = settings
-        .get_mut("hooks")
-        .and_then(|h| h.get_mut("SessionStart"))
-        .and_then(Value::as_array_mut)
-    else {
+    let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
         return false;
     };
-    let before = groups.len();
     let mut changed = false;
-    for g in groups.iter_mut().filter(|g| has_ours(g)) {
-        if let Some(hs) = g["hooks"].as_array_mut() {
-            hs.retain(|h| !ours(h));
-            changed = true;
+    for (event, _) in groups() {
+        let Some(gs) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let before = gs.len();
+        let mut here = false;
+        for g in gs.iter_mut().filter(|g| has_ours(g)) {
+            if let Some(hs) = g["hooks"].as_array_mut() {
+                hs.retain(|h| !ours(h));
+                here = true;
+            }
         }
+        gs.retain(|g| g["hooks"].as_array().is_none_or(|hs| !hs.is_empty()));
+        here |= gs.len() != before;
+        if here && gs.is_empty() {
+            hooks.remove(event);
+        }
+        changed |= here;
     }
-    groups.retain(|g| g["hooks"].as_array().is_none_or(|hs| !hs.is_empty()));
-    changed |= groups.len() != before;
-    if !changed {
-        return false;
-    }
-    let hooks = settings["hooks"]
-        .as_object_mut()
-        .expect("hooks is an object");
-    if hooks["SessionStart"].as_array().is_some_and(Vec::is_empty) {
-        hooks.remove("SessionStart");
-    }
-    if hooks.is_empty() {
+    if changed && hooks.is_empty() {
         settings.as_object_mut().expect("an object").remove("hooks");
     }
     changed
 }
 
-/// Adds the hook, replacing a stale one. Returns whether anything changed.
+/// Adds the hooks, replacing stale ones. Returns whether anything changed.
 pub fn add_hook(settings: &mut Value) -> Result<bool, String> {
     if hook_state(settings) == Piece::Ok {
         return Ok(false);
@@ -104,29 +123,40 @@ pub fn add_hook(settings: &mut Value) -> Result<bool, String> {
     if !hooks.is_object() {
         return Err("`hooks` in settings.json is not an object".into());
     }
-    if !hooks["SessionStart"].is_array() && !hooks["SessionStart"].is_null() {
-        return Err("`hooks.SessionStart` in settings.json is not a list".into());
+    for (event, _) in groups() {
+        if !hooks[event].is_array() && !hooks[event].is_null() {
+            return Err(format!("`hooks.{event}` in settings.json is not a list"));
+        }
     }
     remove_hook(settings);
     let hooks = settings
         .as_object_mut()
         .expect("an object")
         .entry("hooks")
-        .or_insert_with(|| json!({}));
-    hooks
+        .or_insert_with(|| json!({}))
         .as_object_mut()
-        .expect("hooks is an object")
-        .entry("SessionStart")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .expect("a list")
-        .push(group());
+        .expect("hooks is an object");
+    for (event, group) in groups() {
+        hooks
+            .entry(event)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .expect("a list")
+            .push(group);
+    }
     Ok(true)
 }
 
+/// The two rules that hold whenever reeve is installed, with their exact syntax.
+pub const RULES: &str = "- Run test suites, e2e, builds and installs through `reeve heavy -- <command>`, \
+e.g. `reeve heavy -- cargo test`, started in the background (Claude Code: `run_in_background`); \
+keep working and you're told when it ends.\n- When a \"Context check\" tells you that you passed the handoff \
+threshold (350K tokens of context unless set otherwise), write your notes (goal, what's done, what's next, open questions) to a file, run \
+`reeve handoff --name NAME --notes FILE` with a new name for your successor, and stop.\n";
+
 pub fn stub(version: &str) -> String {
     format!(
-        "---\nname: reeve\ndescription: {DESCRIPTION}\n---\n\nRun `reeve --skill` for what it offers.\n\n{STUB_LINE}{version}.\n"
+        "---\nname: reeve\ndescription: {DESCRIPTION}\n---\n\n{RULES}\nRun `reeve --skill` for the rest: named workers, questions, sandboxes.\n\n{STUB_LINE}{version}.\n"
     )
 }
 
@@ -143,6 +173,70 @@ pub fn stub_state(text: Option<&str>, version: &str) -> Piece {
         Some(t) if t == stub(version) => Piece::Ok,
         Some(_) => Piece::Stale,
     }
+}
+
+pub const BLOCK_START: &str = "<!-- reeve setup claude: start -->";
+pub const BLOCK_END: &str = "<!-- reeve setup claude: end -->";
+
+pub fn block() -> String {
+    format!(
+        "{BLOCK_START}\n## reeve\n\nreeve is installed on this machine.\n\n{RULES}- Long or \
+         parallel work may go to named workers (`reeve run --name NAME --bg --cwd DIR -- \"PROMPT\"`).\n- \
+         Read `reeve --skill` before heavy, long or parallel work, or a handoff.\n\
+         {BLOCK_END}"
+    )
+}
+
+/// Where setup's block sits in CLAUDE.md, end marker included.
+fn find_block(text: &str) -> Result<Option<std::ops::Range<usize>>, String> {
+    let Some(start) = text.find(BLOCK_START) else {
+        return Ok(None);
+    };
+    match text[start..].find(BLOCK_END) {
+        Some(end) => Ok(Some(start..start + end + BLOCK_END.len())),
+        None => Err(format!(
+            "CLAUDE.md has `{BLOCK_START}` but no `{BLOCK_END}`"
+        )),
+    }
+}
+
+pub fn block_state(text: Option<&str>) -> Result<Piece, String> {
+    let Some(t) = text else {
+        return Ok(Piece::Missing);
+    };
+    Ok(match find_block(t)? {
+        None => Piece::Missing,
+        Some(r) if t[r.clone()] == block() => Piece::Ok,
+        Some(_) => Piece::Stale,
+    })
+}
+
+/// CLAUDE.md with the current block: in place of an old one, or at the end after a blank line.
+pub fn add_block(text: &str) -> Result<String, String> {
+    if let Some(r) = find_block(text)? {
+        return Ok(format!("{}{}{}", &text[..r.start], block(), &text[r.end..]));
+    }
+    Ok(match text {
+        "" => block() + "\n",
+        t if t.ends_with('\n') => format!("{t}\n{}\n", block()),
+        t => format!("{t}\n\n{}\n", block()),
+    })
+}
+
+/// CLAUDE.md without the block and the blank line `add_block` put before it, or `None` when
+/// there is no block.
+pub fn remove_block(text: &str) -> Result<Option<String>, String> {
+    let Some(r) = find_block(text)? else {
+        return Ok(None);
+    };
+    let before = &text[..r.start];
+    let after = &text[r.end..];
+    let after = after.strip_prefix('\n').unwrap_or(after);
+    let before = match before.strip_suffix('\n') {
+        Some(b) if b.ends_with('\n') && after.is_empty() => b,
+        _ => before,
+    };
+    Ok(Some(format!("{before}{after}")))
 }
 
 /// `~/…` for paths under the home dir.
@@ -162,6 +256,7 @@ pub fn tilde(p: &Path) -> String {
 pub struct Paths {
     pub settings: PathBuf,
     pub skill: PathBuf,
+    pub claude_md: PathBuf,
 }
 
 impl Paths {
@@ -169,6 +264,7 @@ impl Paths {
         Paths {
             settings: claude_dir.join("settings.json"),
             skill: claude_dir.join("skills/reeve/SKILL.md"),
+            claude_md: claude_dir.join("CLAUDE.md"),
         }
     }
 
@@ -195,7 +291,7 @@ fn read_settings(path: &Path) -> io::Result<Option<Value>> {
     }
 }
 
-fn read_stub(path: &Path) -> io::Result<Option<String>> {
+fn read_text(path: &Path) -> io::Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(s) => Ok(Some(s)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -227,25 +323,58 @@ fn write_settings(path: &Path, v: &Value, now: u64, out: &mut Vec<String>) -> io
     fs::rename(&tmp, &target)
 }
 
-/// Writes both pieces and returns one line per file touched.
-pub fn install(p: &Paths, version: &str, now: u64) -> io::Result<Vec<String>> {
+/// Replaces the file by a rename, through a symlink to its target; an empty text removes it.
+fn write_text(path: &Path, text: &str) -> io::Result<()> {
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if text.is_empty() {
+        return fs::remove_file(&target);
+    }
+    if let Some(dir) = target.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let name = target.file_name().expect("a file name").to_string_lossy();
+    let tmp = target.with_file_name(format!("{name}.reeve-{}", std::process::id()));
+    fs::write(&tmp, text)?;
+    fs::rename(&tmp, &target)
+}
+
+fn md_err(p: &Paths) -> impl Fn(String) -> io::Error {
+    let at = tilde(&p.claude_md);
+    move |e| io::Error::other(format!("{e} ({at}); reeve left it alone"))
+}
+
+/// Writes the pieces and returns one line per file touched. The CLAUDE.md block is written when
+/// asked for, and kept current once it is there.
+pub fn install(p: &Paths, version: &str, claude_md: bool, now: u64) -> io::Result<Vec<String>> {
+    let md = read_text(&p.claude_md)?;
+    let md_piece = block_state(md.as_deref()).map_err(md_err(p))?;
     let mut out = vec![];
     let mut settings = read_settings(&p.settings)?.unwrap_or_else(|| json!({}));
     if add_hook(&mut settings).map_err(io::Error::other)? {
         write_settings(&p.settings, &settings, now, &mut out)?;
         out.push(format!(
-            "wrote {}: SessionStart hook `reeve ls --brief`",
+            "wrote {}: hooks `reeve ls --brief` (session start) and `reeve hook context` \
+             (prompts and tool calls)",
             tilde(&p.settings)
         ));
     } else {
         out.push(format!("unchanged {}", tilde(&p.settings)));
     }
-    if stub_state(read_stub(&p.skill)?.as_deref(), version) == Piece::Ok {
+    if stub_state(read_text(&p.skill)?.as_deref(), version) == Piece::Ok {
         out.push(format!("unchanged {}", tilde(&p.skill)));
     } else {
         fs::create_dir_all(p.skill.parent().expect("skill dir"))?;
         fs::write(&p.skill, stub(version))?;
         out.push(format!("wrote {}", tilde(&p.skill)));
+    }
+    match md_piece {
+        Piece::Ok => out.push(format!("unchanged {}", tilde(&p.claude_md))),
+        Piece::Missing if !claude_md => {}
+        _ => {
+            let text = add_block(md.as_deref().unwrap_or("")).map_err(md_err(p))?;
+            write_text(&p.claude_md, &text)?;
+            out.push(format!("wrote {}: the reeve block", tilde(&p.claude_md)));
+        }
     }
     Ok(out)
 }
@@ -257,9 +386,9 @@ pub fn remove(p: &Paths, now: u64) -> io::Result<Vec<String>> {
         && remove_hook(&mut settings)
     {
         write_settings(&p.settings, &settings, now, &mut out)?;
-        out.push(format!("removed the hook from {}", tilde(&p.settings)));
+        out.push(format!("removed the hooks from {}", tilde(&p.settings)));
     }
-    match read_stub(&p.skill)? {
+    match read_text(&p.skill)? {
         Some(t) if stub_version(&t).is_some() => {
             fs::remove_file(&p.skill)?;
             out.push(format!("removed {}", tilde(&p.skill)));
@@ -275,32 +404,52 @@ pub fn remove(p: &Paths, now: u64) -> io::Result<Vec<String>> {
         )),
         None => {}
     }
+    if let Some(md) = read_text(&p.claude_md)?
+        && let Some(text) = remove_block(&md).map_err(md_err(p))?
+    {
+        write_text(&p.claude_md, &text)?;
+        out.push(format!(
+            "removed the reeve block from {}",
+            tilde(&p.claude_md)
+        ));
+    }
     if out.is_empty() {
         out.push("nothing to remove".into());
     }
     Ok(out)
 }
 
-/// The hook's and the stub's state, each with the file it lives in.
-pub fn check(p: &Paths, version: &str) -> io::Result<[(String, Piece); 2]> {
+/// Each piece's state with where it lives: the hooks, the stub and, when asked for or present,
+/// the CLAUDE.md block.
+pub fn check(p: &Paths, version: &str, claude_md: bool) -> io::Result<Vec<(String, Piece)>> {
     let settings = read_settings(&p.settings)?.unwrap_or_else(|| json!({}));
-    let stub = read_stub(&p.skill)?;
-    Ok([
+    let stub = read_text(&p.skill)?;
+    let mut out = vec![
         (
-            format!("SessionStart hook in {}", tilde(&p.settings)),
+            format!("hooks in {}", tilde(&p.settings)),
             hook_state(&settings),
         ),
         (tilde(&p.skill), stub_state(stub.as_deref(), version)),
-    ])
+    ];
+    let md = block_state(read_text(&p.claude_md)?.as_deref()).map_err(md_err(p))?;
+    if claude_md || md != Piece::Missing {
+        out.push((format!("reeve block in {}", tilde(&p.claude_md)), md));
+    }
+    Ok(out)
 }
 
-pub fn render_check(pieces: &[(String, Piece)]) -> String {
+pub fn render_check(pieces: &[(String, Piece)], claude_md: bool) -> String {
+    let setup = if claude_md {
+        "`reeve setup claude --claude-md`"
+    } else {
+        "`reeve setup claude`"
+    };
     pieces
         .iter()
         .map(|(what, piece)| match piece {
             Piece::Ok => format!("ok       {what}"),
-            Piece::Missing => format!("missing  {what}; `reeve setup claude` adds it"),
-            Piece::Stale => format!("stale    {what}; `reeve setup claude` rewrites it"),
+            Piece::Missing => format!("missing  {what}; {setup} adds it"),
+            Piece::Stale => format!("stale    {what}; {setup} rewrites it"),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -401,7 +550,12 @@ mod tests {
     fn the_stub_is_short_and_carries_its_version() {
         let s = stub("1.2.3");
         assert!(s.starts_with("---\nname: reeve\ndescription: reeve is installed"));
-        assert!(s.contains("Run `reeve --skill` for what it offers."));
+        assert!(s.contains("Run `reeve --skill` for the rest"));
+        assert!(s.contains("`reeve heavy -- <command>`"));
+        assert!(s.contains("in the background"));
+        assert!(s.contains("`reeve handoff --name NAME --notes FILE`"));
+        let default = crate::context::DEFAULT_TOKENS / 1000;
+        assert!(s.contains(&format!("({default}K tokens of context")));
         assert_eq!(stub_version(&s), Some("1.2.3"));
         assert_eq!(stub_version("---\nname: reeve\n---\nmine\n"), None);
         assert!(DESCRIPTION.len() / 4 <= 60, "{}", DESCRIPTION.len() / 4);
@@ -416,10 +570,16 @@ mod tests {
         let p = Paths::at(&dir);
         let original = serde_json::to_string_pretty(&others()).unwrap() + "\n";
         fs::write(&p.settings, &original).unwrap();
-        let pieces = |p: &Paths, v| check(p, v).unwrap().map(|(_, piece)| piece);
+        let pieces = |p: &Paths, v| -> Vec<Piece> {
+            check(p, v, false)
+                .unwrap()
+                .into_iter()
+                .map(|(_, piece)| piece)
+                .collect()
+        };
         assert_eq!(pieces(&p, "1.0.0"), [Piece::Missing, Piece::Missing]);
 
-        let out = install(&p, "1.0.0", 7).unwrap();
+        let out = install(&p, "1.0.0", false, 7).unwrap();
         assert!(out[0].starts_with("backed up"), "{out:?}");
         assert_eq!(
             fs::read_to_string(dir.join("settings.json.reeve-7.bak")).unwrap(),
@@ -428,12 +588,13 @@ mod tests {
         assert_eq!(out.len(), 3, "{out:?}");
         assert_eq!(pieces(&p, "1.0.0"), [Piece::Ok, Piece::Ok]);
         assert_eq!(pieces(&p, "1.0.1"), [Piece::Ok, Piece::Stale]);
-        let again = install(&p, "1.0.0", 8).unwrap();
+        let again = install(&p, "1.0.0", false, 8).unwrap();
         assert!(
             again.iter().all(|l| l.starts_with("unchanged")),
             "{again:?}"
         );
         assert!(!dir.join("settings.json.reeve-8.bak").exists());
+        assert!(!p.claude_md.exists());
 
         remove(&p, 7).unwrap();
         assert!(dir.join("settings.json.reeve-7-2.bak").exists());
@@ -448,7 +609,7 @@ mod tests {
     fn install_creates_missing_settings_and_remove_spares_a_foreign_skill() {
         let dir = temp("fresh");
         let p = Paths::at(&dir);
-        let out = install(&p, "1.0.0", 1).unwrap();
+        let out = install(&p, "1.0.0", false, 1).unwrap();
         assert!(out.iter().all(|l| !l.starts_with("backed up")), "{out:?}");
         assert_eq!(
             hook_state(&read_settings(&p.settings).unwrap().unwrap()),
@@ -467,10 +628,154 @@ mod tests {
         let dir = temp("bad");
         let p = Paths::at(&dir);
         fs::write(&p.settings, "{ nope").unwrap();
-        let e = install(&p, "1.0.0", 1).unwrap_err().to_string();
+        let e = install(&p, "1.0.0", false, 1).unwrap_err().to_string();
         assert!(e.contains("not valid JSON"), "{e}");
         assert_eq!(fs::read_to_string(&p.settings).unwrap(), "{ nope");
         assert!(!p.skill.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_context_hook_runs_on_prompts_and_tool_calls_and_never_fails() {
+        let mut s = others();
+        add_hook(&mut s).unwrap();
+        for event in ["UserPromptSubmit", "PostToolUse"] {
+            let gs = s["hooks"][event].as_array().unwrap();
+            assert_eq!(gs.len(), 1, "{event}");
+            assert_eq!(gs[0]["hooks"][0]["command"], context_command());
+            assert!(gs[0].get("matcher").is_none(), "{event}");
+        }
+        let c = context_command();
+        assert!(c.starts_with("command -v reeve >/dev/null && reeve hook context || true"));
+        assert!(c.ends_with(MARKER));
+    }
+
+    #[test]
+    fn a_setup_with_only_the_session_start_hook_is_stale() {
+        let mut s = others();
+        add_hook(&mut s).unwrap();
+        s["hooks"].as_object_mut().unwrap().remove("PostToolUse");
+        assert_eq!(hook_state(&s), Piece::Stale);
+        assert_eq!(add_hook(&mut s), Ok(true));
+        assert_eq!(hook_state(&s), Piece::Ok);
+    }
+
+    #[test]
+    fn removing_leaves_a_users_own_empty_event_list() {
+        let before = json!({"hooks": {"PostToolUse": [], "Stop": []}});
+        let mut s = before.clone();
+        add_hook(&mut s).unwrap();
+        assert!(remove_hook(&mut s));
+        assert_eq!(s, json!({"hooks": {"Stop": []}}));
+        let mut s = json!({"hooks": {"PostToolUse": []}});
+        let mut with = s.clone();
+        with["hooks"]["SessionStart"] = json!([{ "hooks": [{ "command": hook_command() }] }]);
+        assert!(remove_hook(&mut with));
+        assert_eq!(with, s);
+        assert!(!remove_hook(&mut s));
+    }
+
+    #[test]
+    fn the_block_is_added_once_and_removed_exactly() {
+        for before in ["", "# Mine\n\nkeep this\n", "no newline at the end"] {
+            let with = add_block(before).unwrap();
+            assert_eq!(block_state(Some(&with)), Ok(Piece::Ok), "{before:?}");
+            assert!(with.starts_with(before), "{with:?}");
+            assert_eq!(add_block(&with).unwrap(), with);
+            let back = remove_block(&with).unwrap().unwrap();
+            if before.ends_with('\n') || before.is_empty() {
+                assert_eq!(back, before);
+            } else {
+                assert_eq!(back, format!("{before}\n"));
+            }
+            assert_eq!(remove_block(&back).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn a_stale_block_is_rewritten_in_place_and_text_around_it_stays() {
+        let old = format!("top\n\n{BLOCK_START}\nold words\n{BLOCK_END}\n\nbottom\n");
+        assert_eq!(block_state(Some(&old)), Ok(Piece::Stale));
+        let new = add_block(&old).unwrap();
+        assert_eq!(new, format!("top\n\n{}\n\nbottom\n", block()));
+        assert_eq!(remove_block(&new).unwrap().unwrap(), "top\n\n\nbottom\n");
+        let broken = format!("top\n{BLOCK_START}\nno end\n");
+        assert!(block_state(Some(&broken)).is_err());
+        assert!(add_block(&broken).is_err());
+        assert!(remove_block(&broken).is_err());
+    }
+
+    #[test]
+    fn the_block_states_the_rules_and_points_at_the_manual() {
+        let b = block();
+        for part in [
+            "reeve is installed",
+            "`reeve heavy -- <command>`",
+            "in the background",
+            "`reeve handoff --name NAME --notes FILE`",
+            "reeve run --name",
+            "--cwd DIR",
+            "`reeve --skill`",
+        ] {
+            assert!(b.contains(part), "{part}");
+        }
+        assert!(b.len() / 4 <= 200, "{}", b.len() / 4);
+    }
+
+    #[test]
+    fn claude_md_is_written_only_when_asked_and_kept_current_after() {
+        let dir = temp("md");
+        let p = Paths::at(&dir);
+        fs::write(&p.claude_md, "# Mine\n").unwrap();
+        install(&p, "1.0.0", false, 1).unwrap();
+        assert_eq!(fs::read_to_string(&p.claude_md).unwrap(), "# Mine\n");
+        assert_eq!(check(&p, "1.0.0", false).unwrap().len(), 2);
+        let asked = check(&p, "1.0.0", true).unwrap();
+        assert_eq!(asked[2].1, Piece::Missing);
+        assert!(render_check(&asked, true).contains("`reeve setup claude --claude-md` adds it"));
+
+        install(&p, "1.0.0", true, 2).unwrap();
+        let md = fs::read_to_string(&p.claude_md).unwrap();
+        assert_eq!(md, format!("# Mine\n\n{}\n", block()));
+        assert_eq!(check(&p, "1.0.0", false).unwrap()[2].1, Piece::Ok);
+        fs::write(&p.claude_md, md.replace("reeve is installed", "old")).unwrap();
+        assert_eq!(check(&p, "1.0.0", false).unwrap()[2].1, Piece::Stale);
+        install(&p, "1.0.0", false, 3).unwrap();
+        assert_eq!(fs::read_to_string(&p.claude_md).unwrap(), md);
+
+        let out = remove(&p, 4).unwrap();
+        assert!(out.iter().any(|l| l.contains("reeve block")), "{out:?}");
+        assert_eq!(fs::read_to_string(&p.claude_md).unwrap(), "# Mine\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_claude_md_with_a_broken_block_is_left_alone() {
+        let dir = temp("mdbad");
+        let p = Paths::at(&dir);
+        let broken = format!("{BLOCK_START}\nmine now\n");
+        fs::write(&p.claude_md, &broken).unwrap();
+        let e = install(&p, "1.0.0", true, 1).unwrap_err().to_string();
+        assert!(e.contains("left it alone"), "{e}");
+        assert!(!p.settings.exists());
+        assert!(remove(&p, 2).is_err());
+        assert_eq!(fs::read_to_string(&p.claude_md).unwrap(), broken);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_claude_md_stays_a_symlink() {
+        let dir = temp("mdlink");
+        let p = Paths::at(&dir);
+        let real = dir.join("dotfiles.md");
+        fs::write(&real, "# Mine\n").unwrap();
+        std::os::unix::fs::symlink(&real, &p.claude_md).unwrap();
+        install(&p, "1.0.0", true, 1).unwrap();
+        assert!(fs::symlink_metadata(&p.claude_md).unwrap().is_symlink());
+        assert!(fs::read_to_string(&real).unwrap().contains(BLOCK_START));
+        remove(&p, 2).unwrap();
+        assert_eq!(fs::read_to_string(&real).unwrap(), "# Mine\n");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -482,7 +787,7 @@ mod tests {
         let real = dir.join("dotfiles.json");
         fs::write(&real, "{}\n").unwrap();
         std::os::unix::fs::symlink(&real, &p.settings).unwrap();
-        install(&p, "1.0.0", 1).unwrap();
+        install(&p, "1.0.0", false, 1).unwrap();
         assert!(fs::symlink_metadata(&p.settings).unwrap().is_symlink());
         assert!(fs::read_to_string(&real).unwrap().contains(MARKER));
         fs::remove_dir_all(&dir).unwrap();
