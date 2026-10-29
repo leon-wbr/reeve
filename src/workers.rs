@@ -1,5 +1,6 @@
-//! Named workers: agents started by `reeve run --name` in a Herdr pane or as a Claude Code
-//! background session, recorded so that any later session can find them and their reports.
+//! Named workers: agents started by `reeve run --name` in a Herdr pane, as a Claude Code
+//! background session or as a detached `codex exec`, recorded so that any later session can find
+//! them and their reports.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,16 +30,64 @@ impl Backend {
     }
 }
 
+/// Which agent CLI a worker runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl Kind {
+    /// The CLI's executable, which is also Herdr's name for the agent.
+    pub fn bin(self) -> &'static str {
+        match self {
+            Kind::Claude => "claude",
+            Kind::Codex => "codex",
+        }
+    }
+
+    fn is_claude(&self) -> bool {
+        *self == Kind::Claude
+    }
+
+    /// The agent of the session reeve runs in: Codex sets `CODEX_THREAD_ID` in its shell
+    /// commands, Claude Code sets `CLAUDECODE`. Claude when it can't tell.
+    pub fn of_session(codex_thread: Option<&str>, claudecode: Option<&str>) -> Kind {
+        match (codex_thread, claudecode) {
+            (Some(t), None) if !t.is_empty() => Kind::Codex,
+            _ => Kind::Claude,
+        }
+    }
+
+    /// Variables by which the other agent would mistake this one for its own session.
+    fn foreign_env(self) -> &'static [&'static str] {
+        match self {
+            Kind::Claude => &["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
+            Kind::Codex => &["CLAUDECODE"],
+        }
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.bin())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worker {
     pub name: String,
     pub backend: Backend,
+    #[serde(default, skip_serializing_if = "Kind::is_claude")]
+    pub agent: Kind,
     pub cwd: PathBuf,
     /// Unix seconds.
     pub started: u64,
     pub report: PathBuf,
-    /// The Herdr pane ID or the background session's short id; empty for a background
-    /// session that is still starting.
+    /// The Herdr pane ID, the background session's short id, or the pid of a background
+    /// `codex exec`; empty for a background worker that is still starting.
     pub handle: String,
     /// Set by `reeve run` until `reeve start`, in the background, has brought the agent up.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -88,10 +137,11 @@ impl State {
 /// Long enough for a pane start's own waits: 5s for the shell, 10s for herdr, 10s for claude.
 pub const START_SECS: u64 = 30;
 
-/// A worker still starting is `starting`, and `gone` once its start failed or ran out of time;
-/// only a started one has an agent worth asking about.
+/// A worker still starting is `starting`, and `gone` once its start failed or ran out of time,
+/// unless it wrote its report anyway; only a started one has an agent worth asking about.
 pub fn state_of(w: &Worker, now: u64, agent: impl FnOnce() -> Agent) -> State {
     match (&w.error, w.starting) {
+        (Some(_), _) if w.report.is_file() => State::Done,
         (Some(_), _) => State::Gone,
         (None, true) if now.saturating_sub(w.started) < START_SECS => State::Starting,
         (None, true) => State::Gone,
@@ -107,8 +157,36 @@ pub fn gone_why(w: &Worker) -> String {
     match &w.error {
         Some(e) => format!("failed to start: {e}"),
         None if w.starting => format!("did not start within {START_SECS}s"),
-        None => "is gone without writing its report".into(),
+        None => format!("is gone without writing its report: {}", left_where(w)),
     }
+}
+
+/// Where a background `codex exec` worker's JSON events go: `logs/NAME.jsonl` beside `reports/`.
+pub fn exec_log(w: &Worker) -> PathBuf {
+    let state = w
+        .report
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new("."));
+    state.join("logs").join(format!("{}.jsonl", w.name))
+}
+
+/// The thread id from `codex exec --json`'s `thread.started` event.
+pub fn exec_thread(log: &str) -> Option<String> {
+    log.lines().find_map(|l| {
+        let v: Value = serde_json::from_str(l).ok()?;
+        (v["type"] == "thread.started").then(|| v["thread_id"].as_str().map(String::from))?
+    })
+}
+
+/// How to send a background `codex exec` worker a message: resume its thread.
+fn resume_hint(w: &Worker) -> String {
+    let log = exec_log(w);
+    let thread = fs::read_to_string(&log)
+        .ok()
+        .and_then(|l| exec_thread(&l))
+        .unwrap_or_else(|| format!("THREAD (the thread_id in {})", crate::setup::tilde(&log)));
+    format!("`codex exec resume {thread} \"MESSAGE\"`")
 }
 
 impl fmt::Display for State {
@@ -274,26 +352,31 @@ fn pointer(file: &Path) -> String {
 pub const TYPED_MAX: usize = 1000;
 
 /// Length of the command herdr types, each argument single-quoted.
-pub fn typed_len(argv: &[String]) -> usize {
+pub fn typed_len(kind: Kind, argv: &[String]) -> usize {
     argv.iter()
         .map(|a| 3 + a.len() + 3 * a.matches('\'').count())
         .sum::<usize>()
-        + "claude".len()
+        + kind.bin().len()
 }
 
-/// Claude's argv for a pane. A prompt that can't be typed whole goes through `file`, which
+/// The agent's argv for a pane. A prompt that can't be typed whole goes through `file`, which
 /// the caller writes; flags too long to type are an error.
-pub fn pane_argv(flags: &[String], prompt: &str, file: &Path) -> Result<Vec<String>, String> {
+pub fn pane_argv(
+    kind: Kind,
+    flags: &[String],
+    prompt: &str,
+    file: &Path,
+) -> Result<Vec<String>, String> {
     let with = |p: String| -> Vec<String> { flags.iter().cloned().chain([p]).collect() };
     let argv = with(prompt.into());
-    if pane_prompt(prompt, file).is_none() && typed_len(&argv) <= TYPED_MAX {
+    if pane_prompt(prompt, file).is_none() && typed_len(kind, &argv) <= TYPED_MAX {
         return Ok(argv);
     }
     let argv = with(pointer(file));
-    match typed_len(&argv) {
+    match typed_len(kind, &argv) {
         n if n <= TYPED_MAX => Ok(argv),
         n => Err(format!(
-            "claude's flags are too long to type into a pane ({n} bytes, at most {TYPED_MAX})"
+            "{kind}'s flags are too long to type into a pane ({n} bytes, at most {TYPED_MAX})"
         )),
     }
 }
@@ -314,6 +397,50 @@ pub fn claude_args(name: &str, report: &Path, flags: &[String]) -> Vec<String> {
     flags.iter().cloned().chain(own).collect()
 }
 
+/// Codex args for a worker: its sandbox may write reeve's state dir, for the report and
+/// `reeve heavy`'s queue. That takes a writable sandbox, which `codex exec` and an untrusted
+/// folder don't give by default (codex then refuses `--add-dir` and exits), so it gets
+/// workspace-write unless its arguments choose a sandbox. Codex has no flag to name a session.
+pub fn codex_args(report: &Path, flags: &[String]) -> Vec<String> {
+    let state = report.parent().and_then(Path::parent).unwrap_or(report);
+    let chosen = flags.iter().any(|a| {
+        CODEX_SANDBOX_FLAGS.contains(&a.as_str())
+            || a.starts_with("--sandbox=")
+            || a.starts_with("-s=")
+    });
+    let sandbox = (!chosen).then_some(["-s", "workspace-write"]);
+    flags
+        .iter()
+        .cloned()
+        .chain(sandbox.into_iter().flatten().map(String::from))
+        .chain(["--add-dir".into(), state.display().to_string()])
+        .collect()
+}
+
+pub fn agent_args(kind: Kind, name: &str, report: &Path, flags: &[String]) -> Vec<String> {
+    match kind {
+        Kind::Claude => claude_args(name, report, flags),
+        Kind::Codex => codex_args(report, flags),
+    }
+}
+
+/// Flags by which codex's own arguments already choose a sandbox.
+const CODEX_SANDBOX_FLAGS: [&str; 3] = [
+    "-s",
+    "--sandbox",
+    "--dangerously-bypass-approvals-and-sandbox",
+];
+
+/// The whole `codex exec` command line for a background worker, with its events as JSON.
+pub fn exec_argv(codex: &[String], prompt: &str) -> Vec<String> {
+    ["codex", "exec", "--json", "--skip-git-repo-check"]
+        .into_iter()
+        .map(String::from)
+        .chain(codex.iter().cloned())
+        .chain([prompt.into()])
+        .collect()
+}
+
 pub fn tab_create_args(name: &str, cwd: &str, workspace: Option<&str>) -> Vec<String> {
     ["tab", "create", "--label", name, "--cwd", cwd, "--no-focus"]
         .into_iter()
@@ -331,13 +458,13 @@ pub fn created_tab(out: &Value) -> Option<(String, String)> {
     ))
 }
 
-pub fn pane_start_args(name: &str, pane: &str, claude: &[String]) -> Vec<String> {
+pub fn pane_start_args(name: &str, pane: &str, kind: Kind, claude: &[String]) -> Vec<String> {
     [
         "agent",
         "start",
         name,
         "--kind",
-        "claude",
+        kind.bin(),
         "--pane",
         pane,
         "--timeout",
@@ -350,10 +477,17 @@ pub fn pane_start_args(name: &str, pane: &str, claude: &[String]) -> Vec<String>
     .collect()
 }
 
-/// A launch prompt keeps claude busy, and `herdr agent start` times out waiting for it to
-/// become idle.
+/// `herdr agent start` gave up, but the agent may well be running: a launch prompt keeps it
+/// busy, so herdr times out waiting for it to become idle, and Codex's own session hook can
+/// claim the pane for its session before herdr is done, so herdr's name no longer owns it.
 pub fn busy_at_start(err: &str) -> bool {
-    herdr_error_code(err).is_some_and(|c| c == "timeout")
+    herdr_error_code(err).is_some_and(|c| c == "timeout" || c == "agent_name_not_found")
+}
+
+/// The agent started but stopped at a question for the user, such as Codex asking whether to
+/// trust the folder: it is up, and shows as blocked until the user answers it in its tab.
+pub fn blocked_at_start(err: &str) -> bool {
+    herdr_error_code(err).is_some_and(|c| c == "agent_not_ready")
 }
 
 /// A new pane's shell isn't up yet; herdr refuses before typing anything, so retrying is safe.
@@ -380,8 +514,9 @@ pub fn bg_id(out: &str) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
-/// From `herdr pane get`: its JSON, or the error naming a closed pane.
-pub fn pane_agent(probe: Result<&str, &str>) -> Agent {
+/// From `herdr pane get`: its JSON, or the error naming a closed pane. A pane whose agent
+/// isn't `kind` (any more) has none of ours.
+pub fn pane_agent(probe: Result<&str, &str>, kind: Kind) -> Agent {
     let out = match probe {
         Err(e) if e.contains(r#""code":"pane_not_found""#) => return Agent::Absent,
         Err(_) => return Agent::Unknown,
@@ -391,7 +526,7 @@ pub fn pane_agent(probe: Result<&str, &str>) -> Agent {
         return Agent::Unknown;
     };
     let pane = &v["result"]["pane"];
-    if pane["agent"] != "claude" {
+    if pane["agent"] != kind.bin() {
         return Agent::Absent;
     }
     match pane["agent_status"].as_str() {
@@ -416,6 +551,16 @@ pub fn bg_agent(probe: Result<&str, &str>, id: &str) -> Agent {
         // Also without a process: one idle for an hour is stopped and resumes on attach.
         Some(a) if a["state"] == "blocked" => Agent::Blocked,
         Some(_) => Agent::Idle,
+    }
+}
+
+/// From `ps -o command= -p PID`: a background `codex exec` works until its process is gone. It
+/// never stops to ask, so it is never blocked, and it exits when its turn ends. A reused pid
+/// runs something else.
+pub fn exec_agent(probe: Result<&str, &str>) -> Agent {
+    match probe {
+        Ok(cmd) if cmd.contains("codex") => Agent::Working,
+        _ => Agent::Absent,
     }
 }
 
@@ -462,10 +607,16 @@ fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String)> {
     created_tab(&created).ok_or_else(|| io::Error::other("herdr tab create returned no pane id"))
 }
 
-/// Starts claude in the tab's pane with the prompt as its argument; the tab is closed again if
-/// claude didn't start.
-fn start_pane(name: &str, tab: &str, pane: &str, claude: &[String]) -> io::Result<String> {
-    let start = || herdr(pane_start_args(name, pane, claude));
+/// Starts the agent in the tab's pane with the prompt as its argument; the tab is closed again
+/// if it didn't start.
+fn start_pane(
+    name: &str,
+    tab: &str,
+    pane: &str,
+    kind: Kind,
+    args: &[String],
+) -> io::Result<String> {
+    let start = || herdr(pane_start_args(name, pane, kind, args));
     let mut started = start();
     for _ in 0..20 {
         match &started {
@@ -477,9 +628,10 @@ fn start_pane(name: &str, tab: &str, pane: &str, claude: &[String]) -> io::Resul
         }
     }
     let started = match started {
-        Err(e) if busy_at_start(&e.to_string()) => wait_for_claude(pane)
+        Err(e) if busy_at_start(&e.to_string()) => wait_for_agent(pane, kind)
             .and_then(|_| herdr(["agent", "rename", pane, name]))
             .map_err(|_| e),
+        Err(e) if blocked_at_start(&e.to_string()) => Ok(Value::Null),
         r => r,
     };
     if let Err(e) = started {
@@ -489,27 +641,34 @@ fn start_pane(name: &str, tab: &str, pane: &str, claude: &[String]) -> io::Resul
     Ok(pane.into())
 }
 
-fn wait_for_claude(pane: &str) -> io::Result<()> {
+fn wait_for_agent(pane: &str, kind: Kind) -> io::Result<()> {
     for _ in 0..20 {
         let a = pane_agent(
             probe("herdr", ["pane", "get", pane])
                 .as_deref()
                 .map_err(|e| e.as_str()),
+            kind,
         );
         if matches!(a, Agent::Working | Agent::Idle | Agent::Blocked) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    Err(io::Error::other(format!("no claude in pane {pane}")))
+    Err(io::Error::other(format!("no {kind} in pane {pane}")))
+}
+
+/// Drops the variables by which `kind` would take itself for its starter's session.
+fn without_foreign_env(mut cmd: Command, kind: Kind) -> Command {
+    for k in kind.foreign_env() {
+        cmd.env_remove(k);
+    }
+    cmd
 }
 
 /// Returns the short id that `claude --bg` prints and `claude agents` lists.
 fn start_bg(argv: &[String]) -> io::Result<String> {
-    let o = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(Stdio::null())
-        .output()?;
+    let mut cmd = without_foreign_env(Command::new(&argv[0]), Kind::Claude);
+    let o = cmd.args(&argv[1..]).stdin(Stdio::null()).output()?;
     if !o.status.success() {
         return Err(io::Error::other(format!(
             "claude --bg failed ({}): {}",
@@ -521,16 +680,47 @@ fn start_bg(argv: &[String]) -> io::Result<String> {
         .ok_or_else(|| io::Error::other("claude --bg printed no session id"))
 }
 
+/// Starts `codex exec` in its own process group with its events in `log`, and returns its pid.
+/// Nothing waits for it: once `reeve start` exits, init reaps it.
+fn start_exec(argv: &[String], log: &Path) -> io::Result<String> {
+    use std::os::unix::process::CommandExt;
+    fs::create_dir_all(log.parent().expect("logs dir"))?;
+    let out = File::create(log)?;
+    let mut cmd = without_foreign_env(Command::new(&argv[0]), Kind::Codex);
+    let child = cmd
+        .args(&argv[1..])
+        .stdin(Stdio::null())
+        .stdout(out.try_clone()?)
+        .stderr(out)
+        .process_group(0)
+        .spawn()
+        .map_err(|e| io::Error::other(format!("codex exec failed to start: {e}")))?;
+    Ok(child.id().to_string())
+}
+
 fn agent(w: &Worker) -> Agent {
-    match w.backend {
-        Backend::Pane => {
+    match (w.backend, w.agent) {
+        (Backend::Pane, kind) => {
             let p = probe("herdr", ["pane", "get", &w.handle]);
-            pane_agent(p.as_deref().map_err(|e| e.as_str()))
+            pane_agent(p.as_deref().map_err(|e| e.as_str()), kind)
         }
-        Backend::Bg => {
+        (Backend::Bg, Kind::Claude) => {
             let p = probe("claude", ["agents", "--json"]);
             bg_agent(p.as_deref().map_err(|e| e.as_str()), &w.handle)
         }
+        (Backend::Bg, Kind::Codex) => {
+            let p = probe("ps", ["-o", "command=", "-p", &w.handle]);
+            exec_agent(p.as_deref().map_err(|e| e.as_str()))
+        }
+    }
+}
+
+/// How to stop a worker's agent by hand.
+fn stop_hint(w: &Worker) -> String {
+    match (w.backend, w.agent) {
+        (Backend::Pane, _) => format!("close pane {}", w.handle),
+        (Backend::Bg, Kind::Claude) => format!("`claude rm {}`", w.handle),
+        (Backend::Bg, Kind::Codex) => format!("`kill {}`", w.handle),
     }
 }
 
@@ -540,7 +730,13 @@ pub fn state(w: &Worker) -> State {
     state_of(w, now(), || agent(w))
 }
 
-pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::Result<()> {
+pub fn run(
+    r: &Registry,
+    name: &str,
+    kind: Kind,
+    backend: Backend,
+    args: &[String],
+) -> io::Result<()> {
     check_name(name).map_err(io::Error::other)?;
     let (flags, prompt) = split_prompt(args).map_err(io::Error::other)?;
     if let Ok(old) = r.get(name) {
@@ -551,12 +747,9 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
             )));
         }
         if a != Agent::Absent {
-            let close = match old.backend {
-                Backend::Pane => format!("close pane {}", old.handle),
-                Backend::Bg => format!("`claude rm {}`", old.handle),
-            };
             return Err(io::Error::other(format!(
-                "worker {name} still has an agent; {close} or use another name"
+                "worker {name} still has an agent; {} or use another name",
+                stop_hint(&old)
             )));
         }
     }
@@ -568,14 +761,14 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
-    let claude = claude_args(name, &report, flags);
+    let own = agent_args(kind, name, &report, flags);
     let prompt = with_report(prompt, &report);
     let cwd = std::env::current_dir()?;
-    // The tab opens now, so the user sees the worker starting; claude starts in the background.
+    // The tab opens now, so the user sees the worker starting; the agent starts in the background.
     let opened = match backend {
         Backend::Pane => {
             let file = reports.join(format!("{name}.prompt.md"));
-            pane_argv(&claude, &prompt, &file)
+            pane_argv(kind, &own, &prompt, &file)
                 .map_err(io::Error::other)
                 .and_then(|argv| {
                     if argv.last() != Some(&prompt) {
@@ -585,7 +778,8 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
                     Ok((pane, Some(tab), argv))
                 })
         }
-        Backend::Bg => Ok((String::new(), None, bg_argv(&claude, &prompt))),
+        Backend::Bg if kind == Kind::Codex => Ok((String::new(), None, exec_argv(&own, &prompt))),
+        Backend::Bg => Ok((String::new(), None, bg_argv(&own, &prompt))),
     };
     let (handle, tab, argv) = match opened {
         Ok(o) => o,
@@ -599,6 +793,7 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
     r.put(Worker {
         name: name.into(),
         backend,
+        agent: kind,
         cwd,
         started,
         report,
@@ -638,15 +833,16 @@ fn spawn_start(name: &str, tab: Option<&str>, argv: &[String]) -> io::Result<()>
         .map(|_| ())
 }
 
-/// The slow half of `reeve run`: brings the registered worker's agent up, with `argv` as
-/// claude's arguments in a pane or the whole `claude --bg` command line, and records its
-/// handle or why it failed.
+/// The slow half of `reeve run`: brings the registered worker's agent up, with `argv` as the
+/// agent's arguments in a pane or its whole background command line, and records its handle
+/// or why it failed.
 pub fn start(r: &Registry, name: &str, tab: Option<&str>, argv: &[String]) -> io::Result<()> {
     let w = r.get(name)?;
-    let up = match (w.backend, tab) {
-        (Backend::Pane, Some(tab)) => start_pane(name, tab, &w.handle, argv),
-        (Backend::Pane, None) => Err(io::Error::other("a pane worker needs --tab")),
-        (Backend::Bg, _) => start_bg(argv),
+    let up = match (w.backend, w.agent, tab) {
+        (Backend::Pane, kind, Some(tab)) => start_pane(name, tab, &w.handle, kind, argv),
+        (Backend::Pane, _, None) => Err(io::Error::other("a pane worker needs --tab")),
+        (Backend::Bg, Kind::Claude, _) => start_bg(argv),
+        (Backend::Bg, Kind::Codex, _) => start_exec(argv, &exec_log(&w)),
     };
     r.set(name, w.started, |w| {
         w.starting = false;
@@ -743,9 +939,9 @@ fn states(all: &[Worker]) -> Vec<State> {
     let now = now();
     all.iter()
         .map(|w| {
-            state_of(w, now, || match w.backend {
-                Backend::Pane => agent(w),
-                Backend::Bg => {
+            state_of(w, now, || match (w.backend, w.agent) {
+                (Backend::Pane, _) | (Backend::Bg, Kind::Codex) => agent(w),
+                (Backend::Bg, Kind::Claude) => {
                     let p = bg.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
                     bg_agent(p.as_deref().map_err(|e| e.as_str()), &w.handle)
                 }
@@ -780,16 +976,17 @@ pub fn gone(r: &Registry) -> io::Result<Vec<String>> {
 pub fn ls(r: &Registry) -> io::Result<String> {
     let all = r.all()?;
     let width = all.iter().map(|w| w.name.len()).max().unwrap_or(0).max(4);
-    let mut out = format!("{:width$}  STATE     BACKEND  AGE  CWD", "NAME");
+    let mut out = format!("{:width$}  STATE     AGENT   BACKEND  AGE  CWD", "NAME");
     for (w, state) in all.iter().zip(states(&all)) {
         let backend = match w.backend {
             Backend::Pane => "pane",
             Backend::Bg => "bg",
         };
         out += &format!(
-            "\n{:width$}  {:8}  {backend:7}  {:>3}  {}",
+            "\n{:width$}  {:8}  {:6}  {backend:7}  {:>3}  {}",
             w.name,
             state.to_string(),
+            w.agent.bin(),
             age(now().saturating_sub(w.started)),
             crate::setup::tilde(&w.cwd)
         );
@@ -826,9 +1023,26 @@ const IDLE_POLLS: u32 = 3;
 const POLL: Duration = Duration::from_secs(2);
 
 fn answer_where(w: &Worker) -> String {
-    match w.backend {
-        Backend::Pane => "in its tab".to_string(),
-        Backend::Bg => format!("with `claude attach {}`", w.handle),
+    match (w.backend, w.agent) {
+        (Backend::Pane, _) => "in its tab".to_string(),
+        (Backend::Bg, Kind::Claude) => format!("with `claude attach {}`", w.handle),
+        (Backend::Bg, Kind::Codex) => format!("with {}", resume_hint(w)),
+    }
+}
+
+/// Where to see what a gone worker left.
+fn left_where(w: &Worker) -> String {
+    match (w.backend, w.agent) {
+        (_, Kind::Claude) => format!(
+            "see `claude logs {}`, or its transcript under ~/.claude/projects/",
+            w.name
+        ),
+        (Backend::Pane, Kind::Codex) => "`codex resume --all` finds its session".into(),
+        (Backend::Bg, Kind::Codex) => format!(
+            "see {}; {} continues it",
+            crate::setup::tilde(&exec_log(w)),
+            resume_hint(w)
+        ),
     }
 }
 
@@ -892,7 +1106,7 @@ fn change(w: &Worker, before: Option<State>, s: State) -> String {
         ),
         State::Done => format!("{name} done: report at {}", crate::setup::tilde(&w.report)),
         State::Gone if w.error.is_some() || w.starting => format!("{name} gone: {}", gone_why(w)),
-        State::Gone => format!("{name} gone without a report: see `claude logs {name}`"),
+        State::Gone => format!("{name} gone without a report: {}", left_where(w)),
         State::Unknown => format!("{name} state unknown"),
     }
 }
@@ -966,6 +1180,7 @@ mod tests {
         Worker {
             name: name.into(),
             backend: Backend::Pane,
+            agent: Kind::Claude,
             cwd: "/work/x".into(),
             started: 100,
             report: r.report_path(name),
@@ -1011,6 +1226,15 @@ mod tests {
         r.put(w.clone()).unwrap();
         let raw = fs::read_to_string(dir.join("workers.json")).unwrap();
         assert!(raw.contains(r#""backend": "bg""#), "{raw}");
+        assert!(
+            !raw.contains("agent"),
+            "a claude worker reads as before: {raw}"
+        );
+        assert_eq!(r.all().unwrap(), [w.clone()]);
+        w.agent = Kind::Codex;
+        r.put(w.clone()).unwrap();
+        let raw = fs::read_to_string(dir.join("workers.json")).unwrap();
+        assert!(raw.contains(r#""agent": "codex""#), "{raw}");
         assert_eq!(r.all().unwrap(), [w]);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1050,8 +1274,17 @@ mod tests {
         w.error = Some("herdr: boom".into());
         assert_eq!(state_of(&w, 100, unasked), State::Gone);
         assert_eq!(gone_why(&w), "failed to start: herdr: boom");
+        // An agent reeve took for failed may still have done its work.
+        fs::create_dir_all(w.report.parent().unwrap()).unwrap();
+        fs::write(&w.report, "done").unwrap();
+        assert_eq!(state_of(&w, 100, unasked), State::Done);
+        fs::remove_file(&w.report).unwrap();
         w.error = None;
-        assert_eq!(gone_why(&w), "is gone without writing its report");
+        assert_eq!(
+            gone_why(&w),
+            "is gone without writing its report: see `claude logs a`, or its transcript under \
+             ~/.claude/projects/"
+        );
     }
 
     #[test]
@@ -1174,7 +1407,11 @@ mod tests {
     #[test]
     fn pane_worker_gets_its_prompt_as_a_launch_argument() {
         assert_eq!(
-            pane_start_args("x", "w1:p2", &s(&["-n", "x", "fix it"])),
+            pane_start_args("x", "p", Kind::Codex, &s(&["go"]))[4],
+            "codex"
+        );
+        assert_eq!(
+            pane_start_args("x", "w1:p2", Kind::Claude, &s(&["-n", "x", "fix it"])),
             s(&[
                 "agent",
                 "start",
@@ -1194,12 +1431,22 @@ mod tests {
     }
 
     #[test]
-    fn a_busy_start_is_herdrs_timeout_and_nothing_else() {
+    fn a_busy_start_is_herdrs_timeout_or_a_pane_codex_claimed_and_nothing_else() {
         let timeout = r#"herdr: {"error":{"code":"timeout","message":"timed out waiting for agent startup"},"id":"cli:agent:start"}"#;
+        let claimed = r#"herdr: {"error":{"code":"agent_name_not_found","message":"named agent x no longer owns the target terminal"},"id":"cli:agent:start"}"#;
         let bad = r#"herdr: {"error":{"code":"invalid_agent_argument","message":"timeout"},"id":"cli:agent:start"}"#;
         assert!(busy_at_start(timeout));
+        assert!(busy_at_start(claimed));
         assert!(!busy_at_start(bad));
         assert!(!busy_at_start("herdr: not json"));
+    }
+
+    #[test]
+    fn an_agent_that_waits_for_the_user_at_start_is_up() {
+        let blocked = r#"herdr: {"error":{"code":"agent_not_ready","message":"agent x is blocked during startup and is not ready for prompts"},"id":"cli:agent:start"}"#;
+        let timeout = r#"herdr: {"error":{"code":"timeout","message":"timed out waiting for agent startup"},"id":"cli:agent:start"}"#;
+        assert!(blocked_at_start(blocked));
+        assert!(!blocked_at_start(timeout));
     }
 
     #[test]
@@ -1226,24 +1473,126 @@ mod tests {
         let f = Path::new("/st/reports/x.prompt.md");
         let flags = claude_args("x", Path::new("/st/reports/x.md"), &s(&["--model", "opus"]));
         let long = "it's \"quoted\" (and) https://example.com/?a=1&b=2 ".repeat(40);
-        let argv = pane_argv(&flags, &long, f).unwrap();
-        assert!(typed_len(&argv) <= TYPED_MAX);
+        let argv = pane_argv(Kind::Claude, &flags, &long, f).unwrap();
+        assert!(typed_len(Kind::Claude, &argv) <= TYPED_MAX);
         assert!(argv.last().unwrap().contains("/st/reports/x.prompt.md"));
-        let short = pane_argv(&flags, "fix it", f).unwrap();
+        let short = pane_argv(Kind::Claude, &flags, "fix it", f).unwrap();
         assert_eq!(short.last().unwrap(), "fix it");
     }
 
     #[test]
     fn typed_len_counts_the_quoting_herdr_types() {
-        assert_eq!(typed_len(&s(&["-n", "x"])), "claude '-n' 'x'".len());
-        assert_eq!(typed_len(&s(&["it's"])), r"claude 'it'\''s'".len());
+        let n = |kind, a: &[&str]| typed_len(kind, &s(a));
+        assert_eq!(n(Kind::Claude, &["-n", "x"]), "claude '-n' 'x'".len());
+        assert_eq!(n(Kind::Claude, &["it's"]), r"claude 'it'\''s'".len());
+        assert_eq!(n(Kind::Codex, &["go"]), "codex 'go'".len());
     }
 
     #[test]
     fn flags_too_long_to_type_fail_before_any_pane_opens() {
         let f = Path::new("/st/reports/x.prompt.md");
         let flags = s(&["--append-system-prompt", &"x".repeat(TYPED_MAX)]);
-        assert!(pane_argv(&flags, "fix it", f).is_err());
+        let e = pane_argv(Kind::Codex, &flags, "fix it", f).unwrap_err();
+        assert!(e.starts_with("codex's flags"), "{e}");
+    }
+
+    #[test]
+    fn a_codex_worker_may_write_reeves_state_dir_in_a_writable_sandbox_unless_one_is_chosen() {
+        let report = Path::new("/st/reports/x.md");
+        assert_eq!(
+            agent_args(Kind::Codex, "x", report, &s(&["-m", "o9"])),
+            s(&["-m", "o9", "-s", "workspace-write", "--add-dir", "/st"])
+        );
+        for chosen in [
+            &["-s", "read-only"][..],
+            &["--sandbox", "danger-full-access"],
+            &["--sandbox=danger-full-access"],
+            &["--dangerously-bypass-approvals-and-sandbox"],
+        ] {
+            let args = codex_args(report, &s(chosen));
+            assert!(!args.contains(&"workspace-write".into()), "{args:?}");
+            assert_eq!(args[args.len() - 2..], s(&["--add-dir", "/st"]));
+        }
+        assert_eq!(
+            agent_args(Kind::Claude, "x", report, &[]),
+            claude_args("x", report, &[])
+        );
+    }
+
+    #[test]
+    fn a_background_codex_runs_exec_with_json() {
+        assert_eq!(
+            exec_argv(&s(&["--add-dir", "/st"]), "go"),
+            s(&[
+                "codex",
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--add-dir",
+                "/st",
+                "go"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_background_codex_is_working_while_its_process_runs_codex() {
+        assert_eq!(
+            exec_agent(Ok("/opt/homebrew/bin/codex exec --json go\n")),
+            Agent::Working
+        );
+        assert_eq!(exec_agent(Ok("")), Agent::Absent);
+        assert_eq!(exec_agent(Ok("/usr/bin/vim notes\n")), Agent::Absent);
+        assert_eq!(exec_agent(Err("ps: ")), Agent::Absent);
+    }
+
+    #[test]
+    fn the_thread_comes_from_execs_first_event() {
+        let log = "Reading prompt\n{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}";
+        assert_eq!(exec_thread(log).as_deref(), Some("th-1"));
+        assert_eq!(exec_thread("{\"type\":\"turn.started\"}"), None);
+    }
+
+    #[test]
+    fn the_session_is_codex_only_when_codex_says_so_and_claude_doesnt() {
+        assert_eq!(Kind::of_session(Some("th"), None), Kind::Codex);
+        assert_eq!(Kind::of_session(Some("th"), Some("1")), Kind::Claude);
+        assert_eq!(Kind::of_session(None, None), Kind::Claude);
+        assert_eq!(Kind::of_session(Some(""), None), Kind::Claude);
+    }
+
+    #[test]
+    fn a_codex_worker_says_where_to_answer_and_what_it_left() {
+        let dir = temp("codex-hints");
+        let r = Registry::at(dir.clone());
+        let w = Worker {
+            agent: Kind::Codex,
+            backend: Backend::Bg,
+            handle: "4242".into(),
+            ..worker(&r, "cx", "")
+        };
+        assert_eq!(exec_log(&w), dir.join("logs/cx.jsonl"));
+        assert!(
+            gone_why(&w).contains("THREAD (the thread_id in "),
+            "{}",
+            gone_why(&w)
+        );
+        fs::create_dir_all(dir.join("logs")).unwrap();
+        fs::write(
+            exec_log(&w),
+            "{\"type\":\"thread.started\",\"thread_id\":\"th-9\"}\n",
+        )
+        .unwrap();
+        assert!(gone_why(&w).contains("`codex exec resume th-9 \"MESSAGE\"`"));
+        assert!(started(&w).contains("codex exec resume th-9"));
+        assert_eq!(stop_hint(&w), "`kill 4242`");
+        let pane = Worker {
+            backend: Backend::Pane,
+            ..w.clone()
+        };
+        assert!(blocked_hint(&pane).contains("in its tab"));
+        assert!(change(&pane, Some(State::Running), State::Gone).contains("codex resume --all"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1261,18 +1610,23 @@ mod tests {
     fn pane_agent_follows_herdrs_status() {
         let pane = |agent: &str| format!(r#"{{"result":{{"pane":{{{agent}"pane_id":"w1:p2"}}}}}}"#);
         let with = |status: &str| pane(&format!(r#""agent":"claude","agent_status":"{status}","#));
-        assert_eq!(pane_agent(Ok(&with("working"))), Agent::Working);
-        assert_eq!(pane_agent(Ok(&with("unknown"))), Agent::Working);
+        let claude = |p: Result<&str, &str>| pane_agent(p, Kind::Claude);
+        assert_eq!(claude(Ok(&with("working"))), Agent::Working);
+        assert_eq!(claude(Ok(&with("unknown"))), Agent::Working);
         for idle in ["idle", "done"] {
-            assert_eq!(pane_agent(Ok(&with(idle))), Agent::Idle, "{idle}");
+            assert_eq!(claude(Ok(&with(idle))), Agent::Idle, "{idle}");
         }
-        assert_eq!(pane_agent(Ok(&with("blocked"))), Agent::Blocked);
-        assert_eq!(pane_agent(Ok(&pane(""))), Agent::Absent);
+        assert_eq!(claude(Ok(&with("blocked"))), Agent::Blocked);
+        assert_eq!(claude(Ok(&pane(""))), Agent::Absent);
         let closed =
             r#"herdr: {"error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}"#;
-        assert_eq!(pane_agent(Err(closed)), Agent::Absent);
-        assert_eq!(pane_agent(Err("herdr: connection refused")), Agent::Unknown);
-        assert_eq!(pane_agent(Ok("garbage")), Agent::Unknown);
+        assert_eq!(claude(Err(closed)), Agent::Absent);
+        assert_eq!(claude(Err("herdr: connection refused")), Agent::Unknown);
+        assert_eq!(claude(Ok("garbage")), Agent::Unknown);
+        let codex = pane(r#""agent":"codex","agent_status":"blocked","#);
+        assert_eq!(pane_agent(Ok(&codex), Kind::Codex), Agent::Blocked);
+        assert_eq!(claude(Ok(&codex)), Agent::Absent);
+        assert_eq!(pane_agent(Ok(&with("working")), Kind::Codex), Agent::Absent);
     }
 
     #[test]

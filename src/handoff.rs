@@ -1,7 +1,7 @@
 //! `reeve handoff`: writes a handoff file that lists the session's named workers, and starts the
 //! successor as a named worker whose launch prompt points at that file.
 
-use crate::workers::{self, Backend, Registry, State, Worker};
+use crate::workers::{self, Backend, Kind, Registry, State, Worker};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -34,6 +34,7 @@ pub fn successor_prompt(file: &Path) -> String {
 pub fn handoff(
     r: &Registry,
     next: &str,
+    kind: Kind,
     backend: Backend,
     notes: &Path,
     args: &[String],
@@ -57,7 +58,7 @@ pub fn handoff(
         .cloned()
         .chain([successor_prompt(&file)])
         .collect();
-    workers::run(r, next, backend, &args)?;
+    workers::run(r, next, kind, backend, &args)?;
     println!("{}", file.display());
     eprintln!("reeve: handed off to {next}; stop now and leave the workers running");
     Ok(())
@@ -71,6 +72,7 @@ mod tests {
         Worker {
             name: name.into(),
             backend: Backend::Bg,
+            agent: Kind::Claude,
             cwd: "/work/x".into(),
             started: 1,
             report: format!("/st/reports/{name}.md").into(),

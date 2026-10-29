@@ -24,19 +24,19 @@ reeve watch fix-flaky    # a line per change: blocked, idle, gone, done
 reeve report fix-flaky   # prints the report
 ```
 
-The last argument after `--` is the prompt; claude flags such as `--model` go before it. It works in that checkout; for its own, pass claude's `-w NAME`.
+The last argument after `--` is the prompt; agent flags such as `--model` go before it. `--worktree` gives it its own git worktree; `--agent codex` runs Codex instead of Claude.
 
 For unattended work with a clear end, start the prompt with `/goal` and pass `--permission-mode auto` after `--`: a separate model checks it after each turn, so name the check.
 
 A **blocked** worker waits for the user, such as a permission prompt: answer it in its tab, or with `claude attach ID` for a background one. If `reeve wait` says idle without a report, it ended its turn early: send it a message, then wait again.
 
-A **gone** worker stopped without a report. See what it left (`claude logs NAME`, or its transcript under `~/.claude/projects/`), then restart it under the same name saying where to pick up, or report it lost. `reeve rm NAME` drops it from `reeve ls`.
+A **gone** worker stopped without a report. See what it left (`reeve wait NAME` says where), then restart it under the same name saying where to pick up, or report it lost. `reeve rm NAME` drops it from `reeve ls`.
 
 Workers suit long or parallel work, and anything a successor should pick up. For short work whose answer you need now, a subagent is simpler.
 
 ## Handoffs
 
-You don't see your own context usage: the hook `reeve setup claude` installs adds a "Context check" line to your prompt, or to the tool result that crossed it. Then finish the step in hand, write your notes and hand off; don't wait to be asked:
+You don't see your own context usage: the hook `reeve setup claude` (or `codex`) installs adds a "Context check" line to your prompt, or to the tool result that crossed it. Then finish the step in hand, write your notes and hand off; don't wait to be asked:
 
 ```sh
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions

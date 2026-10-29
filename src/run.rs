@@ -1,6 +1,10 @@
 //! `reeve run`: the one way reeve starts an agent, in the foreground or as a Claude Code
 //! background session (`--bg`), on the host or in a sandbox.
 
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
 /// Where the agent runs.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Target {
@@ -23,20 +27,81 @@ pub fn target(sandbox: Option<Option<String>>, bg: bool, pid: u32) -> Result<Tar
 }
 
 /// A worker started outside any repository loads no project's .claude/ settings, skills or hooks.
-pub fn cwd_warning(dir: &std::path::Path) -> Option<String> {
-    let in_repo = std::process::Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+pub fn cwd_warning(dir: &Path) -> Option<String> {
+    let in_repo = git(dir, &["rev-parse", "--is-inside-work-tree"]).is_ok();
     (!in_repo).then(|| {
         format!(
             "{} is not in a git repository, so the worker loads no project's .claude/ settings, skills or hooks; pass --cwd <project dir> to start it in the project",
             crate::setup::tilde(dir)
         )
     })
+}
+
+/// `REPO/.claude/worktrees/NAME`, where REPO is the main checkout that owns `common`, git's
+/// common dir (`REPO/.git`, or the repo itself when bare).
+pub fn worktree_dir(common: &Path, name: &str) -> PathBuf {
+    let repo = match common.file_name() {
+        Some(n) if n == ".git" => common.parent().unwrap_or(common),
+        _ => common,
+    };
+    repo.join(".claude/worktrees").join(name)
+}
+
+pub fn worktree_branch(name: &str) -> String {
+    format!("worktree-{name}")
+}
+
+fn git(dir: &Path, args: &[&str]) -> io::Result<String> {
+    let o = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .output()?;
+    if !o.status.success() {
+        return Err(io::Error::other(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&o.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// The worker's own worktree: made from HEAD on branch `worktree-NAME` the first time, and
+/// used again by a worker restarted under the same name.
+pub fn worktree(from: &Path, name: &str) -> io::Result<PathBuf> {
+    let common = git(
+        from,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .map_err(|e| io::Error::other(format!("--worktree needs a git repository: {e}")))?;
+    let dir = worktree_dir(Path::new(&common), name);
+    if dir.exists() {
+        git(&dir, &["rev-parse", "--is-inside-work-tree"]).map_err(|_| {
+            io::Error::other(format!(
+                "{} exists but isn't a git worktree",
+                crate::setup::tilde(&dir)
+            ))
+        })?;
+        return Ok(dir);
+    }
+    let branch = worktree_branch(name);
+    let path = dir.to_string_lossy();
+    let exists = git(
+        from,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    );
+    let args: Vec<&str> = match exists {
+        Ok(_) => vec!["worktree", "add", "--quiet", &path, &branch],
+        Err(_) => vec!["worktree", "add", "--quiet", "-b", &branch, &path],
+    };
+    git(from, &args)?;
+    Ok(dir)
 }
 
 /// The claude command line; in a sandbox it skips permission prompts.
@@ -58,6 +123,19 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn a_worktree_goes_under_the_main_checkout_even_from_another_worktree() {
+        assert_eq!(
+            worktree_dir(Path::new("/r/app/.git"), "fix"),
+            PathBuf::from("/r/app/.claude/worktrees/fix")
+        );
+        assert_eq!(
+            worktree_dir(Path::new("/r/app.git"), "fix"),
+            PathBuf::from("/r/app.git/.claude/worktrees/fix")
+        );
+        assert_eq!(worktree_branch("fix"), "worktree-fix");
     }
 
     #[test]

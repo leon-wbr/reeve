@@ -62,6 +62,13 @@ enum Top {
         /// Run the named worker in a new Herdr tab
         #[arg(long, requires = "name", conflicts_with = "bg")]
         pane: bool,
+        /// The agent CLI to run. A codex worker outside Herdr is a detached `codex exec`
+        #[arg(long, value_enum, default_value_t = workers::Kind::Claude, conflicts_with = "sandbox")]
+        agent: workers::Kind,
+        /// Start the named worker in its own git worktree, REPO/.claude/worktrees/NAME on branch
+        /// worktree-NAME, made from HEAD unless it is there already
+        #[arg(long, requires = "name")]
+        worktree: bool,
         /// Run it in a sandbox with --dangerously-skip-permissions. Without NAME the sandbox is
         /// removed when the agent exits; with NAME it is started if needed and kept running
         #[arg(long, value_name = "NAME", num_args = 0..=1)]
@@ -72,7 +79,7 @@ enum Top {
         cwd: Option<PathBuf>,
         #[command(flatten)]
         opts: sandbox::Opts,
-        /// Arguments passed to claude
+        /// Arguments passed to the agent, its prompt last for a named worker
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -117,7 +124,10 @@ enum Top {
         /// Skip reeve's safety checks, such as refusing --bg inside Herdr
         #[arg(long)]
         force: bool,
-        /// Arguments passed to the successor's claude
+        /// The successor's agent CLI [default: the one this session runs in]
+        #[arg(long, value_enum)]
+        agent: Option<workers::Kind>,
+        /// Arguments passed to the successor's agent
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -223,6 +233,21 @@ enum Setup {
         /// installed, when to use it, and to read `reeve --skill` for how
         #[arg(long, conflicts_with = "remove")]
         claude_md: bool,
+    },
+    /// Add hooks to ~/.codex/hooks.json that run `reeve ls --brief` at session start and
+    /// `reeve hook context` on prompts and tool calls, a skill stub at
+    /// ~/.agents/skills/reeve/SKILL.md, and ~/.codex/rules/reeve.rules, which lets reeve's own
+    /// bookkeeping commands write its state dir from Codex's sandbox. See docs/codex.md
+    Codex {
+        /// Only report whether each piece is installed and current
+        #[arg(long, conflicts_with = "remove")]
+        check: bool,
+        /// Take every piece out again, the AGENTS.md block included
+        #[arg(long)]
+        remove: bool,
+        /// Also add the marked reeve block to ~/.codex/AGENTS.md
+        #[arg(long, conflicts_with = "remove")]
+        agents_md: bool,
     },
 }
 
@@ -448,19 +473,28 @@ fn main() -> ExitCode {
             name: Some(name),
             bg,
             pane,
+            agent,
+            worktree,
             args,
             ..
         } => {
             ev.worker = Some(name.clone());
             let backend = workers::Backend::choose(pane, bg, in_herdr());
+            let moved = if worktree {
+                std::env::current_dir()
+                    .and_then(|d| run::worktree(&d, &name))
+                    .and_then(std::env::set_current_dir)
+            } else {
+                Ok(())
+            };
             if let Some(w) = std::env::current_dir()
                 .ok()
                 .and_then(|d| run::cwd_warning(&d))
             {
                 eprintln!("reeve: {w}");
             }
-            let started = workers().and_then(|r| {
-                workers::run(&r, &name, backend, &args)?;
+            let started = moved.and_then(|_| workers()).and_then(|r| {
+                workers::run(&r, &name, agent, backend, &args)?;
                 r.get(&name)
             });
             if let Ok(w) = &started {
@@ -469,6 +503,21 @@ fn main() -> ExitCode {
             }
             started.map(|_| 0)
         }
+        Top::Run {
+            agent: workers::Kind::Codex,
+            bg,
+            args,
+            ..
+        } => match (bg, explicit) {
+            (true, _) => Err(io::Error::other(
+                "codex has no background session of its own; pass --name for a codex worker",
+            )),
+            (_, true) => Err(io::Error::other("sandbox options need --sandbox")),
+            _ => Command::new("codex")
+                .args(&args)
+                .status()
+                .map(|s| s.code().unwrap_or(1)),
+        },
         Top::Run {
             bg,
             sandbox,
@@ -503,12 +552,20 @@ fn main() -> ExitCode {
             notes,
             pane,
             bg,
+            agent,
             args,
             ..
         } => {
             let backend = workers::Backend::choose(pane, bg, in_herdr());
+            let var = |k| std::env::var(k).ok();
+            let kind = agent.unwrap_or_else(|| {
+                workers::Kind::of_session(
+                    var("CODEX_THREAD_ID").as_deref(),
+                    var("CLAUDECODE").as_deref(),
+                )
+            });
             workers()
-                .and_then(|r| handoff::handoff(&r, &name, backend, &notes, &args))
+                .and_then(|r| handoff::handoff(&r, &name, kind, backend, &notes, &args))
                 .map(|_| 0)
         }
         Top::Ls { brief: false } => workers()
@@ -575,7 +632,12 @@ fn main() -> ExitCode {
             check,
             remove,
             claude_md,
-        }) => setup_claude(check, remove, claude_md),
+        }) => setup_agent(workers::Kind::Claude, check, remove, claude_md),
+        Top::Setup(Setup::Codex {
+            check,
+            remove,
+            agents_md,
+        }) => setup_agent(workers::Kind::Codex, check, remove, agents_md),
         Top::Doctor => doctor::main(VERSION),
         Top::Bench(Bench::Entry {
             n,
@@ -627,11 +689,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn setup_claude(check: bool, remove: bool, claude_md: bool) -> io::Result<i32> {
-    let paths = setup::Paths::at(&setup::Paths::default_dir()?);
+fn setup_agent(kind: workers::Kind, check: bool, remove: bool, md: bool) -> io::Result<i32> {
+    let paths = setup::Paths::of(kind)?;
     if check {
-        let pieces = setup::check(&paths, VERSION, claude_md)?;
-        println!("{}", setup::render_check(&pieces, claude_md));
+        let pieces = setup::check(&paths, VERSION, md)?;
+        println!("{}", setup::render_check(&pieces, kind, md));
         return Ok(i32::from(
             pieces.iter().any(|(_, p)| *p != setup::Piece::Ok),
         ));
@@ -640,13 +702,18 @@ fn setup_claude(check: bool, remove: bool, claude_md: bool) -> io::Result<i32> {
     let lines = if remove {
         setup::remove(&paths, now)?
     } else {
-        setup::install(&paths, VERSION, claude_md, now)?
+        setup::install(&paths, VERSION, md, now)?
     };
     for l in lines {
         println!("{l}");
     }
     if !remove {
-        println!("`reeve setup claude --remove` takes it all out again");
+        if kind == workers::Kind::Codex {
+            println!(
+                "Codex runs a new or changed hook only once you trust it: open /hooks in Codex and trust reeve's"
+            );
+        }
+        println!("`reeve setup {kind} --remove` takes it all out again");
     }
     Ok(0)
 }
@@ -684,6 +751,21 @@ mod tests {
         assert!(!parse(&["--pane"]));
         assert!(!parse(&["--name", "x", "--pane", "--bg"]));
         assert!(!parse(&["--name", "x", "--sandbox", "sb"]));
+        assert!(parse(&["--name", "x", "--agent", "codex", "--worktree"]));
+        assert!(!parse(&["--agent", "gemini"]));
+        assert!(!parse(&["--worktree"]));
+        assert!(!parse(&["--agent", "codex", "--sandbox", "sb"]));
+    }
+
+    #[test]
+    fn setup_codex_parses_like_setup_claude() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["reeve"].iter().chain(args)).is_ok();
+        assert!(parse(&["setup", "codex"]));
+        assert!(parse(&["setup", "codex", "--check", "--agents-md"]));
+        assert!(!parse(&["setup", "codex", "--remove", "--agents-md"]));
+        assert!(parse(&[
+            "handoff", "--name", "n", "--notes", "f", "--agent", "codex"
+        ]));
     }
 
     #[test]
@@ -713,6 +795,9 @@ mod tests {
             "idle without a report",
             "reeve watch fix-flaky",
             "`reeve run --force`",
+            "`--agent codex`",
+            "`--worktree`",
+            "`reeve setup claude` (or `codex`)",
         ] {
             assert!(SKILL.contains(part), "{part}");
         }

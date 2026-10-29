@@ -271,7 +271,7 @@ pub struct Opts {
 /// The hook as `reeve setup claude` writes it, for `claude --settings` when it isn't installed.
 pub fn hook_settings() -> String {
     let mut s = serde_json::json!({});
-    setup::add_hook(&mut s).expect("an empty object takes the hooks");
+    setup::add_hook(&mut s, workers::Kind::Claude).expect("an empty object takes the hooks");
     s.to_string()
 }
 
@@ -457,8 +457,8 @@ mod tests {
     #[test]
     fn the_fallback_settings_carry_the_hook_setup_writes() {
         let mut s: Value = serde_json::from_str(&hook_settings()).unwrap();
-        assert_eq!(setup::hook_state(&s), Piece::Ok);
-        assert!(setup::remove_hook(&mut s));
+        assert_eq!(setup::hook_state(&s, workers::Kind::Claude), Piece::Ok);
+        assert!(setup::remove_hook(&mut s, workers::Kind::Claude));
         assert_eq!(s, serde_json::json!({}));
     }
 

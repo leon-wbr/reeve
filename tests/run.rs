@@ -11,7 +11,8 @@ fn executable(path: &Path, script: &str) {
 /// A `claude` and a `herdr` on PATH that log the directory they were started in and their
 /// arguments to `<name>.log`, and answer the way reeve expects. `herdr pane get` answers with
 /// `pane.json` when it exists, and otherwise with a pane that has no agent. `herdr agent start`
-/// waits while `hold` exists, and fails if `fail` does.
+/// waits while `hold` exists, fails if `fail` does, and fails with the error code in
+/// `start-error` if that does.
 fn fakes(dir: &Path) -> String {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -23,6 +24,17 @@ fn fakes(dir: &Path) -> String {
             log("claude")
         ),
     );
+    // Prints exec's first event, then writes the report when its prompt asks for `report`.
+    executable(
+        &bin.join("codex"),
+        &format!(
+            "pwd -P >> {}\necho \"$*\" >> {0}\nenv | grep -c '^CLAUDECODE=' >> {0}\n\
+             echo '{{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}}'\n\
+             for a; do last=$a; done\n\
+             case \"$last\" in report*) f=$(echo \"$last\" | sed 's/.*Markdown to \\([^ ]*\\.md\\)\\..*/\\1/'); echo done > \"$f\" ;; esac",
+            log("codex")
+        ),
+    );
     executable(
         &bin.join("herdr"),
         &format!(
@@ -31,12 +43,14 @@ fn fakes(dir: &Path) -> String {
              'pane get') if [ -f {pane} ]; then cat {pane}; else echo '{{\"result\":{{}}}}'; fi ;;\n\
              'agent start') while [ -f {hold} ]; do sleep 0.05; done\n\
                if [ -f {fail} ]; then echo '{{\"error\":{{\"code\":\"boom\",\"message\":\"no shell\"}}}}' >&2; exit 1; fi\n\
+               if [ -f {err} ]; then printf '{{\"error\":{{\"code\":\"%s\",\"message\":\"m\"}}}}\\n' \"$(cat {err})\" >&2; exit 1; fi\n\
                echo '{{\"result\":{{}}}}' ;;\n\
              *) echo '{{\"result\":{{}}}}' ;;\nesac",
             log("herdr"),
             pane = dir.join("pane.json").display(),
             hold = dir.join("hold").display(),
-            fail = dir.join("fail").display()
+            fail = dir.join("fail").display(),
+            err = dir.join("start-error").display()
         ),
     );
     format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
@@ -55,6 +69,8 @@ fn reeve_with(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> O
         .env("REEVE_EVENTS", dir.join("events.jsonl"))
         .env_remove("HERDR_ENV")
         .env_remove("HERDR_WORKSPACE_ID")
+        .env_remove("CLAUDECODE")
+        .env_remove("CODEX_THREAD_ID")
         .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
@@ -454,4 +470,283 @@ fn a_start_that_fails_leaves_the_worker_gone_with_the_reason() {
 
     let o = reeve(&root, &project, &["rm", "w"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+fn ls_line(root: &Path, project: &Path, name: &str) -> String {
+    let o = reeve(root, project, &["ls"]);
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    out.lines()
+        .find(|l| l.starts_with(&format!("{name} ")))
+        .unwrap_or_else(|| panic!("no {name} in {out}"))
+        .to_string()
+}
+
+/// The fake codex's log once it holds its first three lines: a background codex is recorded as
+/// started as soon as it is spawned.
+fn codex_log(root: &Path) -> String {
+    for _ in 0..200 {
+        let log = read(root.join("codex.log"));
+        if log.lines().count() >= 3 {
+            return log;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("codex never logged its start");
+}
+
+fn wait_for(path: &Path) {
+    for _ in 0..200 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("{} never appeared", path.display());
+}
+
+#[test]
+fn a_background_codex_worker_runs_exec_and_is_done_once_it_reports() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let args = [
+        "run",
+        "--name",
+        "cx",
+        "--bg",
+        "--agent",
+        "codex",
+        "--",
+        "-m",
+        "o9",
+        "report it",
+    ];
+    let o = reeve_with(&root, &project, &args, &[("CLAUDECODE", "1")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let w = started(&root, "cx");
+    assert_eq!(w["agent"], "codex");
+    assert!(w["handle"].as_str().unwrap().parse::<u32>().is_ok(), "{w}");
+    wait_for(&root.join("state/reeve/reports/cx.md"));
+    let log = codex_log(&root);
+    let mut lines = log.lines();
+    assert_eq!(lines.next(), Some(project.to_str().unwrap()));
+    let argv = lines.next().unwrap();
+    assert!(
+        argv.starts_with("exec --json --skip-git-repo-check -m o9 -s workspace-write --add-dir "),
+        "{argv}"
+    );
+    let state = root.join("state/reeve");
+    assert!(
+        argv.contains(&format!("--add-dir {} report it", state.display())),
+        "{argv}"
+    );
+    assert_eq!(lines.next(), Some("0"), "CLAUDECODE reached codex");
+    assert!(read(state.join("logs/cx.jsonl")).contains("th-1"));
+    let line = ls_line(&root, &project, "cx");
+    assert!(
+        line.contains(" done ") && line.contains(" codex ") && line.contains(" bg "),
+        "{line}"
+    );
+    assert_eq!(read(root.join("claude.log")), "");
+}
+
+#[test]
+fn a_codex_worker_that_exits_without_a_report_is_gone_with_how_to_resume_it() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let args = [
+        "run", "--name", "cx", "--bg", "--agent", "codex", "--", "go",
+    ];
+    let o = reeve(&root, &project, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "cx");
+    let o = reeve(&root, &project, &["wait", "cx", "--timeout", "20"]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("worker cx is gone without writing its report"),
+        "{err}"
+    );
+    assert!(
+        err.contains("`codex exec resume th-1 \"MESSAGE\"`"),
+        "{err}"
+    );
+    assert!(ls_line(&root, &project, "cx").contains(" gone "));
+}
+
+#[test]
+fn a_codex_pane_worker_is_started_as_codex_and_followed_as_codex() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"codex","agent_status":"blocked"}}}"#,
+    )
+    .unwrap();
+    let args = [
+        "run", "--name", "cx", "--pane", "--agent", "codex", "--", "go",
+    ];
+    let o = reeve(&root, &project, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(started(&root, "cx")["handle"], "p1");
+    let herdr = read(root.join("herdr.log"));
+    let start = herdr
+        .lines()
+        .find(|l| l.starts_with("agent start"))
+        .unwrap();
+    assert!(
+        start.starts_with("agent start cx --kind codex --pane p1 "),
+        "{start}"
+    );
+    assert!(
+        start.contains(" -- -s workspace-write --add-dir "),
+        "{start}"
+    );
+    assert!(ls_line(&root, &project, "cx").contains(" blocked "));
+}
+
+#[test]
+fn a_worker_that_stops_at_a_question_on_start_keeps_its_tab_and_shows_blocked() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(root.join("start-error"), "agent_not_ready").unwrap();
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"codex","agent_status":"blocked"}}}"#,
+    )
+    .unwrap();
+    let args = [
+        "run", "--name", "cx", "--pane", "--agent", "codex", "--", "go",
+    ];
+    let o = reeve(&root, &project, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let w = started(&root, "cx");
+    assert!(w.get("error").is_none(), "{w}");
+    assert!(!read(root.join("herdr.log")).contains("tab close"));
+    assert!(ls_line(&root, &project, "cx").contains(" blocked "));
+}
+
+#[test]
+fn a_codex_that_claims_its_pane_before_herdr_is_done_is_found_there_and_named() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(root.join("start-error"), "agent_name_not_found").unwrap();
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"codex","agent_status":"working"}}}"#,
+    )
+    .unwrap();
+    let args = [
+        "run", "--name", "cx", "--pane", "--agent", "codex", "--", "go",
+    ];
+    let o = reeve(&root, &project, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let w = started(&root, "cx");
+    assert!(w.get("error").is_none(), "{w}");
+    let herdr = read(root.join("herdr.log"));
+    assert!(herdr.contains("agent rename p1 cx"), "{herdr}");
+    assert!(!herdr.contains("tab close"), "{herdr}");
+    assert!(ls_line(&root, &project, "cx").contains(" running "));
+}
+
+#[test]
+fn codex_without_a_name_runs_in_the_foreground_but_never_in_the_background_or_a_sandbox() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve(&root, &project, &["run", "--agent", "codex", "--", "hi"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(read(root.join("codex.log")).lines().nth(1), Some("hi"));
+    let bg = reeve(
+        &root,
+        &project,
+        &["run", "--agent", "codex", "--bg", "--", "hi"],
+    );
+    assert!(!bg.status.success());
+    assert!(String::from_utf8_lossy(&bg.stderr).contains("pass --name"));
+    let sb = ["run", "--agent", "codex", "--sandbox", "--", "hi"];
+    assert!(!reeve(&root, &project, &sb).status.success());
+}
+
+fn commit(project: &Path) {
+    let args = [
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "init",
+    ];
+    let ok = Command::new("git")
+        .args(args)
+        .current_dir(project)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+}
+
+#[test]
+fn a_worktree_worker_starts_in_its_own_worktree_under_the_main_checkout() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    commit(&project);
+    let args = [
+        "run",
+        "--name",
+        "wt",
+        "--bg",
+        "--worktree",
+        "--agent",
+        "codex",
+        "--",
+        "go",
+    ];
+    let o = reeve(&root, &project, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "wt");
+    let tree = project.join(".claude/worktrees/wt");
+    assert_eq!(worker_cwd(&root, "wt"), tree.to_str().unwrap());
+    assert_eq!(codex_log(&root).lines().next(), tree.to_str());
+    let branch = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(&tree)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&branch.stdout).trim(),
+        "worktree-wt"
+    );
+
+    // Once that worker is gone, a restart under the same name, even from inside the worktree,
+    // uses it again.
+    let o = reeve(&root, &project, &["wait", "wt", "--timeout", "20"]);
+    assert_eq!(o.status.code(), Some(1));
+    let o = reeve(&root, &tree, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "wt");
+    assert_eq!(worker_cwd(&root, "wt"), tree.to_str().unwrap());
+}
+
+#[test]
+fn a_handoff_from_a_codex_session_starts_a_codex_successor() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(project.join("n.md"), "Goal: ship it.").unwrap();
+    let args = ["handoff", "--name", "next", "--notes", "n.md", "--bg"];
+    let o = reeve_with(&root, &project, &args, &[("CODEX_THREAD_ID", "th-0")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(started(&root, "next")["agent"], "codex");
+    assert!(codex_log(&root).contains("exec --json"));
+    assert_eq!(read(root.join("claude.log")), "");
+
+    let to_claude = [&args[..], &["--agent", "claude"]].concat();
+    let to_claude: Vec<&str> = to_claude
+        .iter()
+        .map(|a| if *a == "next" { "next2" } else { a })
+        .collect();
+    let o = reeve_with(&root, &project, &to_claude, &[("CODEX_THREAD_ID", "th-0")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(started(&root, "next2").get("agent").is_none());
+    assert!(read(root.join("claude.log")).contains("--bg"));
 }
