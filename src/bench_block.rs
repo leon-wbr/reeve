@@ -95,7 +95,8 @@ impl Arm {
 
     /// The project skill the session gets, if any.
     pub fn skill(self) -> Option<String> {
-        (self == Arm::A6).then(|| setup::stub(env!("CARGO_PKG_VERSION")))
+        (self == Arm::A6)
+            .then(|| setup::stub(crate::workers::Kind::Claude, env!("CARGO_PKG_VERSION")))
     }
 
     /// The CLAUDE.md the session gets, if any.
