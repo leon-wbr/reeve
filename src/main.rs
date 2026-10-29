@@ -467,6 +467,13 @@ fn in_herdr() -> bool {
     std::env::var("HERDR_ENV").is_ok_and(|v| v == "1")
 }
 
+/// Closes the sessions that handed off, once they are done, and says what keeps the others.
+fn tidy_predecessors(r: &workers::Registry) {
+    for line in handoff::tidy(r) {
+        println!("reeve: {line}");
+    }
+}
+
 fn main() -> ExitCode {
     let matches = Cli::command().try_get_matches().unwrap_or_else(|e| {
         log_usage_error(&e);
@@ -589,7 +596,10 @@ fn main() -> ExitCode {
         Top::Ls { brief: true } => {
             ev.label = Some("brief".into());
             workers()
-                .and_then(|r| workers::ls_brief(&r))
+                .and_then(|r| {
+                    tidy_predecessors(&r);
+                    workers::ls_brief(&r)
+                })
                 .map(|out| {
                     if !out.is_empty() {
                         println!("{out}");
@@ -622,12 +632,20 @@ fn main() -> ExitCode {
                     var("CLAUDECODE").as_deref(),
                 )
             });
+            let pane = var("HERDR_PANE_ID");
             workers()
-                .and_then(|r| handoff::handoff(&r, &name, kind, backend, &notes, &args))
+                .and_then(|r| {
+                    let all = r.all()?;
+                    let from = handoff::predecessor(&all, pane.as_deref()).map(|w| w.name.as_str());
+                    handoff::handoff(&r, &name, kind, backend, &notes, from, &args)
+                })
                 .map(|_| 0)
         }
         Top::Ls { brief: false } => workers()
-            .and_then(|r| workers::ls(&r))
+            .and_then(|r| {
+                tidy_predecessors(&r);
+                workers::ls(&r)
+            })
             .map(|out| println!("{out}"))
             .map(|_| 0),
         Top::Wait { name, timeout } => {
