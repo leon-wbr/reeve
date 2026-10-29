@@ -191,10 +191,11 @@ pub fn add_hook(settings: &mut Value, k: Kind) -> Result<bool, String> {
 }
 
 /// reeve's own subcommands, which agents run without a prompt. Claude Code resolves a matching
-/// allow rule before auto mode's classifier, so the brief in a `reeve run` is never judged.
-const ALLOWED: [&str; 15] = [
-    "ls", "watch", "report", "close", "run", "heavy", "handoff", "ask", "asks", "answer",
-    "feedback", "doctor", "wait", "rm", "--skill",
+/// allow rule before auto mode's classifier, so the brief in a `reeve run` is never judged. Not
+/// `heavy`: it runs any command, so its rule would let any command past the classifier.
+const ALLOWED: [&str; 14] = [
+    "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "answer", "feedback",
+    "doctor", "wait", "rm", "--skill",
 ];
 
 /// The `permissions.allow` entries setup writes for Claude Code. `reeve --skill` is a flag, so
@@ -1166,7 +1167,7 @@ mod tests {
     fn the_allow_rules_cover_reeves_subcommands_and_nothing_broad() {
         let rules = allow_rules();
         for sub in [
-            "ls", "watch", "report", "close", "run", "heavy", "handoff", "ask", "asks", "answer",
+            "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "answer",
             "feedback", "doctor", "wait", "rm",
         ] {
             assert!(rules.contains(&format!("Bash(reeve {sub}:*)")), "{sub}");
