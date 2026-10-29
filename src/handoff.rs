@@ -75,6 +75,8 @@ mod tests {
             started: 1,
             report: format!("/st/reports/{name}.md").into(),
             handle: "ab12".into(),
+            starting: false,
+            error: None,
         }
     }
 

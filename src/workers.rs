@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -37,8 +37,15 @@ pub struct Worker {
     /// Unix seconds.
     pub started: u64,
     pub report: PathBuf,
-    /// The Herdr pane ID or the background session's short id.
+    /// The Herdr pane ID or the background session's short id; empty for a background
+    /// session that is still starting.
     pub handle: String,
+    /// Set by `reeve run` until `reeve start`, in the background, has brought the agent up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub starting: bool,
+    /// Why the agent didn't come up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What a worker's pane or session is doing, as far as Herdr or `claude agents` can tell.
@@ -56,6 +63,7 @@ pub enum Agent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
+    Starting,
     Running,
     Idle,
     Blocked,
@@ -77,9 +85,36 @@ impl State {
     }
 }
 
+/// Long enough for a pane start's own waits: 5s for the shell, 10s for herdr, 10s for claude.
+pub const START_SECS: u64 = 30;
+
+/// A worker still starting is `starting`, and `gone` once its start failed or ran out of time;
+/// only a started one has an agent worth asking about.
+pub fn state_of(w: &Worker, now: u64, agent: impl FnOnce() -> Agent) -> State {
+    match (&w.error, w.starting) {
+        (Some(_), _) => State::Gone,
+        (None, true) if now.saturating_sub(w.started) < START_SECS => State::Starting,
+        (None, true) => State::Gone,
+        (None, false) => {
+            let agent = agent();
+            State::of(agent, w.report.is_file())
+        }
+    }
+}
+
+/// Why a worker without a report is gone, after `worker NAME`.
+pub fn gone_why(w: &Worker) -> String {
+    match &w.error {
+        Some(e) => format!("failed to start: {e}"),
+        None if w.starting => format!("did not start within {START_SECS}s"),
+        None => "is gone without writing its report".into(),
+    }
+}
+
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(match self {
+            State::Starting => "starting",
             State::Running => "running",
             State::Idle => "idle",
             State::Blocked => "blocked",
@@ -155,6 +190,18 @@ impl Registry {
             found = all.len() != before;
         })?;
         Ok(found)
+    }
+
+    /// Changes the worker of that name if it is still the one started at `started`.
+    pub fn set(&self, name: &str, started: u64, f: impl FnOnce(&mut Worker)) -> io::Result<()> {
+        self.update(|all| {
+            if let Some(w) = all
+                .iter_mut()
+                .find(|w| w.name == name && w.started == started)
+            {
+                f(w);
+            }
+        })
     }
 
     fn update(&self, f: impl FnOnce(&mut Vec<Worker>)) -> io::Result<()> {
@@ -406,16 +453,19 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Opens a tab labelled NAME in the caller's workspace without focusing it and starts claude
-/// in its pane with the prompt as its argument. Returns the pane ID; the tab is closed again
-/// if claude didn't start.
-fn start_pane(name: &str, cwd: &Path, claude: &[String]) -> io::Result<String> {
+/// Opens a tab labelled NAME in the caller's workspace without focusing it. Returns its tab
+/// and pane IDs.
+fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String)> {
     let workspace = std::env::var("HERDR_WORKSPACE_ID").ok();
     let cwd = cwd.display().to_string();
     let created = herdr(tab_create_args(name, &cwd, workspace.as_deref()))?;
-    let (tab, pane) = created_tab(&created)
-        .ok_or_else(|| io::Error::other("herdr tab create returned no pane id"))?;
-    let start = || herdr(pane_start_args(name, &pane, claude));
+    created_tab(&created).ok_or_else(|| io::Error::other("herdr tab create returned no pane id"))
+}
+
+/// Starts claude in the tab's pane with the prompt as its argument; the tab is closed again if
+/// claude didn't start.
+fn start_pane(name: &str, tab: &str, pane: &str, claude: &[String]) -> io::Result<String> {
+    let start = || herdr(pane_start_args(name, pane, claude));
     let mut started = start();
     for _ in 0..20 {
         match &started {
@@ -427,16 +477,16 @@ fn start_pane(name: &str, cwd: &Path, claude: &[String]) -> io::Result<String> {
         }
     }
     let started = match started {
-        Err(e) if busy_at_start(&e.to_string()) => wait_for_claude(&pane)
-            .and_then(|_| herdr(["agent", "rename", &pane, name]))
+        Err(e) if busy_at_start(&e.to_string()) => wait_for_claude(pane)
+            .and_then(|_| herdr(["agent", "rename", pane, name]))
             .map_err(|_| e),
         r => r,
     };
     if let Err(e) = started {
-        let _ = herdr(["tab", "close", &tab]);
+        let _ = herdr(["tab", "close", tab]);
         return Err(e);
     }
-    Ok(pane)
+    Ok(pane.into())
 }
 
 fn wait_for_claude(pane: &str) -> io::Result<()> {
@@ -455,18 +505,16 @@ fn wait_for_claude(pane: &str) -> io::Result<()> {
 }
 
 /// Returns the short id that `claude --bg` prints and `claude agents` lists.
-fn start_bg(claude: &[String], prompt: &str) -> io::Result<String> {
-    let argv = bg_argv(claude, prompt);
+fn start_bg(argv: &[String]) -> io::Result<String> {
     let o = Command::new(&argv[0])
         .args(&argv[1..])
         .stdin(Stdio::null())
         .output()?;
-    io::stderr().write_all(&o.stderr)?;
-    io::stdout().write_all(&o.stdout)?;
     if !o.status.success() {
         return Err(io::Error::other(format!(
-            "claude --bg failed ({})",
-            o.status
+            "claude --bg failed ({}): {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr).trim()
         )));
     }
     bg_id(&String::from_utf8_lossy(&[o.stdout, o.stderr].concat()))
@@ -489,23 +537,28 @@ fn agent(w: &Worker) -> Agent {
 /// The agent is checked before the report, so one that writes its report and exits in
 /// between still counts as done.
 pub fn state(w: &Worker) -> State {
-    let agent = agent(w);
-    State::of(agent, w.report.is_file())
+    state_of(w, now(), || agent(w))
 }
 
 pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::Result<()> {
     check_name(name).map_err(io::Error::other)?;
     let (flags, prompt) = split_prompt(args).map_err(io::Error::other)?;
-    if let Ok(old) = r.get(name)
-        && agent(&old) != Agent::Absent
-    {
-        let close = match old.backend {
-            Backend::Pane => format!("close pane {}", old.handle),
-            Backend::Bg => format!("`claude rm {}`", old.handle),
-        };
-        return Err(io::Error::other(format!(
-            "worker {name} still has an agent; {close} or use another name"
-        )));
+    if let Ok(old) = r.get(name) {
+        let a = agent(&old);
+        if state_of(&old, now(), || a) == State::Starting {
+            return Err(io::Error::other(format!(
+                "worker {name} is still starting; wait for it or use another name"
+            )));
+        }
+        if a != Agent::Absent {
+            let close = match old.backend {
+                Backend::Pane => format!("close pane {}", old.handle),
+                Backend::Bg => format!("`claude rm {}`", old.handle),
+            };
+            return Err(io::Error::other(format!(
+                "worker {name} still has an agent; {close} or use another name"
+            )));
+        }
     }
     let report = r.report_path(name);
     let reports = report.parent().expect("reports dir");
@@ -518,7 +571,8 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
     let claude = claude_args(name, &report, flags);
     let prompt = with_report(prompt, &report);
     let cwd = std::env::current_dir()?;
-    let started = match backend {
+    // The tab opens now, so the user sees the worker starting; claude starts in the background.
+    let opened = match backend {
         Backend::Pane => {
             let file = reports.join(format!("{name}.prompt.md"));
             pane_argv(&claude, &prompt, &file)
@@ -527,35 +581,89 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
                     if argv.last() != Some(&prompt) {
                         fs::write(&file, &prompt)?;
                     }
-                    start_pane(name, &cwd, &argv)
+                    let (tab, pane) = open_tab(name, &cwd)?;
+                    Ok((pane, Some(tab), argv))
                 })
         }
-        Backend::Bg => start_bg(&claude, &prompt),
+        Backend::Bg => Ok((String::new(), None, bg_argv(&claude, &prompt))),
     };
-    let handle = match started {
-        Ok(h) => h,
+    let (handle, tab, argv) = match opened {
+        Ok(o) => o,
         Err(e) => {
             let _ = fs::rename(&old, &report);
             return Err(e);
         }
     };
     let _ = fs::remove_file(&old);
+    let started = now();
     r.put(Worker {
         name: name.into(),
         backend,
         cwd,
-        started: now(),
+        started,
         report,
         handle,
-    })
+        starting: true,
+        error: None,
+    })?;
+    if let Err(e) = spawn_start(name, tab.as_deref(), &argv) {
+        if let Some(tab) = &tab {
+            let _ = herdr(["tab", "close", tab]);
+        }
+        let why = format!("could not run `reeve start`: {e}");
+        r.set(name, started, |w| {
+            w.starting = false;
+            w.error = Some(why.clone());
+        })?;
+        return Err(io::Error::other(why));
+    }
+    Ok(())
 }
 
-/// What `reeve run` prints once a worker has started: where its report goes and how the
+/// Runs `reeve start` in its own process group, so it outlives `reeve run` and the shell that
+/// called it.
+fn spawn_start(name: &str, tab: Option<&str>, argv: &[String]) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let tab = tab.into_iter().flat_map(|t| ["--tab", t]);
+    Command::new(std::env::current_exe()?)
+        .args(["start", name])
+        .args(tab)
+        .arg("--")
+        .args(argv)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(|_| ())
+}
+
+/// The slow half of `reeve run`: brings the registered worker's agent up, with `argv` as
+/// claude's arguments in a pane or the whole `claude --bg` command line, and records its
+/// handle or why it failed.
+pub fn start(r: &Registry, name: &str, tab: Option<&str>, argv: &[String]) -> io::Result<()> {
+    let w = r.get(name)?;
+    let up = match (w.backend, tab) {
+        (Backend::Pane, Some(tab)) => start_pane(name, tab, &w.handle, argv),
+        (Backend::Pane, None) => Err(io::Error::other("a pane worker needs --tab")),
+        (Backend::Bg, _) => start_bg(argv),
+    };
+    r.set(name, w.started, |w| {
+        w.starting = false;
+        match &up {
+            Ok(handle) => w.handle = handle.clone(),
+            Err(e) => w.error = Some(e.to_string()),
+        }
+    })?;
+    up.map(|_| ())
+}
+
+/// What `reeve run` prints once a worker is registered: where its report goes and how the
 /// starting agent hears about it.
 pub fn started(w: &Worker) -> String {
     let name = &w.name;
     format!(
-        "reeve: worker {name} started; its report goes to {}\n\
+        "reeve: worker {name} is starting; its report goes to {}\n\
          reeve: to follow it, run `reeve wait {name}` in the background (Claude Code: \
          run_in_background). It exits 0 when the report is written and 1 when the worker is \
          blocked, idle or gone, so you hear either way; then `reeve report {name}`, or answer \
@@ -584,7 +692,7 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
         .filter(|(_, s, age)| {
             matches!(
                 s,
-                State::Running | State::Idle | State::Blocked | State::Unknown
+                State::Starting | State::Running | State::Idle | State::Blocked | State::Unknown
             ) || *age < BRIEF_DAYS * 86400
         })
         .collect();
@@ -596,6 +704,7 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
         .take(BRIEF_NAMES)
         .map(|(name, s, _)| {
             let what = match s {
+                State::Starting => "starting",
                 State::Running => "running",
                 State::Idle => "idle without a report",
                 State::Blocked => "blocked (waiting for the user)",
@@ -631,16 +740,16 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
 /// States for many workers, asking `claude agents` only once.
 fn states(all: &[Worker]) -> Vec<State> {
     let mut bg: Option<Result<String, String>> = None;
+    let now = now();
     all.iter()
         .map(|w| {
-            let agent = match w.backend {
+            state_of(w, now, || match w.backend {
                 Backend::Pane => agent(w),
                 Backend::Bg => {
                     let p = bg.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
                     bg_agent(p.as_deref().map_err(|e| e.as_str()), &w.handle)
                 }
-            };
-            State::of(agent, w.report.is_file())
+            })
         })
         .collect()
 }
@@ -671,14 +780,14 @@ pub fn gone(r: &Registry) -> io::Result<Vec<String>> {
 pub fn ls(r: &Registry) -> io::Result<String> {
     let all = r.all()?;
     let width = all.iter().map(|w| w.name.len()).max().unwrap_or(0).max(4);
-    let mut out = format!("{:width$}  STATE    BACKEND  AGE  CWD", "NAME");
+    let mut out = format!("{:width$}  STATE     BACKEND  AGE  CWD", "NAME");
     for (w, state) in all.iter().zip(states(&all)) {
         let backend = match w.backend {
             Backend::Pane => "pane",
             Backend::Bg => "bg",
         };
         out += &format!(
-            "\n{:width$}  {:7}  {backend:7}  {:>3}  {}",
+            "\n{:width$}  {:8}  {backend:7}  {:>3}  {}",
             w.name,
             state.to_string(),
             age(now().saturating_sub(w.started)),
@@ -691,16 +800,17 @@ pub fn ls(r: &Registry) -> io::Result<String> {
 /// Fails once the worker is gone or waits for the user, or has sat idle without a report for a
 /// few polls.
 pub fn wait(r: &Registry, name: &str, timeout: Option<u64>) -> io::Result<()> {
-    let w = r.get(name)?;
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs(t));
     let mut idle = 0;
     loop {
+        // Read again each time: `reeve start` fills in the handle once the agent is up.
+        let w = r.get(name)?;
         let s = state(&w);
         idle = if s == State::Idle { idle + 1 } else { 0 };
         let fail = |why: &str| Err(io::Error::other(format!("worker {name} {why}")));
         match s {
             State::Done => return Ok(()),
-            State::Gone => return fail("is gone without writing its report"),
+            State::Gone => return fail(&gone_why(&w)),
             State::Blocked => return fail(&blocked_hint(&w)),
             _ if idle >= IDLE_POLLS => {
                 return fail("is idle without a report; send it a message, then wait again");
@@ -753,7 +863,7 @@ impl Watch {
                 Some(b) => b != *s,
             };
             if news {
-                lines.push(change(w, *s));
+                lines.push(change(w, before, *s));
             }
         }
         lines
@@ -769,9 +879,11 @@ impl Watch {
     }
 }
 
-fn change(w: &Worker, s: State) -> String {
+fn change(w: &Worker, before: Option<State>, s: State) -> String {
     let name = &w.name;
     match s {
+        State::Starting => format!("{name} starting"),
+        State::Running if before == Some(State::Starting) => format!("{name} running"),
         State::Running => format!("{name} running again"),
         State::Idle => format!("{name} idle without a report: send it a message, then wait again"),
         State::Blocked => format!(
@@ -779,6 +891,7 @@ fn change(w: &Worker, s: State) -> String {
             answer_where(w)
         ),
         State::Done => format!("{name} done: report at {}", crate::setup::tilde(&w.report)),
+        State::Gone if w.error.is_some() || w.starting => format!("{name} gone: {}", gone_why(w)),
         State::Gone => format!("{name} gone without a report: see `claude logs {name}`"),
         State::Unknown => format!("{name} state unknown"),
     }
@@ -812,10 +925,10 @@ pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
 pub fn rm(r: &Registry, name: &str) -> io::Result<()> {
     let w = r.get(name)?;
     let a = agent(&w);
-    if a != Agent::Absent {
+    let s = state_of(&w, now(), || a);
+    if a != Agent::Absent || s == State::Starting {
         return Err(io::Error::other(format!(
-            "worker {name} is {}; reeve drops only workers whose agent has gone",
-            State::of(a, w.report.is_file())
+            "worker {name} is {s}; reeve drops only workers whose agent has gone"
         )));
     }
     r.remove(name)?;
@@ -857,6 +970,8 @@ mod tests {
             started: 100,
             report: r.report_path(name),
             handle: handle.into(),
+            starting: false,
+            error: None,
         }
     }
 
@@ -916,6 +1031,51 @@ mod tests {
         assert_eq!(State::of(Agent::Blocked, false), State::Blocked);
         assert_eq!(State::of(Agent::Absent, false), State::Gone);
         assert_eq!(State::of(Agent::Unknown, false), State::Unknown);
+    }
+
+    #[test]
+    fn a_starting_worker_is_starting_until_up_and_gone_if_it_never_comes_up() {
+        let r = Registry::at(temp("starting"));
+        let mut w = worker(&r, "a", "");
+        w.starting = true;
+        let unasked = || -> Agent { panic!("a starting worker has no agent to ask") };
+        assert_eq!(state_of(&w, 100, unasked), State::Starting);
+        assert_eq!(state_of(&w, 100 + START_SECS - 1, unasked), State::Starting);
+        assert_eq!(state_of(&w, 100 + START_SECS, unasked), State::Gone);
+        assert_eq!(gone_why(&w), format!("did not start within {START_SECS}s"));
+
+        w.starting = false;
+        assert_eq!(state_of(&w, 100, || Agent::Working), State::Running);
+
+        w.error = Some("herdr: boom".into());
+        assert_eq!(state_of(&w, 100, unasked), State::Gone);
+        assert_eq!(gone_why(&w), "failed to start: herdr: boom");
+        w.error = None;
+        assert_eq!(gone_why(&w), "is gone without writing its report");
+    }
+
+    #[test]
+    fn a_registry_from_before_starting_reads_as_started() {
+        let w: Worker = serde_json::from_str(
+            r#"{"name":"a","backend":"pane","cwd":"/w","started":1,"report":"/r/a.md","handle":"p1"}"#,
+        )
+        .unwrap();
+        assert!(!w.starting);
+        assert_eq!(w.error, None);
+        let raw = serde_json::to_string(&w).unwrap();
+        assert!(!raw.contains("starting") && !raw.contains("error"), "{raw}");
+    }
+
+    #[test]
+    fn set_changes_only_the_worker_it_was_started_for() {
+        let dir = temp("set");
+        let r = Registry::at(dir.clone());
+        r.put(worker(&r, "a", "")).unwrap();
+        r.set("a", 100, |w| w.handle = "p1".into()).unwrap();
+        assert_eq!(r.get("a").unwrap().handle, "p1");
+        r.set("a", 99, |w| w.handle = "old".into()).unwrap();
+        assert_eq!(r.get("a").unwrap().handle, "p1");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1181,7 +1341,7 @@ mod tests {
         let pane = worker(&r, "fix-a", "w1:p2");
         let out = started(&pane);
         assert_eq!(out.lines().count(), 3, "{out}");
-        assert!(out.contains("worker fix-a started"), "{out}");
+        assert!(out.contains("worker fix-a is starting"), "{out}");
         assert!(out.contains("fix-a.md"), "{out}");
         assert!(
             out.contains("run `reeve wait fix-a` in the background"),
@@ -1261,6 +1421,32 @@ mod tests {
         assert!(idle[0].starts_with("a idle without a report"), "{idle:?}");
         let gone = w.step(&polled(&[(&a, State::Gone)]));
         assert!(gone[0].starts_with("a gone without a report"), "{gone:?}");
+    }
+
+    #[test]
+    fn watch_follows_a_start_through_to_running_or_its_failure() {
+        let r = Registry::at(temp("watch-start"));
+        let mut a = worker(&r, "a", "w1:p1");
+        a.starting = true;
+        let mut w = Watch::default();
+        assert_eq!(
+            w.step(&polled(&[(&a, State::Starting)])),
+            Vec::<String>::new()
+        );
+        assert_eq!(w.end(&s(&["a"])), None);
+        a.starting = false;
+        assert_eq!(w.step(&polled(&[(&a, State::Running)])), ["a running"]);
+
+        let mut b = worker(&r, "b", "w1:p2");
+        b.starting = true;
+        w.step(&polled(&[(&b, State::Starting)]));
+        b.starting = false;
+        b.error = Some("herdr: boom".into());
+        assert_eq!(
+            w.step(&polled(&[(&b, State::Gone)])),
+            ["b gone: failed to start: herdr: boom"]
+        );
+        assert_eq!(w.end(&s(&["b"])), Some(false));
     }
 
     #[test]

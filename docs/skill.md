@@ -18,7 +18,7 @@ Inside Herdr each worker gets its own tab, labelled NAME, where the user can see
 ```sh
 reeve run --name fix-flaky --cwd ~/app -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."
 reeve run --name review --cwd ~/app -- --model sonnet "Review it."
-reeve ls                 # every worker: running, blocked, idle, done or gone
+reeve ls                 # every worker: starting, running, blocked, idle, done or gone
 reeve wait fix-flaky     # exits on the report, or on blocked, idle or gone
 reeve watch fix-flaky    # a line per change: blocked, idle, gone, done
 reeve report fix-flaky   # prints the report

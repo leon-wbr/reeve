@@ -168,6 +168,17 @@ enum Top {
     Hook(Hook),
     /// Drop a worker that is gone or done from `reeve ls`; its report stays
     Rm { name: String },
+    /// Bring up a worker that `reeve run` registered; it runs this in the background
+    #[command(hide = true)]
+    Start {
+        name: String,
+        /// The Herdr tab `reeve run` opened for a pane worker
+        #[arg(long)]
+        tab: Option<String>,
+        /// Claude's arguments in a pane, or the whole `claude --bg` command line
+        #[arg(last = true)]
+        argv: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -516,6 +527,12 @@ fn main() -> ExitCode {
         Top::Rm { name } => {
             ev.worker = Some(name.clone());
             workers().and_then(|r| workers::rm(&r, &name)).map(|_| 0)
+        }
+        Top::Start { name, tab, argv } => {
+            ev.worker = Some(name.clone());
+            workers()
+                .and_then(|r| workers::start(&r, &name, tab.as_deref(), &argv))
+                .map(|_| 0)
         }
         Top::Hook(Hook::Context | Hook::Background) => {
             unreachable!("answered before the event log")
