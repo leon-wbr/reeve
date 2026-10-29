@@ -482,7 +482,9 @@ fn ls_line(root: &Path, project: &Path, name: &str) -> String {
 /// The fake codex's log once it holds its first three lines: a background codex is recorded as
 /// started as soon as it is spawned.
 fn codex_log(root: &Path) -> String {
-    for _ in 0..200 {
+    // A deadline, not a sleep: it returns as soon as the log is there, and a busy machine
+    // (parallel test binaries, `reeve heavy` neighbours) can take well over 5 s to spawn.
+    for _ in 0..2400 {
         let log = read(root.join("codex.log"));
         if log.lines().count() >= 3 {
             return log;
@@ -493,7 +495,7 @@ fn codex_log(root: &Path) -> String {
 }
 
 fn wait_for(path: &Path) {
-    for _ in 0..200 {
+    for _ in 0..2400 {
         if path.exists() {
             return;
         }

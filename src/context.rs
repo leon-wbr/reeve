@@ -75,8 +75,8 @@ pub fn window(tail: &str) -> Option<u64> {
         })
 }
 
-/// Hand off with this share of a known window left unused, before the agent compacts.
-const WINDOW_PERCENT: u64 = 60;
+/// Hand off at this share of a known window, the same share as Claude's 350K of 1M.
+const WINDOW_PERCENT: u64 = 35;
 
 fn k(n: u64) -> String {
     format!("{}K", (n + 500) / 1000)
@@ -208,10 +208,10 @@ mod tests {
     fn a_codex_session_is_told_before_its_window_fills() {
         let p = payload("UserPromptSubmit");
         let t = |used| [codex_turn(10, 258_400), codex_turn(used, 258_400)].join("\n");
-        assert_eq!(notice(&p, &t(155_000), 350_000), None);
-        let n = notice(&p, &t(160_000), 350_000).unwrap();
+        assert_eq!(notice(&p, &t(90_000), 350_000), None);
+        let n = notice(&p, &t(95_000), 350_000).unwrap();
         assert!(
-            n.contains("160K tokens, past the 155K handoff threshold"),
+            n.contains("95K tokens, past the 90K handoff threshold"),
             "{n}"
         );
         assert!(notice(&p, &t(100_000), 90_000).is_some());

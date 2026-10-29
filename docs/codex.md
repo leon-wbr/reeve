@@ -33,7 +33,7 @@ Everything after `--` goes to codex, the prompt last, as with claude. The worker
 
 ### Context check
 
-Codex hooks get no token count, but their `transcript_path` is the session's rollout file, whose `token_count` events carry `last_token_usage.input_tokens` (cached input included) and `model_context_window`. `reeve hook context` reads either transcript format. Codex's window (258K for gpt-6-astra) is below Claude's 350K default threshold, so for a transcript that names its window the threshold is at most 60% of it, before Codex compacts on its own. That 60% is a starting point, not a measured one.
+Codex hooks get no token count, but their `transcript_path` is the session's rollout file, whose `token_count` events carry `last_token_usage.input_tokens` (cached input included) and `model_context_window`. `reeve hook context` reads either transcript format. Codex's window (258K for gpt-6-astra) is below Claude's 350K default threshold, so for a transcript that names its window the threshold is at most 35% of it, the same share as Claude's 350K of a 1M window.
 
 ### Heavy commands
 
