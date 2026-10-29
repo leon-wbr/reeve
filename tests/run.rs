@@ -362,16 +362,14 @@ fn watch_prints_the_report_being_written() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // The report goes in once the first poll has seen the worker running; polls are 2s apart.
-    let polled = || read(root.join("herdr.log")).contains("pane get p-a");
-    for _ in 0..100 {
-        if polled() {
-            break;
-        }
+    // A poll asks herdr first and looks for the report after, so the report goes in once the
+    // second poll has begun: only then has the first one surely seen the worker running.
+    let polls = || read(root.join("herdr.log")).matches("pane get p-a").count();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while polls() < 2 && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert!(polled(), "watch never asked herdr about the pane");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(polls() >= 2, "watch never polled herdr twice");
     report(&root, "a");
     let o = child.wait_with_output().unwrap();
     assert_eq!(
