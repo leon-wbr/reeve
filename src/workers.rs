@@ -547,11 +547,24 @@ pub fn run(r: &Registry, name: &str, backend: Backend, args: &[String]) -> io::R
         started: now(),
         report,
         handle,
-    })?;
-    eprintln!(
-        "reeve: worker {name} started; `reeve wait {name}` blocks until its report is written"
-    );
-    Ok(())
+    })
+}
+
+/// What `reeve run` prints once a worker has started: where its report goes and how the
+/// starting agent hears about it.
+pub fn started(w: &Worker) -> String {
+    let name = &w.name;
+    format!(
+        "reeve: worker {name} started; its report goes to {}\n\
+         reeve: to follow it, run `reeve wait {name}` in the background (Claude Code: \
+         run_in_background). It exits 0 when the report is written and 1 when the worker is \
+         blocked, idle or gone, so you hear either way; then `reeve report {name}`, or answer \
+         it {}.\n\
+         reeve: for an alert on every change instead, stream `reeve watch {name}` with the \
+         Monitor tool or a background shell.",
+        crate::setup::tilde(&w.report),
+        answer_where(w)
+    )
 }
 
 /// Workers older than this show in the brief listing only while they still have an agent.
@@ -689,21 +702,110 @@ pub fn wait(r: &Registry, name: &str, timeout: Option<u64>) -> io::Result<()> {
             State::Done => return Ok(()),
             State::Gone => return fail("is gone without writing its report"),
             State::Blocked => return fail(&blocked_hint(&w)),
-            _ if idle >= 3 => {
+            _ if idle >= IDLE_POLLS => {
                 return fail("is idle without a report; send it a message, then wait again");
             }
             _ if deadline.is_some_and(|d| Instant::now() >= d) => return fail("timed out"),
-            _ => std::thread::sleep(Duration::from_secs(2)),
+            _ => std::thread::sleep(POLL),
         }
     }
 }
 
-fn blocked_hint(w: &Worker) -> String {
-    let answer = match w.backend {
+/// Idle between turns is normal; idle for this many polls in a row means it stopped early.
+const IDLE_POLLS: u32 = 3;
+const POLL: Duration = Duration::from_secs(2);
+
+fn answer_where(w: &Worker) -> String {
+    match w.backend {
         Backend::Pane => "in its tab".to_string(),
         Backend::Bg => format!("with `claude attach {}`", w.handle),
-    };
-    format!("is waiting for the user, such as a permission prompt; answer it {answer}")
+    }
+}
+
+fn blocked_hint(w: &Worker) -> String {
+    format!(
+        "is waiting for the user, such as a permission prompt; answer it {}",
+        answer_where(w)
+    )
+}
+
+/// The last state `reeve watch` reported for each worker, and how long each has been idle.
+#[derive(Default)]
+pub struct Watch {
+    last: std::collections::HashMap<String, State>,
+    idle: std::collections::HashMap<String, u32>,
+}
+
+impl Watch {
+    /// One line per worker whose state changed since the last poll. A worker seen for the first
+    /// time is reported only if it needs someone, so a restart doesn't replay old news.
+    pub fn step(&mut self, polled: &[(Worker, State)]) -> Vec<String> {
+        let mut lines = vec![];
+        for (w, s) in polled {
+            let idle = self.idle.entry(w.name.clone()).or_default();
+            *idle = if *s == State::Idle { *idle + 1 } else { 0 };
+            if *s == State::Unknown || (*s == State::Idle && *idle < IDLE_POLLS) {
+                continue;
+            }
+            let before = self.last.insert(w.name.clone(), *s);
+            let news = match before {
+                None => matches!(s, State::Blocked | State::Idle),
+                Some(b) => b != *s,
+            };
+            if news {
+                lines.push(change(w, *s));
+            }
+        }
+        lines
+    }
+
+    /// With names: `Some(true)` once all are done, `Some(false)` once all are done or gone with
+    /// at least one gone, else `None`. Without names it never ends.
+    pub fn end(&self, names: &[String]) -> Option<bool> {
+        let states: Vec<_> = names.iter().map(|n| self.last.get(n)).collect();
+        let fin = |s: &Option<&State>| matches!(s, Some(State::Done | State::Gone));
+        (!names.is_empty() && states.iter().all(fin))
+            .then(|| states.iter().all(|s| *s == Some(&State::Done)))
+    }
+}
+
+fn change(w: &Worker, s: State) -> String {
+    let name = &w.name;
+    match s {
+        State::Running => format!("{name} running again"),
+        State::Idle => format!("{name} idle without a report: send it a message, then wait again"),
+        State::Blocked => format!(
+            "{name} blocked (waiting for the user): answer it {}",
+            answer_where(w)
+        ),
+        State::Done => format!("{name} done: report at {}", crate::setup::tilde(&w.report)),
+        State::Gone => format!("{name} gone without a report: see `claude logs {name}`"),
+        State::Unknown => format!("{name} state unknown"),
+    }
+}
+
+/// Prints a line on stdout for each change in the named workers, or in all of them. With names
+/// it returns once each is done or gone: true if all are done.
+pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
+    for n in names {
+        r.get(n)?;
+    }
+    let mut w = Watch::default();
+    loop {
+        let all: Vec<Worker> = r
+            .all()?
+            .into_iter()
+            .filter(|w| names.is_empty() || names.contains(&w.name))
+            .collect();
+        let polled: Vec<_> = all.iter().cloned().zip(states(&all)).collect();
+        for line in w.step(&polled) {
+            println!("{line}");
+        }
+        if let Some(all_done) = w.end(names) {
+            return Ok(all_done);
+        }
+        std::thread::sleep(POLL);
+    }
 }
 
 /// Drops a worker whose agent has gone from the registry; its report and prompt files stay.
@@ -1071,6 +1173,110 @@ mod tests {
         assert!(blocked_hint(&bg).contains("`claude attach ab12`"));
         let b = brief(&[("fix-a", State::Blocked, 1)]);
         assert!(b.contains("fix-a blocked (waiting for the user)"), "{b}");
+    }
+
+    #[test]
+    fn a_started_worker_comes_with_how_to_follow_it() {
+        let r = Registry::at(temp("started"));
+        let pane = worker(&r, "fix-a", "w1:p2");
+        let out = started(&pane);
+        assert_eq!(out.lines().count(), 3, "{out}");
+        assert!(out.contains("worker fix-a started"), "{out}");
+        assert!(out.contains("fix-a.md"), "{out}");
+        assert!(
+            out.contains("run `reeve wait fix-a` in the background"),
+            "{out}"
+        );
+        assert!(out.contains("run_in_background"), "{out}");
+        assert!(out.contains("blocked, idle or gone"), "{out}");
+        assert!(out.contains("`reeve watch fix-a`"), "{out}");
+        assert!(out.contains("Monitor tool"), "{out}");
+        assert!(out.contains("in its tab"), "{out}");
+        let bg = Worker {
+            backend: Backend::Bg,
+            handle: "ab12".into(),
+            ..pane
+        };
+        assert!(started(&bg).contains("`claude attach ab12`"));
+    }
+
+    fn polled(ws: &[(&Worker, State)]) -> Vec<(Worker, State)> {
+        ws.iter().map(|(w, s)| ((*w).clone(), *s)).collect()
+    }
+
+    #[test]
+    fn watch_prints_a_line_per_change_but_no_old_news() {
+        let r = Registry::at(temp("watch"));
+        let a = worker(&r, "a", "w1:p1");
+        let b = worker(&r, "b", "w1:p2");
+        let c = worker(&r, "c", "w1:p3");
+        let mut w = Watch::default();
+        let first = w.step(&polled(&[
+            (&a, State::Running),
+            (&b, State::Done),
+            (&c, State::Gone),
+        ]));
+        assert_eq!(first, Vec::<String>::new());
+        let next = w.step(&polled(&[
+            (&a, State::Blocked),
+            (&b, State::Done),
+            (&c, State::Gone),
+        ]));
+        assert_eq!(next.len(), 1, "{next:?}");
+        assert!(next[0].starts_with("a blocked"), "{next:?}");
+        assert!(next[0].contains("in its tab"), "{next:?}");
+        assert_eq!(
+            w.step(&polled(&[(&a, State::Blocked)])),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            w.step(&polled(&[(&a, State::Unknown)])),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            w.step(&polled(&[(&a, State::Running)])),
+            ["a running again"]
+        );
+        let done = w.step(&polled(&[(&a, State::Done)]));
+        assert_eq!(done.len(), 1);
+        assert!(done[0].starts_with("a done: report at "), "{done:?}");
+        assert!(done[0].ends_with("a.md"), "{done:?}");
+    }
+
+    #[test]
+    fn watch_reports_idle_only_once_it_lasts() {
+        let r = Registry::at(temp("watch-idle"));
+        let a = worker(&r, "a", "w1:p1");
+        let b = worker(&r, "b", "w1:p2");
+        let mut w = Watch::default();
+        assert!(
+            w.step(&polled(&[(&a, State::Running), (&b, State::Blocked)]))[0]
+                .starts_with("b blocked")
+        );
+        for _ in 1..IDLE_POLLS {
+            assert_eq!(w.step(&polled(&[(&a, State::Idle)])), Vec::<String>::new());
+        }
+        let idle = w.step(&polled(&[(&a, State::Idle)]));
+        assert_eq!(idle.len(), 1);
+        assert!(idle[0].starts_with("a idle without a report"), "{idle:?}");
+        let gone = w.step(&polled(&[(&a, State::Gone)]));
+        assert!(gone[0].starts_with("a gone without a report"), "{gone:?}");
+    }
+
+    #[test]
+    fn watch_ends_once_every_named_worker_is_done_or_gone() {
+        let r = Registry::at(temp("watch-end"));
+        let a = worker(&r, "a", "w1:p1");
+        let b = worker(&r, "b", "w1:p2");
+        let names = s(&["a", "b"]);
+        let mut w = Watch::default();
+        w.step(&polled(&[(&a, State::Done), (&b, State::Running)]));
+        assert_eq!(w.end(&names), None);
+        assert_eq!(w.end(&[]), None);
+        w.step(&polled(&[(&a, State::Done), (&b, State::Done)]));
+        assert_eq!(w.end(&names), Some(true));
+        w.step(&polled(&[(&a, State::Done), (&b, State::Gone)]));
+        assert_eq!(w.end(&names), Some(false));
     }
 
     #[test]

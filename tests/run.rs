@@ -9,7 +9,8 @@ fn executable(path: &Path, script: &str) {
 }
 
 /// A `claude` and a `herdr` on PATH that log the directory they were started in and their
-/// arguments to `<name>.log`, and answer the way reeve expects.
+/// arguments to `<name>.log`, and answer the way reeve expects. `herdr pane get` answers with
+/// `pane.json` when it exists, and otherwise with a pane that has no agent.
 fn fakes(dir: &Path) -> String {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -26,8 +27,10 @@ fn fakes(dir: &Path) -> String {
         &format!(
             "echo \"$*\" >> {}\ncase \"$1 $2\" in\n\
              'tab create') echo '{{\"result\":{{\"tab\":{{\"tab_id\":\"t1\"}},\"root_pane\":{{\"pane_id\":\"p1\"}}}}}}' ;;\n\
+             'pane get') if [ -f {pane} ]; then cat {pane}; else echo '{{\"result\":{{}}}}'; fi ;;\n\
              *) echo '{{\"result\":{{}}}}' ;;\nesac",
-            log("herdr")
+            log("herdr"),
+            pane = dir.join("pane.json").display()
         ),
     );
     format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
@@ -201,6 +204,139 @@ fn inside_herdr_a_worker_without_bg_gets_its_own_tab() {
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(read(root.join("herdr.log")).starts_with("tab create"));
+}
+
+#[test]
+fn inside_herdr_a_background_successor_is_refused_and_nothing_starts() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(project.join("n.md"), "Goal: ship it.").unwrap();
+    let args = ["handoff", "--name", "next", "--notes", "n.md", "--bg"];
+    let o = reeve_with(&root, &project, &args, &[("HERDR_ENV", "1")]);
+    assert_eq!(o.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(err.contains("a successor gets its own Herdr tab"), "{err}");
+    assert!(
+        err.contains("drop --bg") && err.contains("--force"),
+        "{err}"
+    );
+    assert_eq!(read(root.join("claude.log")), "");
+    assert_eq!(read(root.join("herdr.log")), "");
+    assert!(!root.join("state/reeve/handoffs/next.md").exists());
+
+    let forced = [&args[..], &["--force"]].concat();
+    let o = reeve_with(&root, &project, &forced, &[("HERDR_ENV", "1")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(read(root.join("claude.log")).contains("--bg"));
+    assert_eq!(read(root.join("herdr.log")), "");
+}
+
+#[test]
+fn a_started_worker_says_how_to_follow_it_in_three_lines() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve(&root, &project, &["run", "--name", "w", "--bg", "--", "go"]);
+    assert!(o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(err.lines().count(), 3, "{err}");
+    assert!(err.contains("`reeve wait w` in the background"), "{err}");
+    assert!(err.contains("`reeve watch w`"), "{err}");
+}
+
+/// Writes a registry of pane workers, each with handle `p-NAME`.
+fn registry(root: &Path, names: &[&str]) {
+    let state = root.join("state/reeve");
+    std::fs::create_dir_all(state.join("reports")).unwrap();
+    let all: Vec<Value> = names
+        .iter()
+        .map(|n| {
+            serde_json::json!({
+                "name": n,
+                "backend": "pane",
+                "cwd": root,
+                "started": 1,
+                "report": state.join(format!("reports/{n}.md")),
+                "handle": format!("p-{n}"),
+            })
+        })
+        .collect();
+    std::fs::write(state.join("workers.json"), Value::Array(all).to_string()).unwrap();
+}
+
+fn report(root: &Path, name: &str) {
+    std::fs::write(root.join(format!("state/reeve/reports/{name}.md")), "done").unwrap();
+}
+
+#[test]
+fn watch_exits_on_final_states_without_replaying_them() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    // The fake herdr knows no pane, so a worker without a report is gone.
+    registry(&root, &["a", "b"]);
+    report(&root, "a");
+    report(&root, "b");
+    let o = reeve(&root, &project, &["watch", "a", "b"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "");
+
+    std::fs::remove_file(root.join("state/reeve/reports/b.md")).unwrap();
+    let o = reeve(&root, &project, &["watch", "a", "b"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "");
+
+    let o = reeve(&root, &project, &["watch", "a", "nope"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no worker nope"));
+}
+
+#[test]
+fn watch_prints_the_report_being_written() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["a"]);
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"claude","agent_status":"working"}}}"#,
+    )
+    .unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_reeve"))
+        .args(["watch", "a"])
+        .current_dir(&project)
+        .env("PATH", fakes(&root))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("REEVE_EVENTS", root.join("events.jsonl"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The report goes in once the first poll has seen the worker running; polls are 2s apart.
+    let polled = || read(root.join("herdr.log")).contains("pane get p-a");
+    for _ in 0..100 {
+        if polled() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(polled(), "watch never asked herdr about the pane");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    report(&root, "a");
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(out.starts_with("a done: report at "), "{out}");
 }
 
 #[test]
