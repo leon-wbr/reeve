@@ -16,8 +16,7 @@ backgrounded · d38de0ff · summary
   claude logs d38de0ff      show recent output
   claude stop d38de0ff      stop this session
 reeve: worker summary started; its report goes to ~/.local/state/reeve/reports/summary.md
-reeve: to follow it, run `reeve wait summary` in the background (Claude Code: run_in_background). It exits 0 when the report is written and 1 when the worker is blocked, idle or gone, so you hear either way; then `reeve report summary`, or answer it with `claude attach d38de0ff`.
-reeve: for an alert on every change instead, stream `reeve watch summary` with the Monitor tool or a background shell.
+reeve: follow it with `reeve watch summary` (Claude Code: the Monitor tool, timeout_ms 1800000, re-armed when it expires; elsewhere a background shell). A line per change says what to do: done, read the report, then `reeve close summary`; idle, read its tab: nothing if it waits on its own job, else nudge it, let it carry on, or ask the user; blocked, answer it with `claude attach d38de0ff` if you can, else ask the user.
 
 $ reeve ls
 NAME     STATE    BACKEND  AGE  CWD
@@ -81,7 +80,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 ## Commands
 
 - `reeve run`: start an agent, in the foreground or the background, on the host or in a sandbox; `--name` makes it a worker any session can find, and `--cwd DIR` starts it in its project, `--worktree` in its own git worktree and `--agent codex` as Codex. Inside Herdr a worker gets its own tab, where you can see and answer it, and `--bg` is refused unless you pass `--force`, which skips reeve's safety checks; elsewhere it is a background session.
-- `reeve ls`, `reeve wait`, `reeve watch`, `reeve report`, `reeve rm`: list named workers, wait for one to finish, print a line each time one is blocked, idle, gone or done, print its report, drop a gone one from the list.
+- `reeve ls`, `reeve wait`, `reeve watch`, `reeve report`, `reeve close`, `reeve rm`: list named workers, wait for one to finish, print a line each time one is blocked, idle, gone or done (with the next step), print its report, close a finished one's tab (or stop its background process) and its clean, pushed worktree, drop a gone one from the list.
 - `reeve handoff`: hand off to a successor started as a named worker. Inside Herdr `--bg` is refused here too, unless you pass `--force`.
 - `reeve ask`, `reeve asks`, `reeve answer`: queue a question for the user, list open ones, answer one.
 - `reeve sandbox`: build, list, use and remove sandboxes.

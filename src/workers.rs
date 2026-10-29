@@ -860,13 +860,13 @@ pub fn started(w: &Worker) -> String {
     let name = &w.name;
     format!(
         "reeve: worker {name} is starting; its report goes to {}\n\
-         reeve: to follow it, run `reeve wait {name}` in the background (Claude Code: \
-         run_in_background). It exits 0 when the report is written and 1 when the worker is \
-         blocked, idle or gone, so you hear either way; then `reeve report {name}`, or answer \
-         it {}.\n\
-         reeve: for an alert on every change instead, stream `reeve watch {name}` with the \
-         Monitor tool or a background shell.",
+         reeve: follow it with `reeve watch {name}` (Claude Code: the Monitor tool, timeout_ms \
+         1800000, re-armed when it expires; elsewhere a background shell). A line per change \
+         says what to do: done, read the report, then `reeve close {name}`; idle, read {}: \
+         nothing if it waits on its own job, else nudge it, let it carry on, or ask the user; \
+         blocked, answer it {} if you can, else ask the user.",
         crate::setup::tilde(&w.report),
+        look_where(w),
         answer_where(w)
     )
 }
@@ -921,7 +921,10 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
         parts.join(", ")
     );
     if shown.iter().any(|(_, s, _)| *s == State::Done) {
-        out += "; `reeve report NAME` prints a report";
+        out += "; `reeve report NAME` prints a report, then `reeve close NAME` tidies up";
+    }
+    if shown.iter().any(|(_, s, _)| *s == State::Idle) {
+        out += "; look at an idle one and nudge it";
     }
     out.push('.');
     let max = BRIEF_MAX - HEAVY_REMINDER.len();
@@ -1046,6 +1049,14 @@ fn left_where(w: &Worker) -> String {
     }
 }
 
+fn look_where(w: &Worker) -> String {
+    match (w.backend, w.agent) {
+        (Backend::Pane, _) => "its tab".to_string(),
+        (Backend::Bg, Kind::Claude) => format!("`claude logs {}`", w.name),
+        (Backend::Bg, Kind::Codex) => crate::setup::tilde(&exec_log(w)),
+    }
+}
+
 fn blocked_hint(w: &Worker) -> String {
     format!(
         "is waiting for the user, such as a permission prompt; answer it {}",
@@ -1056,11 +1067,21 @@ fn blocked_hint(w: &Worker) -> String {
 /// The last state `reeve watch` reported for each worker, and how long each has been idle.
 #[derive(Default)]
 pub struct Watch {
+    /// Following workers by name: one already done or gone when first seen is news too, so a
+    /// watch re-armed after Monitor's timeout still reports what ended meanwhile.
+    named: bool,
     last: std::collections::HashMap<String, State>,
     idle: std::collections::HashMap<String, u32>,
 }
 
 impl Watch {
+    pub fn named() -> Watch {
+        Watch {
+            named: true,
+            ..Watch::default()
+        }
+    }
+
     /// One line per worker whose state changed since the last poll. A worker seen for the first
     /// time is reported only if it needs someone, so a restart doesn't replay old news.
     pub fn step(&mut self, polled: &[(Worker, State)]) -> Vec<String> {
@@ -1073,7 +1094,10 @@ impl Watch {
             }
             let before = self.last.insert(w.name.clone(), *s);
             let news = match before {
-                None => matches!(s, State::Blocked | State::Idle),
+                None => {
+                    matches!(s, State::Blocked | State::Idle)
+                        || (self.named && matches!(s, State::Done | State::Gone))
+                }
                 Some(b) => b != *s,
             };
             if news {
@@ -1099,12 +1123,19 @@ fn change(w: &Worker, before: Option<State>, s: State) -> String {
         State::Starting => format!("{name} starting"),
         State::Running if before == Some(State::Starting) => format!("{name} running"),
         State::Running => format!("{name} running again"),
-        State::Idle => format!("{name} idle without a report: send it a message, then wait again"),
+        State::Idle => format!(
+            "{name} idle without a report: read {}; if it waits on its own job do nothing, else \
+             nudge it, let it carry on, or ask the user",
+            look_where(w)
+        ),
         State::Blocked => format!(
-            "{name} blocked (waiting for the user): answer it {}",
+            "{name} blocked (waiting for the user): answer it {} if you can, else ask the user",
             answer_where(w)
         ),
-        State::Done => format!("{name} done: report at {}", crate::setup::tilde(&w.report)),
+        State::Done => format!(
+            "{name} done: report at {}; read it, then `reeve close {name}`",
+            crate::setup::tilde(&w.report)
+        ),
         State::Gone if w.error.is_some() || w.starting => format!("{name} gone: {}", gone_why(w)),
         State::Gone => format!("{name} gone without a report: {}", left_where(w)),
         State::Unknown => format!("{name} state unknown"),
@@ -1117,7 +1148,11 @@ pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
     for n in names {
         r.get(n)?;
     }
-    let mut w = Watch::default();
+    let mut w = if names.is_empty() {
+        Watch::default()
+    } else {
+        Watch::named()
+    };
     loop {
         let all: Vec<Worker> = r
             .all()?
@@ -1147,6 +1182,134 @@ pub fn rm(r: &Registry, name: &str) -> io::Result<()> {
     }
     r.remove(name)?;
     eprintln!("reeve: dropped worker {name}");
+    Ok(())
+}
+
+/// The command that ends a worker's agent: closes its Herdr pane, which takes the tab with it,
+/// stops its Claude background session, or kills the pid of its `codex exec`.
+pub fn close_cmd(w: &Worker) -> (&'static str, Vec<String>) {
+    let (cmd, args): (_, &[&str]) = match (w.backend, w.agent) {
+        (Backend::Pane, _) => ("herdr", &["pane", "close"]),
+        (Backend::Bg, Kind::Claude) => ("claude", &["stop"]),
+        (Backend::Bg, Kind::Codex) => ("kill", &[]),
+    };
+    let args = args.iter().map(|a| a.to_string());
+    (cmd, args.chain([w.handle.clone()]).collect())
+}
+
+/// From `git worktree list --porcelain`: the worktree of the worker, made by `claude -w NAME`
+/// or `reeve run --worktree`, which lives under the main repo's `.claude/worktrees/` whatever
+/// checkout the worker ran in, and its lock reason if it is locked.
+pub fn worktree_named(list: &str, name: &str) -> Option<(PathBuf, Option<String>)> {
+    let tail = format!("/.claude/worktrees/{name}");
+    list.split("\n\n").find_map(|b| {
+        let dir = b.lines().next()?.strip_prefix("worktree ")?;
+        let lock = b
+            .lines()
+            .find_map(|l| l.strip_prefix("locked").map(|r| r.trim().to_string()));
+        dir.ends_with(&tail).then(|| (PathBuf::from(dir), lock))
+    })
+}
+
+/// The pid in Claude Code's lock reason, "claude agent … (pid 123)".
+pub fn lock_pid(reason: &str) -> Option<u32> {
+    let rest = reason.split("(pid ").nth(1)?;
+    let digits = rest.split(|c: char| !c.is_ascii_digit()).next()?;
+    digits.parse().ok()
+}
+
+/// From `git status --porcelain` and `git rev-list HEAD --not --remotes`: why a worktree must
+/// stay, if it must.
+pub fn removable(status: &str, unpushed: &str) -> Result<(), String> {
+    let n = unpushed.lines().filter(|l| !l.is_empty()).count();
+    if !status.trim().is_empty() {
+        Err("it has uncommitted changes".into())
+    } else if n > 0 {
+        let s = if n == 1 { "" } else { "s" };
+        Err(format!("it has {n} commit{s} not pushed"))
+    } else {
+        Ok(())
+    }
+}
+
+fn git(dir: &Path, args: &[&OsStr]) -> io::Result<String> {
+    let all = [OsStr::new("-C"), dir.as_os_str()]
+        .into_iter()
+        .chain(args.iter().copied());
+    stdout("git", all)
+}
+
+/// Removes the worker's own worktree when it is clean and pushed, unlocking a lock whose
+/// process has died; says why it stays otherwise. Never forces.
+fn remove_worktree(w: &Worker) -> io::Result<String> {
+    let o = |s: &'static str| OsStr::new(s);
+    let list = git(&w.cwd, &[o("worktree"), o("list"), o("--porcelain")])?;
+    let Some((dir, lock)) = worktree_named(&list, &w.name) else {
+        return Ok("no worktree of its own".to_string());
+    };
+    // Not from the worktree itself, which `git worktree remove` is about to delete.
+    let main = list
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("worktree "))
+        .map_or_else(|| w.cwd.clone(), PathBuf::from);
+    let shown = crate::setup::tilde(&dir);
+    let keep = |why: String| Ok(format!("kept worktree {shown}: {why}"));
+    let status = git(&dir, &[o("status"), o("--porcelain")])?;
+    let unpushed = git(
+        &dir,
+        &[o("rev-list"), o("HEAD"), o("--not"), o("--remotes")],
+    )?;
+    if let Err(why) = removable(&status, &unpushed) {
+        return keep(why);
+    }
+    if let Some(reason) = lock {
+        // The agent was only just closed, so give its process a moment to exit.
+        let alive = lock_pid(&reason).is_none_or(|p| {
+            (0..10).all(|_| {
+                let up = Command::new("kill")
+                    .args(["-0", &p.to_string()])
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if up {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                up
+            })
+        });
+        if alive {
+            return keep(format!("locked ({reason})"));
+        }
+        git(&main, &[o("worktree"), o("unlock"), dir.as_os_str()])?;
+    }
+    match git(&main, &[o("worktree"), o("remove"), dir.as_os_str()]) {
+        Ok(_) => Ok(format!("removed worktree {shown}")),
+        Err(e) => keep(e.to_string()),
+    }
+}
+
+/// Ends a finished worker's agent (its tab, or its background session) and removes its
+/// worktree when that loses nothing. The registry entry and the report stay. A worker that is
+/// still running or waiting for the user is refused.
+pub fn close(r: &Registry, name: &str) -> io::Result<()> {
+    let w = r.get(name)?;
+    let a = agent(&w);
+    let s = state_of(&w, now(), || a);
+    if matches!(
+        s,
+        State::Starting | State::Running | State::Blocked | State::Unknown
+    ) {
+        return Err(io::Error::other(format!(
+            "worker {name} is {s}; close it once it is done, idle or gone"
+        )));
+    }
+    if a != Agent::Absent {
+        let (cmd, args) = close_cmd(&w);
+        stdout(cmd, &args)?;
+        eprintln!("reeve: closed {name}'s agent");
+    }
+    eprintln!("reeve: {}", remove_worktree(&w)?);
     Ok(())
 }
 
@@ -1658,7 +1821,12 @@ mod tests {
         assert_eq!(
             brief(&[("a", State::Running, 60), ("b", State::Done, 60)]),
             "reeve: 2 workers: a running, b done (report ready). `reeve ls` shows details; \
-             `reeve report NAME` prints a report. Heavy commands go through `reeve heavy`, in the background."
+             `reeve report NAME` prints a report, then `reeve close NAME` tidies up. Heavy commands go through `reeve heavy`, in the background."
+        );
+        let idle = brief(&[("c", State::Idle, 60)]);
+        assert!(
+            idle.contains("; look at an idle one and nudge it."),
+            "{idle}"
         );
     }
 
@@ -1694,17 +1862,14 @@ mod tests {
         let r = Registry::at(temp("started"));
         let pane = worker(&r, "fix-a", "w1:p2");
         let out = started(&pane);
-        assert_eq!(out.lines().count(), 3, "{out}");
+        assert_eq!(out.lines().count(), 2, "{out}");
         assert!(out.contains("worker fix-a is starting"), "{out}");
         assert!(out.contains("fix-a.md"), "{out}");
-        assert!(
-            out.contains("run `reeve wait fix-a` in the background"),
-            "{out}"
-        );
-        assert!(out.contains("run_in_background"), "{out}");
-        assert!(out.contains("blocked, idle or gone"), "{out}");
-        assert!(out.contains("`reeve watch fix-a`"), "{out}");
+        assert!(out.contains("follow it with `reeve watch fix-a`"), "{out}");
         assert!(out.contains("Monitor tool"), "{out}");
+        assert!(out.contains("re-armed when it expires"), "{out}");
+        assert!(out.contains("`reeve close fix-a`"), "{out}");
+        assert!(out.contains("own job"), "{out}");
         assert!(out.contains("in its tab"), "{out}");
         let bg = Worker {
             backend: Backend::Bg,
@@ -1754,7 +1919,7 @@ mod tests {
         let done = w.step(&polled(&[(&a, State::Done)]));
         assert_eq!(done.len(), 1);
         assert!(done[0].starts_with("a done: report at "), "{done:?}");
-        assert!(done[0].ends_with("a.md"), "{done:?}");
+        assert!(done[0].contains("a.md; read it, then"), "{done:?}");
     }
 
     #[test]
@@ -1817,6 +1982,204 @@ mod tests {
         assert_eq!(w.end(&names), Some(true));
         w.step(&polled(&[(&a, State::Done), (&b, State::Gone)]));
         assert_eq!(w.end(&names), Some(false));
+    }
+
+    #[test]
+    fn each_watch_line_carries_the_next_step_on_one_line() {
+        let r = Registry::at(temp("watch-next"));
+        let pane = worker(&r, "a", "w1:p1");
+        let bg = Worker {
+            backend: Backend::Bg,
+            handle: "ab12".into(),
+            ..worker(&r, "b", "")
+        };
+        let done = change(&pane, Some(State::Running), State::Done);
+        assert!(done.ends_with("; read it, then `reeve close a`"), "{done}");
+        let idle = change(&pane, Some(State::Running), State::Idle);
+        assert!(idle.contains("read its tab"), "{idle}");
+        assert!(idle.contains("own job"), "{idle}");
+        assert!(idle.contains("ask the user"), "{idle}");
+        assert!(change(&bg, None, State::Idle).contains("`claude logs b`"));
+        let blocked = change(&bg, None, State::Blocked);
+        assert!(blocked.contains("`claude attach ab12`"), "{blocked}");
+        assert!(blocked.contains("ask the user"), "{blocked}");
+        for l in [done, idle, blocked] {
+            assert!(!l.contains('\n'), "{l}");
+        }
+    }
+
+    #[test]
+    fn a_named_watch_reports_a_worker_already_done_when_it_starts() {
+        let r = Registry::at(temp("watch-named"));
+        let a = worker(&r, "a", "w1:p1");
+        let first = Watch::named().step(&polled(&[(&a, State::Done)]));
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(first[0].starts_with("a done: report at "), "{first:?}");
+        assert!(
+            Watch::default()
+                .step(&polled(&[(&a, State::Done)]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_worker_is_closed_in_its_tab_or_as_a_background_session() {
+        let r = Registry::at(temp("close"));
+        let pane = worker(&r, "a", "w1:p1");
+        assert_eq!(close_cmd(&pane), ("herdr", s(&["pane", "close", "w1:p1"])));
+        let bg = Worker {
+            backend: Backend::Bg,
+            handle: "ab12".into(),
+            ..pane
+        };
+        assert_eq!(close_cmd(&bg), ("claude", s(&["stop", "ab12"])));
+        let exec = Worker {
+            agent: Kind::Codex,
+            handle: "4242".into(),
+            ..bg
+        };
+        assert_eq!(close_cmd(&exec), ("kill", s(&["4242"])));
+        let tab = Worker {
+            backend: Backend::Pane,
+            handle: "w1:p2".into(),
+            ..exec
+        };
+        assert_eq!(close_cmd(&tab), ("herdr", s(&["pane", "close", "w1:p2"])));
+    }
+
+    #[test]
+    fn next_steps_point_a_codex_worker_to_its_tab_or_its_log() {
+        let r = Registry::at(temp("codex-next"));
+        let tab = Worker {
+            agent: Kind::Codex,
+            ..worker(&r, "c", "w1:p1")
+        };
+        let exec = Worker {
+            backend: Backend::Bg,
+            handle: "4242".into(),
+            ..tab.clone()
+        };
+        assert!(change(&tab, None, State::Idle).contains("read its tab"));
+        let idle = change(&exec, None, State::Idle);
+        assert!(idle.contains("c.jsonl"), "{idle}");
+        assert!(!idle.contains("claude logs"), "{idle}");
+        let started = started(&exec);
+        assert!(
+            started.contains("idle, read ") && started.contains("c.jsonl"),
+            "{started}"
+        );
+        assert!(!started.contains("claude attach"), "{started}");
+        assert!(started.contains("codex exec resume"), "{started}");
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
+    /// A repo with a pushed main, and a worker whose worktree `reeve run --worktree` made.
+    fn repo_with_worktree(tag: &str, name: &str) -> (PathBuf, Worker) {
+        let root = temp(tag);
+        let (origin, repo) = (root.join("origin.git"), root.join("repo"));
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&root, &["init", "--bare", "-q", "-b", "main", "origin.git"]);
+        git_ok(&repo, &["init", "-q", "-b", "main"]);
+        git_ok(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        );
+        git_ok(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git_ok(&repo, &["push", "-q", "origin", "main"]);
+        let dir = crate::run::worktree(&repo, name).unwrap();
+        let r = Registry::at(root.join("state/workers"));
+        let w = Worker {
+            agent: Kind::Codex,
+            cwd: dir,
+            ..worker(&r, name, "w1:p1")
+        };
+        (repo, w)
+    }
+
+    #[test]
+    fn a_worktree_made_by_run_goes_when_clean_and_pushed() {
+        let (repo, w) = repo_with_worktree("wt-clean", "w");
+        let msg = remove_worktree(&w).unwrap();
+        assert!(msg.starts_with("removed worktree "), "{msg}");
+        assert!(!repo.join(".claude/worktrees/w").exists());
+    }
+
+    #[test]
+    fn a_worktree_made_by_run_stays_with_unpushed_work() {
+        let (repo, w) = repo_with_worktree("wt-dirty", "w");
+        git_ok(
+            &w.cwd,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "y",
+            ],
+        );
+        let msg = remove_worktree(&w).unwrap();
+        assert!(msg.contains("1 commit not pushed"), "{msg}");
+        assert!(repo.join(".claude/worktrees/w").exists());
+    }
+
+    #[test]
+    fn a_worktree_goes_only_when_clean_and_pushed() {
+        assert_eq!(removable("", ""), Ok(()));
+        let dirty = removable(" M src/a.rs\n?? b\n", "").unwrap_err();
+        assert!(dirty.contains("uncommitted changes"), "{dirty}");
+        let unpushed = removable("", "abc123\ndef456\n").unwrap_err();
+        assert!(unpushed.contains("2 commits not pushed"), "{unpushed}");
+    }
+
+    #[test]
+    fn a_workers_worktree_is_found_in_git_s_list_with_its_lock() {
+        let list = "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n\n\
+                    worktree /repo/.claude/worktrees/a\nHEAD bbb\nbranch refs/heads/worktree-a\n\
+                    locked claude agent agent-1 (pid 4242)\n\n\
+                    worktree /repo/.claude/worktrees/b\nHEAD ccc\nlocked\n\n\
+                    worktree /repo/.claude/worktrees/c\nHEAD ddd\n";
+        let at = |n: &str| worktree_named(list, n);
+        assert_eq!(at("zz"), None);
+        assert_eq!(at("c"), Some(("/repo/.claude/worktrees/c".into(), None)));
+        assert_eq!(at("b").unwrap().1, Some(String::new()));
+        let (dir, reason) = at("a").unwrap();
+        assert_eq!(dir, PathBuf::from("/repo/.claude/worktrees/a"));
+        assert_eq!(lock_pid(&reason.unwrap()), Some(4242));
+        assert_eq!(
+            lock_pid("claude session x (pid 69786 start Thu Oct 29 07:00:56 2026)"),
+            Some(69786)
+        );
+        assert_eq!(lock_pid(""), None);
     }
 
     #[test]

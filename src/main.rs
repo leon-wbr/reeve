@@ -179,6 +179,9 @@ enum Top {
     Hook(Hook),
     /// Drop a worker that is gone or done from `reeve ls`; its report stays
     Rm { name: String },
+    /// Close a done, idle or gone worker: its tab (or background session), and its own worktree
+    /// when that is clean and pushed (never forced). Its report and `reeve ls` entry stay
+    Close { name: String },
     /// Bring up a worker that `reeve run` registered; it runs this in the background
     #[command(hide = true)]
     Start {
@@ -640,6 +643,10 @@ fn main() -> ExitCode {
             ev.worker = Some(name.clone());
             workers().and_then(|r| workers::rm(&r, &name)).map(|_| 0)
         }
+        Top::Close { name } => {
+            ev.worker = Some(name.clone());
+            workers().and_then(|r| workers::close(&r, &name)).map(|_| 0)
+        }
         Top::Start { name, tab, argv } => {
             ev.worker = Some(name.clone());
             workers()
@@ -881,7 +888,7 @@ mod tests {
         for part in [
             "reeve run --name",
             "reeve ls",
-            "reeve wait",
+            "reeve close",
             "reeve report",
             "reeve rm NAME",
             "--cwd DIR",
@@ -898,10 +905,12 @@ mod tests {
             "reeve answer",
             "Inside Herdr each worker gets its own tab",
             "not Herdr's agent commands",
-            "`--bg` is for that case only",
-            "idle without a report",
+            "(`--bg`, for that case only)",
+            "idle** without a report",
             "reeve watch fix-flaky",
-            "`reeve run --force`",
+            "`--force` skips reeve's safety checks",
+            "Monitor tool",
+            "waits on its own background job",
             "`--agent codex`",
             "`--worktree`",
             "`reeve setup claude` (or `codex`)",
@@ -917,7 +926,7 @@ mod tests {
             "Handoffs",
             "Sandbox",
             "reeve feedback",
-            "When not to bother",
+            "When reeve gets in the way",
         ] {
             assert!(SKILL.contains(part), "{part}");
         }

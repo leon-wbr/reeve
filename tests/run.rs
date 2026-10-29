@@ -84,7 +84,8 @@ fn read(path: PathBuf) -> String {
 /// Waits for the `reeve start` that `reeve run` left in the background to bring the worker up
 /// or fail, and returns its record.
 fn started(dir: &Path, name: &str) -> Value {
-    for _ in 0..400 {
+    // A deadline, not a sleep: a loaded machine can take well over 10 s to start the worker.
+    for _ in 0..2400 {
         let all: Value =
             serde_json::from_str(&read(dir.join("state/reeve/workers.json"))).unwrap_or_default();
         let w = all
@@ -278,16 +279,16 @@ fn inside_herdr_a_background_successor_is_refused_and_nothing_starts() {
 }
 
 #[test]
-fn a_started_worker_says_how_to_follow_it_in_three_lines() {
+fn a_started_worker_says_how_to_follow_it_in_two_lines() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();
     let o = reeve(&root, &project, &["run", "--name", "w", "--bg", "--", "go"]);
     assert!(o.status.success());
     started(&root, "w");
     let err = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(err.lines().count(), 3, "{err}");
-    assert!(err.contains("`reeve wait w` in the background"), "{err}");
-    assert!(err.contains("`reeve watch w`"), "{err}");
+    assert_eq!(err.lines().count(), 2, "{err}");
+    assert!(err.contains("follow it with `reeve watch w`"), "{err}");
+    assert!(err.contains("`reeve close w`"), "{err}");
 }
 
 /// Writes a registry of pane workers, each with handle `p-NAME`.
@@ -315,7 +316,7 @@ fn report(root: &Path, name: &str) {
 }
 
 #[test]
-fn watch_exits_on_final_states_without_replaying_them() {
+fn a_named_watch_reports_final_states_once_and_exits() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();
     // The fake herdr knows no pane, so a worker without a report is gone.
@@ -329,12 +330,17 @@ fn watch_exits_on_final_states_without_replaying_them() {
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&o.stdout), "");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert!(out.contains("a done: report at "), "{out}");
+    assert!(out.contains("b done: report at "), "{out}");
 
     std::fs::remove_file(root.join("state/reeve/reports/b.md")).unwrap();
     let o = reeve(&root, &project, &["watch", "a", "b"]);
     assert_eq!(o.status.code(), Some(1));
-    assert_eq!(String::from_utf8_lossy(&o.stdout), "");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("a done: report at "), "{out}");
+    assert!(out.contains("b gone without a report"), "{out}");
 
     let o = reeve(&root, &project, &["watch", "a", "nope"]);
     assert!(!o.status.success());
