@@ -98,15 +98,15 @@ pub fn shadow_check(path: &OsStr) -> Option<Check> {
 }
 
 /// `stub` is the skill stub's text, `hook` the hook's state in settings.json.
-pub fn setup_check(stub: Option<&str>, hook: Piece, version: &str) -> Check {
+pub fn setup_check(stub: Option<&str>, hook: Piece, perms: Piece, version: &str) -> Check {
     let stub_version = stub.and_then(setup::stub_version);
-    match (stub, hook) {
-        (None, Piece::Missing) => problem(
+    match (stub, hook, perms) {
+        (None, Piece::Missing, Piece::Missing) => problem(
             Status::Note,
             "Claude Code setup isn't installed (optional)",
-            "`reeve setup claude` adds session hooks and a skill stub",
+            "`reeve setup claude` adds session hooks, a skill stub and allow rules for reeve's own commands",
         ),
-        _ if stub_version == Some(version) && hook == Piece::Ok => {
+        _ if stub_version == Some(version) && hook == Piece::Ok && perms == Piece::Ok => {
             ok(format!("Claude Code setup matches reeve {version}"))
         }
         _ => {
@@ -120,10 +120,17 @@ pub fn setup_check(stub: Option<&str>, hook: Piece, version: &str) -> Check {
                 Piece::Missing => "hooks missing",
                 Piece::Stale => "hooks changed",
             };
+            let perms = match perms {
+                Piece::Ok => "allow rules ok",
+                Piece::Missing => "allow rules missing, so `reeve close` etc. can be declined",
+                Piece::Stale => "allow rules incomplete",
+            };
             problem(
                 Status::Fail,
-                format!("Claude Code setup is out of date for reeve {version}: {stub}, {hook}"),
-                "`reeve setup claude` rewrites both; `reeve setup claude --check` shows each",
+                format!(
+                    "Claude Code setup is out of date for reeve {version}: {stub}, {hook}, {perms}"
+                ),
+                "`reeve setup claude` rewrites all three; `reeve setup claude --check` shows each",
             )
         }
     }
@@ -259,9 +266,9 @@ pub fn main(version: &str) -> io::Result<i32> {
     let paths = setup::Paths::at(&setup::Paths::default_dir()?);
     match setup::check(&paths, version, false) {
         Ok(pieces) => {
-            let hook = pieces[0].1;
+            let (hook, perms) = (pieces[0].1, pieces[2].1);
             let stub = fs::read_to_string(&paths.skill).ok();
-            checks.push(setup_check(stub.as_deref(), hook, version));
+            checks.push(setup_check(stub.as_deref(), hook, perms, version));
         }
         Err(e) => checks.push(problem(
             Status::Fail,
@@ -364,18 +371,31 @@ mod tests {
     fn setup_is_optional_but_a_stale_one_fails() {
         let v = "1.0.0";
         let stub = setup::stub(Kind::Claude, v);
-        assert_eq!(setup_check(None, Piece::Missing, v).status, Status::Note);
-        assert_eq!(setup_check(Some(&stub), Piece::Ok, v).status, Status::Ok);
-        let old = setup_check(Some(&setup::stub(Kind::Claude, "0.9.0")), Piece::Ok, v);
+        let (ok_, no) = (Piece::Ok, Piece::Missing);
+        assert_eq!(setup_check(None, no, no, v).status, Status::Note);
+        assert_eq!(setup_check(Some(&stub), ok_, ok_, v).status, Status::Ok);
+        let old = setup_check(Some(&setup::stub(Kind::Claude, "0.9.0")), ok_, ok_, v);
         assert_eq!(old.status, Status::Fail);
         assert!(
             old.what.contains("skill stub for reeve 0.9.0"),
             "{}",
             old.what
         );
-        let no_hook = setup_check(Some(&stub), Piece::Missing, v);
+        let no_hook = setup_check(Some(&stub), no, ok_, v);
         assert!(no_hook.what.contains("hooks missing"), "{}", no_hook.what);
-        assert_eq!(setup_check(None, Piece::Ok, v).status, Status::Fail);
+        assert_eq!(setup_check(None, ok_, no, v).status, Status::Fail);
+        let no_perms = setup_check(Some(&stub), ok_, no, v);
+        assert_eq!(no_perms.status, Status::Fail);
+        assert!(
+            no_perms.what.contains("allow rules missing"),
+            "{}",
+            no_perms.what
+        );
+        assert!(
+            setup_check(Some(&stub), ok_, Piece::Stale, v)
+                .what
+                .contains("allow rules incomplete")
+        );
     }
 
     #[test]

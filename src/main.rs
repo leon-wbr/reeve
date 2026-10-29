@@ -225,7 +225,8 @@ enum Gate {
 enum Setup {
     /// Add hooks to ~/.claude/settings.json that run `reeve ls --brief` at session start and
     /// `reeve hook context` on prompts and tool calls, `reeve hook background` before Bash calls,
-    /// and a skill stub at ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`
+    /// a skill stub at ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`, and
+    /// `permissions.allow` rules for reeve's own subcommands, so auto mode doesn't decline them
     Claude {
         /// Only report whether each piece is installed and current
         #[arg(long, conflicts_with = "remove")]
