@@ -13,3 +13,5 @@ Send the PR, even if it builds something the docs haven't designed yet; a workin
 - **checks the native option.** Say which agent CLI or existing tool you looked at, and why it doesn't already cover this.
 - **names the number.** For a new capability, say which metric in [docs/metrics.md](docs/metrics.md) it should move. Until the benchmark is public, the maintainer runs it on your PR. Fixes, docs and simplifications don't need a number.
 - **stays optional.** It plugs in like everything else around the core (principle 2) and keeps reeve local by default.
+
+CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` on every PR; run them locally first.
