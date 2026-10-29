@@ -84,7 +84,8 @@ fn read(path: PathBuf) -> String {
 /// Waits for the `reeve start` that `reeve run` left in the background to bring the worker up
 /// or fail, and returns its record.
 fn started(dir: &Path, name: &str) -> Value {
-    for _ in 0..400 {
+    // A deadline, not a sleep: a loaded machine can take well over 10 s to start the worker.
+    for _ in 0..2400 {
         let all: Value =
             serde_json::from_str(&read(dir.join("state/reeve/workers.json"))).unwrap_or_default();
         let w = all
