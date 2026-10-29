@@ -1,6 +1,7 @@
 mod ask;
 mod background;
 mod bench;
+mod bench_block;
 mod bench_entry;
 mod context;
 mod doctor;
@@ -245,6 +246,30 @@ enum Bench {
         #[arg(long, default_value_t = 240)]
         timeout: u64,
     },
+    /// Fresh `claude -p` sessions isolated from your setup, with only a CLAUDE.md block or the
+    /// skill stub (arms a0-a6) as an orchestrator and as a worker under Herdr, on five cases
+    /// (heavy, parallel, handoff, short, away), scored on whether they use reeve where it fits
+    Block {
+        /// Runs per arm, role and case
+        #[arg(long, default_value_t = 1)]
+        n: usize,
+        #[arg(long = "arm", value_name = "ARM", value_parser = bench_block::Arm::parse)]
+        arms: Vec<bench_block::Arm>,
+        #[arg(long = "role", value_name = "ROLE", value_parser = bench_block::Role::parse)]
+        roles: Vec<bench_block::Role>,
+        #[arg(long = "case", value_name = "CASE", value_parser = bench_block::Case::parse)]
+        cases: Vec<bench_block::Case>,
+        #[arg(long, default_value = "sonnet")]
+        model: String,
+        #[arg(long, default_value_t = 15)]
+        max_turns: u32,
+        /// Seconds before a session is stopped
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        /// Sessions at once
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+    },
     /// One run of an arm (bench/arms/<ARM>), named rv-<ARM>-<N>
     Run { arm: String, n: String },
     /// Aggregate results per arm
@@ -263,6 +288,13 @@ enum Bench {
     HandoffScore { arms: Vec<String> },
     /// A handoff-scenario task: waits out its simulated duration, then prints its result
     Task { id: String },
+    /// Exit 2 with reeve's own usage error if ARGS wouldn't run; the block bench's shim asks
+    /// this before it fakes a call
+    #[command(hide = true)]
+    Parse {
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -382,6 +414,20 @@ fn log_usage_error(e: &clap::Error) {
     events::log(&ev);
 }
 
+/// The error `reeve ARGS` would exit with before doing anything, if any.
+fn usage_error(args: impl IntoIterator<Item = String>) -> Option<String> {
+    let argv = std::iter::once("reeve".to_string()).chain(args);
+    match Cli::command().try_get_matches_from(argv) {
+        Err(e) if e.use_stderr() => Some(e.to_string()),
+        Err(_) => None,
+        Ok(m) => {
+            let run = m.subcommand_matches("run")?;
+            (run.get_one::<String>("name").is_some() && sandbox_opts_given(run))
+                .then(|| "reeve: sandbox options need --sandbox".into())
+        }
+    }
+}
+
 /// A background session in Herdr is out of the user's sight, permission prompts included.
 fn bg_in_herdr(who: &str) -> String {
     format!(
@@ -416,6 +462,15 @@ fn main() -> ExitCode {
             println!("{out}");
         }
         return ExitCode::SUCCESS;
+    }
+    if let Some(Top::Bench(Bench::Parse { args })) = cli.command {
+        return match usage_error(args) {
+            Some(e) => {
+                eprintln!("{}", e.trim_end());
+                ExitCode::from(2)
+            }
+            None => ExitCode::SUCCESS,
+        };
     }
     let workers = || workers::Registry::default_dir().map(workers::Registry::at);
     let Some(command) = cli.command else {
@@ -598,12 +653,36 @@ fn main() -> ExitCode {
             };
             bench_entry::main(&opts, VERSION)
         }
+        Top::Bench(Bench::Block {
+            n,
+            arms,
+            roles,
+            cases,
+            model,
+            max_turns,
+            timeout,
+            jobs,
+        }) => {
+            let opts = bench_block::Opts {
+                n,
+                arms: bench_block::or_all(arms, &bench_block::ARMS),
+                roles: bench_block::or_all(roles, &bench_block::ROLES),
+                cases: bench_block::or_all(cases, &bench_block::CASES),
+                model,
+                max_turns,
+                timeout,
+                jobs,
+                manual: SKILL.into(),
+            };
+            bench_block::main(&opts)
+        }
         Top::Bench(Bench::Run { arm, n }) => bench::run::run(&arm, &n),
         Top::Bench(Bench::Handoff { arm, n, real }) => bench::handoff::run(&arm, &n, real),
         Top::Bench(Bench::HandoffScore { arms }) => bench::handoff::score(&arms)
             .map(|out| println!("{out}"))
             .map(|_| 0),
         Top::Bench(Bench::Task { id }) => bench::handoff::task(&id),
+        Top::Bench(Bench::Parse { .. }) => Ok(0),
         Top::Bench(Bench::Score { arms }) => bench::score::score(&arms)
             .map(|t| println!("{t}"))
             .map(|_| 0),
@@ -672,6 +751,34 @@ mod tests {
             .try_get_matches_from(["reeve", "run"].iter().chain(args))
             .unwrap();
         sandbox_opts_given(m.subcommand_matches("run").unwrap())
+    }
+
+    #[test]
+    fn usage_errors_are_what_the_real_command_line_rejects() {
+        let err = |args: &[&str]| usage_error(args.iter().map(|a| a.to_string()));
+        let misplaced = err(&[
+            "run",
+            "--name",
+            "x",
+            "--permission-mode",
+            "auto",
+            "--",
+            "hi",
+        ]);
+        assert!(misplaced.is_some_and(|e| e.contains("unexpected argument '--permission-mode'")));
+        assert_eq!(
+            err(&["run", "--name", "x", "--cwd", "/w", "--", "-w", "x", "hi"]),
+            None
+        );
+        assert_eq!(err(&["--skill"]), None);
+        assert_eq!(err(&["--help"]), None);
+        assert_eq!(err(&["heavy", "--", "npm", "test", "--", "-x"]), None);
+        assert_eq!(
+            err(&["run", "--name", "x", "--workspace", "rw", "--", "hi"]),
+            Some("reeve: sandbox options need --sandbox".into())
+        );
+        let shim = Cli::try_parse_from(["reeve", "bench", "parse", "--", "run", "--", "-x"]);
+        assert!(shim.is_ok());
     }
 
     #[test]

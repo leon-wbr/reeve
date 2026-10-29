@@ -98,7 +98,7 @@ impl Outcome {
     }
 }
 
-fn tool_uses(events: &[Value]) -> impl Iterator<Item = &Value> {
+pub fn tool_uses(events: &[Value]) -> impl Iterator<Item = &Value> {
     events
         .iter()
         .filter(|e| e["type"] == "assistant")
@@ -194,12 +194,14 @@ pub fn render(rows: &[Row]) -> String {
     out.join("\n")
 }
 
-fn sh_quote(s: &str) -> String {
+pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// A `reeve` that logs each call and stands in for the commands that would start or wait on
-/// real workers.
+/// A `reeve` that logs each call and stands in for every command that would start, queue or
+/// wait on something real: workers and handoffs only say they started, `heavy` runs its command
+/// at once with `REEVE_HEAVY_JOB=1` set, and `--bg` for a worker is refused under Herdr as the
+/// real one does. Only the manual, help and the hook reach the real reeve.
 pub fn shim(case: Case, dir: &Path, real: &Path) -> String {
     let ls = match case {
         Case::Successor => format!(
@@ -216,10 +218,19 @@ printf '%s\n' "$*" >> {log}
 case "$1" in
   ls) if [ "$2" = --brief ]; then printf '%s' {brief}; [ -n {brief} ] && echo; else echo {ls}; fi ;;
   report|wait) if [ -n "$2" ] && [ "$2" = {worker} ]; then echo "reeve: worker $2 has no report yet (running)" >&2; else echo "reeve: no worker $2; see \`reeve ls\`" >&2; fi; exit 1 ;;
-  run) n=; while [ $# -gt 0 ]; do [ "$1" = --name ] && n=$2; shift; done
+  run) n=; bg=; force=; while [ $# -gt 0 ] && [ "$1" != -- ]; do
+      case "$1" in --name) n=$2 ;; --bg) bg=1 ;; --force) force=1 ;; esac; shift; done
+    if [ -n "$n" ] && [ -n "$bg" ] && [ -z "$force" ] && [ "$HERDR_ENV" = 1 ]; then echo {bg_in_herdr} >&2; exit 2; fi
     echo "reeve: worker $n started; \`reeve wait $n\` blocks until its report is written" >&2 ;;
-  sandbox|feedback|setup|bench) echo "reeve: $1 is not run inside the bench" >&2 ;;
-  *) exec {real} "$@" ;;
+  heavy) if [ "$2" = ls ]; then echo "reeve heavy: nothing running or waiting"; exit 0; fi
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do shift; done
+    [ $# -gt 0 ] || {{ echo "reeve heavy: give the command after --" >&2; exit 2; }}
+    shift; REEVE_HEAVY_JOB=1 exec "$@" ;;
+  handoff) n=; while [ $# -gt 0 ]; do [ "$1" = --name ] && n=$2; shift; done
+    echo "reeve: handed off to $n; stop now and leave the workers running" >&2 ;;
+  ask) echo "your call" ;;
+  --skill|--help|-h|help|--version|-V|hook) exec {real} "$@" ;;
+  *) echo "reeve: $1 is not run inside the bench" >&2 ;;
 esac
 "#,
         log = sh_quote(&dir.join("calls.log").display().to_string()),
@@ -227,6 +238,15 @@ esac
         ls = sh_quote(&ls),
         worker = sh_quote(worker),
         real = sh_quote(&real.display().to_string()),
+        bg_in_herdr = sh_quote(&crate::bg_in_herdr("worker")),
+    )
+}
+
+/// A `herdr` that logs each call and opens nothing.
+pub fn herdr_shim(dir: &Path) -> String {
+    format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\necho \"herdr: not available inside the bench\" >&2\nexit 1\n",
+        sh_quote(&dir.join("herdr.log").display().to_string())
     )
 }
 
@@ -239,7 +259,7 @@ pub fn path_without_reeve(path: &str) -> String {
         .join(":")
 }
 
-fn workspace(ws: &Path) -> io::Result<()> {
+pub fn workspace(ws: &Path) -> io::Result<()> {
     fs::create_dir_all(ws.join("src"))?;
     fs::create_dir_all(ws.join("test"))?;
     fs::write(
@@ -488,7 +508,13 @@ mod tests {
         let path = d.join("reeve");
         fs::write(&path, shim(Case::Successor, &d, Path::new("/bin/echo"))).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        let run = |args: &[&str]| Command::new(&path).args(args).output().unwrap();
+        let run = |args: &[&str]| {
+            Command::new(&path)
+                .env_remove("HERDR_ENV")
+                .args(args)
+                .output()
+                .unwrap()
+        };
         let brief = run(&["ls", "--brief"]);
         assert_eq!(
             String::from_utf8_lossy(&brief.stdout),
@@ -499,16 +525,58 @@ mod tests {
         assert!(String::from_utf8_lossy(&report.stderr).contains("no report yet (running)"));
         let started = run(&["run", "--name", "x", "--bg", "--", "go"]);
         assert!(String::from_utf8_lossy(&started.stderr).contains("worker x started"));
+        assert!(run(&["heavy", "ls"]).status.success());
+        let heavy = run(&[
+            "heavy",
+            "--label",
+            "t",
+            "--",
+            "sh",
+            "-c",
+            "echo $REEVE_HEAVY_JOB",
+        ]);
+        assert_eq!(String::from_utf8_lossy(&heavy.stdout), "1\n");
+        let handoff = run(&["handoff", "--name", "next", "--notes", "n.md"]);
+        assert!(String::from_utf8_lossy(&handoff.stderr).contains("handed off to next"));
         assert_eq!(
-            String::from_utf8_lossy(&run(&["heavy", "ls"]).stdout),
-            "heavy ls\n"
+            String::from_utf8_lossy(&run(&["--skill"]).stdout),
+            "--skill\n"
         );
+        assert!(String::from_utf8_lossy(&run(&["rm", "x"]).stderr).contains("not run inside"));
         let calls = fs::read_to_string(d.join("calls.log")).unwrap();
         assert_eq!(calls.lines().next(), Some("ls --brief"));
-        assert_eq!(calls.lines().count(), 4);
+        assert_eq!(calls.lines().count(), 8);
 
         fs::write(&path, shim(Case::Short, &d, Path::new("/bin/echo"))).unwrap();
         assert!(run(&["ls", "--brief"]).stdout.is_empty());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn under_herdr_the_shim_refuses_bg_for_a_named_worker_as_reeve_does() {
+        let d = std::env::temp_dir().join(format!("reeve-bench-herdr-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let path = d.join("reeve");
+        fs::write(&path, shim(Case::Long, &d, Path::new("/bin/echo"))).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let run = |herdr: &str, args: &[&str]| {
+            Command::new(&path)
+                .env("HERDR_ENV", herdr)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let bg = run("1", &["run", "--name", "x", "--bg", "--", "go --bg"]);
+        assert_eq!(bg.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&bg.stderr).contains("drop --bg"));
+        for (herdr, args) in [
+            ("1", &["run", "--name", "x", "--", "go --bg"][..]),
+            ("1", &["run", "--name", "x", "--bg", "--force", "--", "go"]),
+            ("", &["run", "--name", "x", "--bg", "--", "go"]),
+        ] {
+            assert!(run(herdr, args).status.success(), "{args:?}");
+        }
         fs::remove_dir_all(&d).unwrap();
     }
 }
