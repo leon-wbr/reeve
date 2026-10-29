@@ -1,0 +1,9 @@
+# reeve bench block, smoke: one Sonnet run per arm, 2026-10-28
+# Each arm ran a different role and case, so this checks the harness and cost, not the arms.
+# A first smoke set was discarded: its workspaces sat under the home dir and read ~/.claude/CLAUDE.md.
+
+arm	role	case	run	fits	skill_first	skill	suite_heavy	suite_direct	workers	bg	handoff	subagent	turns	cost_usd
+a0	orch	heavy	1	no	no	no	0	1	0	0	no	no	3	0.017
+a1	worker	parallel	1	yes	yes	yes	0	0	2	0	no	no	6	0.042
+a2	orch	handoff	1	yes	yes	yes	0	0	0	0	yes	no	3	0.034
+a3	worker	short	1	yes	no	no	0	0	0	0	no	no	4	0.033
