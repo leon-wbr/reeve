@@ -1,7 +1,7 @@
 //! `reeve doctor`: checks what reeve needs from the machine, with one fix line per problem.
 
 use crate::setup::{self, Piece, tilde};
-use crate::workers::Registry;
+use crate::workers::{Kind, Registry};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -129,6 +129,39 @@ pub fn setup_check(stub: Option<&str>, hook: Piece, version: &str) -> Check {
     }
 }
 
+/// The Codex setup from `reeve setup codex --check`'s pieces. Whether Codex trusts the hooks
+/// isn't something reeve can read back, so an installed setup says where that is done.
+pub fn codex_check(pieces: &[(String, Piece)], version: &str) -> Check {
+    if pieces.iter().all(|(_, p)| *p == Piece::Missing) {
+        return problem(
+            Status::Note,
+            "Codex setup isn't installed (optional)",
+            "`reeve setup codex` adds session hooks, a skill stub and rules",
+        );
+    }
+    let off: Vec<String> = pieces
+        .iter()
+        .filter(|(_, p)| *p != Piece::Ok)
+        .map(|(what, p)| match p {
+            Piece::Missing => format!("{what} missing"),
+            _ => format!("{what} changed"),
+        })
+        .collect();
+    if off.is_empty() {
+        return ok(format!(
+            "Codex setup matches reeve {version} (its hooks run once trusted in Codex's /hooks)"
+        ));
+    }
+    problem(
+        Status::Fail,
+        format!(
+            "Codex setup is out of date for reeve {version}: {}",
+            off.join(", ")
+        ),
+        "`reeve setup codex` rewrites it; `reeve setup codex --check` shows each piece",
+    )
+}
+
 pub fn agent_check(name: &str, version: Option<&str>, required: bool) -> Option<Check> {
     match version {
         Some(v) if v.starts_with(name) => Some(ok(v)),
@@ -250,6 +283,18 @@ pub fn main(version: &str) -> io::Result<i32> {
     for (name, required) in [("claude", true), ("codex", false)] {
         let v = first_line(Command::new(name).arg("--version"));
         checks.extend(agent_check(name, v.as_deref(), required));
+        if name == "codex" && v.is_some() {
+            let codex =
+                setup::Paths::of(Kind::Codex).and_then(|p| setup::check(&p, version, false));
+            checks.push(match codex {
+                Ok(pieces) => codex_check(&pieces, version),
+                Err(e) => problem(
+                    Status::Fail,
+                    format!("can't read the Codex setup: {e}"),
+                    "fix or restore ~/.codex/hooks.json",
+                ),
+            });
+        }
     }
 
     match crate::workers::gone(&Registry::at(state)) {
@@ -318,10 +363,10 @@ mod tests {
     #[test]
     fn setup_is_optional_but_a_stale_one_fails() {
         let v = "1.0.0";
-        let stub = setup::stub(v);
+        let stub = setup::stub(Kind::Claude, v);
         assert_eq!(setup_check(None, Piece::Missing, v).status, Status::Note);
         assert_eq!(setup_check(Some(&stub), Piece::Ok, v).status, Status::Ok);
-        let old = setup_check(Some(&setup::stub("0.9.0")), Piece::Ok, v);
+        let old = setup_check(Some(&setup::stub(Kind::Claude, "0.9.0")), Piece::Ok, v);
         assert_eq!(old.status, Status::Fail);
         assert!(
             old.what.contains("skill stub for reeve 0.9.0"),
@@ -331,6 +376,19 @@ mod tests {
         let no_hook = setup_check(Some(&stub), Piece::Missing, v);
         assert!(no_hook.what.contains("hooks missing"), "{}", no_hook.what);
         assert_eq!(setup_check(None, Piece::Ok, v).status, Status::Fail);
+    }
+
+    #[test]
+    fn the_codex_setup_is_optional_but_a_partial_one_fails() {
+        let p = |a, b| vec![("hooks".to_string(), a), ("rules".to_string(), b)];
+        let none = codex_check(&p(Piece::Missing, Piece::Missing), "1.0.0");
+        assert_eq!(none.status, Status::Note);
+        let all = codex_check(&p(Piece::Ok, Piece::Ok), "1.0.0");
+        assert_eq!(all.status, Status::Ok);
+        assert!(all.what.contains("/hooks"), "{}", all.what);
+        let half = codex_check(&p(Piece::Ok, Piece::Stale), "1.0.0");
+        assert_eq!(half.status, Status::Fail);
+        assert!(half.what.contains("rules changed"), "{}", half.what);
     }
 
     #[test]

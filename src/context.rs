@@ -1,4 +1,4 @@
-//! `reeve hook context`: a Claude Code session doesn't see how much context it has used, so
+//! `reeve hook context`: a Claude Code or Codex session doesn't see how much context it has used, so
 //! this hook tells it once it is past the handoff threshold: on every prompt from then on, and
 //! right after the tool call that crossed it, for a session busy with one long turn.
 
@@ -36,13 +36,18 @@ pub fn threshold(env: Option<&str>, config: Option<&str>) -> u64 {
         .unwrap_or(DEFAULT_TOKENS)
 }
 
-/// Context the assistant turn `back` turns before the last one read, from a transcript's tail.
+/// Context the assistant turn `back` turns before the last one read, from a transcript's tail:
+/// Claude Code's `usage` lines, or the `token_count` events in a Codex rollout, whose input
+/// tokens already include the cached ones.
 pub fn tokens(tail: &str, back: usize) -> Option<u64> {
     tail.lines()
         .rev()
-        .filter(|l| l.contains("\"usage\""))
+        .filter(|l| l.contains("\"usage\"") || l.contains("\"token_count\""))
         .filter_map(|l| {
             let v: Value = serde_json::from_str(l).ok()?;
+            if let Some(last) = codex_info(&v).map(|i| &i["last_token_usage"]) {
+                return last["input_tokens"].as_u64();
+            }
             let u = v["message"]["usage"].as_object()?.clone();
             let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
             Some(
@@ -51,6 +56,27 @@ pub fn tokens(tail: &str, back: usize) -> Option<u64> {
         })
         .nth(back)
 }
+
+fn codex_info(v: &Value) -> Option<&Value> {
+    let p = &v["payload"];
+    (v["type"] == "event_msg" && p["type"] == "token_count")
+        .then(|| &p["info"])
+        .filter(|i| i.is_object())
+}
+
+/// The model's context window, which only a Codex rollout names.
+pub fn window(tail: &str) -> Option<u64> {
+    tail.lines()
+        .rev()
+        .filter(|l| l.contains("\"model_context_window\""))
+        .find_map(|l| {
+            let v: Value = serde_json::from_str(l).ok()?;
+            positive(&codex_info(&v)?["model_context_window"])
+        })
+}
+
+/// Hand off at this share of a known window, the same share as Claude's 350K of 1M.
+const WINDOW_PERCENT: u64 = 35;
 
 fn k(n: u64) -> String {
     format!("{}K", (n + 500) / 1000)
@@ -67,12 +93,14 @@ pub fn text(used: u64, limit: u64) -> String {
     )
 }
 
-/// The notice for a hook payload, given the transcript's tail.
+/// The notice for a hook payload, given the transcript's tail. A threshold above the share of
+/// the window that the transcript names is lowered to it.
 pub fn notice(payload: &Value, tail: &str, limit: u64) -> Option<String> {
     let event = payload["hook_event_name"].as_str()?;
     if event != "UserPromptSubmit" && event != "PostToolUse" {
         return None;
     }
+    let limit = window(tail).map_or(limit, |w| limit.min(w * WINDOW_PERCENT / 100));
     let used = tokens(tail, 0).filter(|u| *u >= limit)?;
     if event == "PostToolUse" && tokens(tail, 1).unwrap_or(0) >= limit {
         return None;
@@ -146,6 +174,47 @@ mod tests {
         assert_eq!(tokens(&t, 1), Some(3210));
         assert_eq!(tokens(&t, 2), None);
         assert_eq!(tokens("", 0), None);
+    }
+
+    fn codex_turn(input: u64, window: u64) -> String {
+        json!({
+            "type": "event_msg",
+            "payload": { "type": "token_count", "info": {
+                "total_token_usage": { "input_tokens": input * 3, "cached_input_tokens": 9 },
+                "last_token_usage": { "input_tokens": input, "cached_input_tokens": input / 2, "output_tokens": 99 },
+                "model_context_window": window
+            }}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_codex_turn_counts_its_last_input_cache_included() {
+        let empty = r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#;
+        let t = [
+            codex_turn(1000, 258_400),
+            empty.into(),
+            codex_turn(2000, 258_400),
+        ]
+        .join("\n");
+        assert_eq!(tokens(&t, 0), Some(2000));
+        assert_eq!(tokens(&t, 1), Some(1000));
+        assert_eq!(tokens(&t, 2), None);
+        assert_eq!(window(&t), Some(258_400));
+        assert_eq!(window(&transcript(&[5])), None);
+    }
+
+    #[test]
+    fn a_codex_session_is_told_before_its_window_fills() {
+        let p = payload("UserPromptSubmit");
+        let t = |used| [codex_turn(10, 258_400), codex_turn(used, 258_400)].join("\n");
+        assert_eq!(notice(&p, &t(90_000), 350_000), None);
+        let n = notice(&p, &t(95_000), 350_000).unwrap();
+        assert!(
+            n.contains("95K tokens, past the 90K handoff threshold"),
+            "{n}"
+        );
+        assert!(notice(&p, &t(100_000), 90_000).is_some());
     }
 
     #[test]

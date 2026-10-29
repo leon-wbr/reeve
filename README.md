@@ -35,6 +35,8 @@ wrote ~/.claude/skills/reeve/SKILL.md
 
 `reeve setup claude` touches only those two files. One hook prints a line about your workers at the start of each Claude Code session, and nothing when there are none. Another tells a session once it has used more context than its handoff threshold: 350,000 tokens, or `REEVE_HANDOFF_TOKENS`, or else `handoff_tokens` in `~/.config/reeve/config.json`. A third sends any Bash call that starts with `reeve heavy` to the background, so a wait for a slot never blocks the session. The skill stub says when to use reeve (heavy commands, long or parallel work as named workers, handoffs when a context check says so) and points agents at `reeve --skill`, the manual in [docs/skill.md](docs/skill.md); it carries no command syntax, so it can't go stale while the binary always prints the current manual. `--claude-md` also adds a short marked block with the same text to `~/.claude/CLAUDE.md` (under `CLAUDE_CONFIG_DIR` when set), so every session knows reeve is there; setup never touches text outside its markers. `reeve doctor` checks the install.
 
+For Codex, `reeve setup codex` does the same with Codex's hooks, skills and rules, and `reeve run --agent codex` starts a Codex worker; [docs/codex.md](docs/codex.md) says what differs.
+
 ## What it is for
 
 A developer working across many repositories hands out many small jobs at once: rebase these PRs, merge that one when CI is green, fix the failing check over there, pick up this ticket, research that and write it up. reeve is meant to turn each request into an item, give it to an agent, and keep it open until it is done by the rules set for that project. The aim is that every question you get is a real decision, never one about the tool's own trouble.
@@ -78,7 +80,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 
 ## Commands
 
-- `reeve run`: start an agent, in the foreground or the background, on the host or in a sandbox; `--name` makes it a worker any session can find, and `--cwd DIR` starts it in its project. Inside Herdr a worker gets its own tab, where you can see and answer it, and `--bg` is refused unless you pass `--force`, which skips reeve's safety checks; elsewhere it is a background session.
+- `reeve run`: start an agent, in the foreground or the background, on the host or in a sandbox; `--name` makes it a worker any session can find, and `--cwd DIR` starts it in its project, `--worktree` in its own git worktree and `--agent codex` as Codex. Inside Herdr a worker gets its own tab, where you can see and answer it, and `--bg` is refused unless you pass `--force`, which skips reeve's safety checks; elsewhere it is a background session.
 - `reeve ls`, `reeve wait`, `reeve watch`, `reeve report`, `reeve rm`: list named workers, wait for one to finish, print a line each time one is blocked, idle, gone or done, print its report, drop a gone one from the list.
 - `reeve handoff`: hand off to a successor started as a named worker. Inside Herdr `--bg` is refused here too, unless you pass `--force`.
 - `reeve ask`, `reeve asks`, `reeve answer`: queue a question for the user, list open ones, answer one.
@@ -87,6 +89,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - `reeve stats`: sum up reeve's local event log ([docs/events.md](docs/events.md)).
 - `reeve feedback "text"`: save a note about reeve itself and offer to post it as an issue ([docs/events.md](docs/events.md)).
 - `reeve setup claude [--claude-md] [--check] [--remove]`: add, check or remove the hooks, the skill stub and, with `--claude-md`, the CLAUDE.md block.
+- `reeve setup codex [--agents-md] [--check] [--remove]`: the same for Codex ([docs/codex.md](docs/codex.md)).
 - `reeve --skill`: print the manual for agents.
 - `reeve doctor`: check PATH, the setup's version, the state dir, the agent CLIs and gone workers.
 - `reeve bench entry`: run fresh sessions on four cases and report whether each chose well, which can mean not using reeve.
@@ -105,3 +108,4 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - [docs/use-cases/](docs/use-cases/)
 - [docs/metrics.md](docs/metrics.md)
 - [docs/events.md](docs/events.md)
+- [docs/codex.md](docs/codex.md)
