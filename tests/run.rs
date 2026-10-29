@@ -10,7 +10,8 @@ fn executable(path: &Path, script: &str) {
 
 /// A `claude` and a `herdr` on PATH that log the directory they were started in and their
 /// arguments to `<name>.log`, and answer the way reeve expects. `herdr pane get` answers with
-/// `pane.json` when it exists, and otherwise with a pane that has no agent. `herdr agent start`
+/// `pane.json` when it exists, and otherwise with a pane that has no agent; `herdr pane read`
+/// with `pane-text`. `herdr agent start`
 /// waits while `hold` exists, fails if `fail` does, and fails with the error code in
 /// `start-error` if that does.
 fn fakes(dir: &Path) -> String {
@@ -41,6 +42,7 @@ fn fakes(dir: &Path) -> String {
             "echo \"$*\" >> {}\ncase \"$1 $2\" in\n\
              'tab create') echo '{{\"result\":{{\"tab\":{{\"tab_id\":\"t1\"}},\"root_pane\":{{\"pane_id\":\"p1\"}}}}}}' ;;\n\
              'pane get') if [ -f {pane} ]; then cat {pane}; else echo '{{\"result\":{{}}}}'; fi ;;\n\
+             'pane read') cat {text} ;;\n\
              'agent start') while [ -f {hold} ]; do sleep 0.05; done\n\
                if [ -f {fail} ]; then echo '{{\"error\":{{\"code\":\"boom\",\"message\":\"no shell\"}}}}' >&2; exit 1; fi\n\
                if [ -f {err} ]; then printf '{{\"error\":{{\"code\":\"%s\",\"message\":\"m\"}}}}\\n' \"$(cat {err})\" >&2; exit 1; fi\n\
@@ -48,6 +50,7 @@ fn fakes(dir: &Path) -> String {
              *) echo '{{\"result\":{{}}}}' ;;\nesac",
             log("herdr"),
             pane = dir.join("pane.json").display(),
+            text = dir.join("pane-text").display(),
             hold = dir.join("hold").display(),
             fail = dir.join("fail").display(),
             err = dir.join("start-error").display()
@@ -755,4 +758,79 @@ fn a_handoff_from_a_codex_session_starts_a_codex_successor() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(started(&root, "next2").get("agent").is_none());
     assert!(read(root.join("claude.log")).contains("--bg"));
+}
+
+fn idle_pane(root: &Path, input: &str) {
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"claude","agent_status":"idle"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("pane-text"),
+        format!(
+            "⏺ Bash(reeve handoff --name next --notes n.md)\n⏺ Handed off.\n\
+             ──────────── old ─\n❯ {input}\n────────────\n  footer\n"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_handoff_from_a_reeve_pane_remembers_it_as_the_predecessor() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["old"]);
+    std::fs::write(project.join("n.md"), "Goal.").unwrap();
+    let args = ["handoff", "--name", "next", "--notes", "n.md", "--bg"];
+    let o = reeve_with(&root, &project, &args, &[("HERDR_PANE_ID", "p-old")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(read(root.join("state/reeve/handoffs/next.from")), "old");
+
+    // A session reeve did not start has no worker to close.
+    let args = ["handoff", "--name", "next2", "--notes", "n.md", "--bg"];
+    let o = reeve_with(&root, &project, &args, &[("HERDR_PANE_ID", "p-user")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!root.join("state/reeve/handoffs/next2.from").exists());
+}
+
+#[test]
+fn ls_closes_the_predecessor_once_it_is_quiet_and_says_why_until_then() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["old"]);
+    std::fs::create_dir_all(root.join("state/reeve/handoffs")).unwrap();
+    let from = root.join("state/reeve/handoffs/next.from");
+    std::fs::write(&from, "old").unwrap();
+    let ls = |args: &[&str]| {
+        let o = reeve(&root, &project, args);
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+
+    // No report yet.
+    idle_pane(&root, "");
+    let out = ls(&["ls"]);
+    assert!(out.contains("reeve: old has no report yet"), "{out}");
+    assert!(from.exists());
+
+    // A report, but something typed in its box.
+    report(&root, "old");
+    idle_pane(&root, "start a worker on the reeve close fix");
+    let out = ls(&["ls"]);
+    assert!(
+        out.contains("reeve: old has unsent input: \"start a worker on the reeve close fix\""),
+        "{out}"
+    );
+    assert!(!read(root.join("herdr.log")).contains("pane close"));
+    assert!(from.exists());
+
+    // Box emptied: the next ls, here the brief one the hook runs, closes it.
+    idle_pane(&root, "");
+    let out = ls(&["ls", "--brief"]);
+    assert!(
+        out.contains("reeve: closed old, which handed off to next"),
+        "{out}"
+    );
+    assert!(read(root.join("herdr.log")).contains("pane close p-old"));
+    assert!(!from.exists());
 }

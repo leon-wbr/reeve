@@ -231,6 +231,31 @@ impl Registry {
         self.dir.join("handoffs").join(format!("{name}.md"))
     }
 
+    /// Names the predecessor of a successor whose handoff reeve has not yet tidied up after.
+    pub fn predecessor_path(&self, next: &str) -> PathBuf {
+        self.dir.join("handoffs").join(format!("{next}.from"))
+    }
+
+    /// The (successor, predecessor) pairs still waiting for the predecessor to be closed.
+    pub fn predecessors(&self) -> Vec<(String, String)> {
+        let Ok(dir) = fs::read_dir(self.dir.join("handoffs")) else {
+            return Vec::new();
+        };
+        let mut pairs: Vec<_> = dir
+            .filter_map(|e| {
+                let path = e.ok()?.path();
+                let next = path
+                    .file_name()?
+                    .to_str()?
+                    .strip_suffix(".from")?
+                    .to_string();
+                Some((next, fs::read_to_string(&path).ok()?.trim().to_string()))
+            })
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
     fn file(&self) -> PathBuf {
         self.dir.join("workers.json")
     }
@@ -698,7 +723,17 @@ fn start_exec(argv: &[String], log: &Path) -> io::Result<String> {
     Ok(child.id().to_string())
 }
 
-fn agent(w: &Worker) -> Agent {
+/// A pane's recent terminal text, as Herdr reads it.
+pub fn read_tab(pane: &str) -> Result<String, String> {
+    probe(
+        "herdr",
+        [
+            "pane", "read", pane, "--source", "recent", "--lines", "2000",
+        ],
+    )
+}
+
+pub fn agent(w: &Worker) -> Agent {
     match (w.backend, w.agent) {
         (Backend::Pane, kind) => {
             let p = probe("herdr", ["pane", "get", &w.handle]);
