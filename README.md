@@ -83,6 +83,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - `reeve ls`, `reeve wait`, `reeve watch`, `reeve report`, `reeve close`, `reeve rm`: list named workers, wait for one to finish, print a line each time one is blocked, idle, gone or done (with the next step), print its report, close a finished one's tab (or stop its background process) and its clean, pushed worktree, drop a gone one from the list.
 - `reeve handoff`: hand off to a successor started as a named worker. Inside Herdr `--bg` is refused here too, unless you pass `--force`.
 - `reeve ask`, `reeve asks`, `reeve answer`: queue a question for the user, list open ones, answer one.
+- `reeve remote`, `reeve send`, `reeve inbox`: a plain message box on any machine you can ssh to, with a queue for when the connection drops ([docs/remotes.md](docs/remotes.md)).
 - `reeve sandbox`: build, list, use and remove sandboxes.
 - `reeve heavy`: queue builds and test suites so agents take turns ([docs/heavy.md](docs/heavy.md)).
 - `reeve stats`: sum up reeve's local event log ([docs/events.md](docs/events.md)).
@@ -108,3 +109,4 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - [docs/metrics.md](docs/metrics.md)
 - [docs/events.md](docs/events.md)
 - [docs/codex.md](docs/codex.md)
+- [docs/remotes.md](docs/remotes.md)

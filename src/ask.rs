@@ -6,11 +6,7 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn dir() -> io::Result<PathBuf> {
-    let home = std::env::var_os("REEVE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".reeve")))
-        .ok_or_else(|| io::Error::other("no REEVE_HOME or HOME"))?;
-    let d = home.join("asks");
+    let d = crate::msg::home()?.join("asks");
     fs::create_dir_all(&d)?;
     Ok(d)
 }

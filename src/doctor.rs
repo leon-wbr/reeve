@@ -188,6 +188,71 @@ pub fn gone_checks(names: &[String]) -> Vec<Check> {
         .collect()
 }
 
+/// `queued` is each remote's name, how many messages wait for it and the age in seconds of the
+/// oldest. Doctor never contacts a remote, so this says what is configured and what is stuck.
+pub fn remote_checks(queued: &[(String, usize, Option<u64>)], ssh_found: bool) -> Vec<Check> {
+    if queued.is_empty() {
+        return vec![ok("no remotes configured (optional)")];
+    }
+    let names: Vec<&str> = queued.iter().map(|(n, ..)| n.as_str()).collect();
+    let mut out = vec![if ssh_found {
+        ok(format!("remotes: {}", names.join(", ")))
+    } else {
+        problem(
+            Status::Fail,
+            format!(
+                "remotes are configured ({}) but ssh isn't on PATH",
+                names.join(", ")
+            ),
+            "install an ssh client; reeve talks to remotes only through it",
+        )
+    }];
+    for (name, n, oldest) in queued.iter().filter(|(_, n, _)| *n > 0) {
+        out.push(problem(
+            Status::Note,
+            format!(
+                "{n} message(s) queued for {name}, the oldest {} old",
+                crate::msg::age(oldest.unwrap_or(0))
+            ),
+            format!("`reeve remote sync {name}` sends them once it is reachable"),
+        ));
+    }
+    out
+}
+
+fn remote_state() -> Vec<Check> {
+    let remotes = match crate::remote::load() {
+        Ok(r) => r,
+        Err(e) => {
+            return vec![problem(
+                Status::Fail,
+                format!("can't read the remotes: {e}"),
+                "fix or remove ~/.config/reeve/remotes.json",
+            )];
+        }
+    };
+    let store = crate::msg::Store::open().ok();
+    let now = crate::msg::now_secs();
+    let queued: Vec<_> = remotes
+        .iter()
+        .map(|r| {
+            let waiting = store
+                .as_ref()
+                .map(|s| crate::msg::list(&s.spool(&r.name)))
+                .unwrap_or_default();
+            let oldest = waiting
+                .iter()
+                .filter_map(|m| crate::msg::parse_utc(crate::msg::field(m, "at")))
+                .min()
+                .map(|t| now.saturating_sub(t));
+            (r.name.clone(), waiting.len(), oldest)
+        })
+        .collect();
+    let ssh_found = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .any(|d| d.join("ssh").is_file());
+    remote_checks(&queued, ssh_found)
+}
+
 /// The report, and whether every check passed (notes don't count against it).
 pub fn render(checks: &[Check]) -> (String, bool) {
     let mut out = vec![];
@@ -306,6 +371,8 @@ pub fn main(version: &str) -> io::Result<i32> {
         )),
     }
 
+    checks.extend(remote_state());
+
     let (out, passed) = render(&checks);
     println!("{out}");
     Ok(if passed { 0 } else { 1 })
@@ -404,6 +471,22 @@ mod tests {
                 .what,
             "codex-cli 0.9"
         );
+    }
+
+    #[test]
+    fn remotes_show_as_one_line_and_stuck_messages_as_notes() {
+        assert_eq!(remote_checks(&[], true).len(), 1);
+        let q = [("a".to_string(), 0, None), ("b".to_string(), 2, Some(7200))];
+        let checks = remote_checks(&q, true);
+        assert_eq!(checks[0].what, "remotes: a, b");
+        assert_eq!(checks[1].status, Status::Note);
+        assert!(
+            checks[1]
+                .what
+                .contains("2 message(s) queued for b, the oldest 2h old")
+        );
+        assert_eq!(checks.len(), 2);
+        assert_eq!(remote_checks(&q, false)[0].status, Status::Fail);
     }
 
     #[test]
