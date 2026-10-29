@@ -3,7 +3,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main, ci/github-actions]
+    branches: [main]
 
 permissions:
   contents: read
