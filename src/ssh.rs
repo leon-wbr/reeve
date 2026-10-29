@@ -16,7 +16,7 @@ pub const END: &str = "@@reeve-end";
 
 /// Argument 1 is the box path, 2 the operation, then the operation's own words. It has no single
 /// quote in it, so it travels as one single-quoted word.
-pub const SCRIPT: &str = r#"umask 077
+pub const SCRIPT: &str = r##"umask 077
 box=$1; op=$2; shift 2
 case $box in \~/*) box=$HOME/${box#\~/};; esac
 here() { [ -d "$box/inbox" ] && [ -d "$box/outbox" ] && [ -d "$box/seen" ]; }
@@ -45,6 +45,10 @@ push)
 list)
   find "$box/seen" "$box/outbox/.done" -type f -mtime +30 -exec rm -f {} + 2>/dev/null
   if ! here; then echo nobox; echo @@reeve-end; exit 0; fi
+  if [ -f "$box/status.json" ]; then
+    st=; IFS= read -r st < "$box/status.json"
+    [ -n "$st" ] && echo "#status $st"
+  fi
   n=0
   for f in "$box"/outbox/*.json; do
     [ -f "$f" ] || continue
@@ -65,7 +69,7 @@ ack|reject)
 *) echo "unknown op" >&2; exit 2 ;;
 esac
 echo @@reeve-end
-"#;
+"##;
 
 /// `s` as one word for a POSIX shell.
 pub fn sh_quote(s: &str) -> String {
@@ -126,7 +130,7 @@ pub enum Fail {
     Unreachable(String),
     Timeout(u64),
     /// The remote script ran and failed.
-    Remote(i32, String),
+    Remote(i32),
 }
 
 /// A hard limit on one ssh, whatever the connection does. `REEVE_SSH_TIMEOUT` (seconds) changes it.
@@ -217,7 +221,7 @@ pub fn run_command(
     match status.code() {
         Some(0) => Ok(stdout),
         Some(255) | None => Err(Fail::Unreachable(first_line(&stderr))),
-        Some(c) => Err(Fail::Remote(c, first_line(&stderr))),
+        Some(c) => Err(Fail::Remote(c)),
     }
 }
 
@@ -242,14 +246,14 @@ fn frame(text: &str) -> Option<String> {
     (body.is_empty() || body.ends_with('\n')).then(|| body.to_string())
 }
 
+/// What went wrong, for the person at the terminal. ssh's own message is kept (cleaned), but a
+/// remote script's stderr is not: it is text from the remote.
 pub fn describe(f: &Fail) -> String {
     match f {
         Fail::Unreachable(d) if d.is_empty() => "ssh could not connect".into(),
-        Fail::Unreachable(d) => d.clone(),
+        Fail::Unreachable(d) => crate::msg::clean(d),
         Fail::Timeout(s) => format!("ssh timed out after {s}s"),
-        Fail::Remote(c, d) => format!("the box script failed (exit {c}) {d}")
-            .trim()
-            .to_string(),
+        Fail::Remote(c) => format!("the box script failed (exit {c})"),
     }
 }
 

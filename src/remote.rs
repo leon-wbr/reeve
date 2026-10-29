@@ -5,6 +5,7 @@
 use crate::msg::{self, Store};
 use crate::ssh::{self, Fail};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -43,6 +44,11 @@ pub struct Remote {
     /// shows it.
     #[serde(default)]
     pub owner_channel: Owner,
+    /// A command for the remote's shell, run over ssh after a delivery to tell its agent to look
+    /// (e.g. a script the user wrote). It runs there, never here, and a failure never fails the
+    /// delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<String>,
 }
 
 fn default_box() -> String {
@@ -92,12 +98,28 @@ pub fn get(name: &str) -> io::Result<Remote> {
         .ok_or_else(|| io::Error::other(format!("no remote {name}; see `reeve remote ls`")))
 }
 
+fn check_wake(w: &str) -> Result<(), String> {
+    if w.trim().is_empty() || w.len() > 500 || w.chars().any(char::is_control) {
+        return Err("--wake must be one line of at most 500 characters".into());
+    }
+    Ok(())
+}
+
 /// Writes the config only; nothing is contacted.
-pub fn add(name: &str, target: &str, box_path: Option<&str>, owner: Owner) -> io::Result<()> {
+pub fn add(
+    name: &str,
+    target: &str,
+    box_path: Option<&str>,
+    owner: Owner,
+    wake: Option<&str>,
+) -> io::Result<()> {
     msg::check_remote_name(name).map_err(io::Error::other)?;
     ssh::check_target(target).map_err(io::Error::other)?;
     let box_path = box_path.unwrap_or(ssh::DEFAULT_BOX);
     ssh::check_box(box_path).map_err(io::Error::other)?;
+    if let Some(w) = wake {
+        check_wake(w).map_err(io::Error::other)?;
+    }
     let mut all = load()?;
     if all.iter().any(|r| r.name == name) {
         return Err(io::Error::other(format!(
@@ -109,6 +131,7 @@ pub fn add(name: &str, target: &str, box_path: Option<&str>, owner: Owner) -> io
         ssh: target.into(),
         box_path: box_path.into(),
         owner_channel: owner,
+        wake: wake.map(Into::into),
     });
     save(all)
 }
@@ -140,12 +163,23 @@ pub fn rm(name: &str, force: bool) -> io::Result<()> {
 
 // ---- contact: what the last attempts found ----
 
+/// A heartbeat this much older than the contact that read it is stale: three missed beats of 30 s.
+const BEAT_FRESH: u64 = 90;
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Contact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_ok: Option<u64>,
+    /// When the latest attempt could not reach the remote; the next one that gets through clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_fail: Option<u64>,
+    /// `box/status.json` as the last successful sync read it: one line a supervisor's shell loop
+    /// writes, with an `at` time. Missing when the remote has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<Value>,
+    /// A delivery is waiting for its wake command to get through.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wake_pending: bool,
 }
 
 impl Contact {
@@ -167,14 +201,26 @@ impl Contact {
         let _ = write();
     }
 
-    /// `reachable`, `unreachable` or `unknown`, from the last attempt that got an answer either way.
+    /// From the last attempts: `unknown` before any, `unreachable` once the latest failed, else
+    /// `up` or `stale` by the heartbeat the remote keeps, or `reachable` if it keeps none. It is
+    /// the state as of the last contact; nothing here asks the remote.
     pub fn state(&self) -> &'static str {
         match (self.last_ok, self.last_fail) {
             (None, None) => "unknown",
-            (Some(ok), Some(fail)) if fail > ok => "unreachable",
-            (None, Some(_)) => "unreachable",
-            _ => "reachable",
+            // A success clears `last_fail`, so one that is set is the latest word.
+            (_, Some(_)) => "unreachable",
+            (Some(ok), None) => match (&self.status, self.beat_at()) {
+                (None, _) => "reachable",
+                (Some(_), Some(at)) if ok.saturating_sub(at) <= BEAT_FRESH => "up",
+                _ => "stale",
+            },
         }
+    }
+
+    fn beat_at(&self) -> Option<u64> {
+        self.status.as_ref()?["at"]
+            .as_str()
+            .and_then(msg::parse_utc)
     }
 }
 
@@ -231,25 +277,45 @@ pub struct Report {
     pub duplicates: usize,
     pub pulled: usize,
     pub rejected: usize,
+    /// Queued messages that ran out before they could be sent; each left a note in the inbox.
+    pub expired: usize,
     pub inbox_full: bool,
     /// Whether any ssh got through.
     pub reached: bool,
+    /// The ids pulled this time.
+    pub new_ids: Vec<String>,
+    /// Whether a wake command ran this time, and whether it worked.
+    pub woke: Option<bool>,
+    /// What the remote's heartbeat file said, if the listing was read.
+    pub(crate) listed: bool,
+    pub(crate) heartbeat: Option<Value>,
     pub error: Option<io::Error>,
 }
 
 impl Report {
     pub fn line(&self, name: &str, queued: usize) -> String {
         if let Some(e) = &self.error {
-            let left = if queued > 0 {
-                format!(" ({queued} queued)")
-            } else {
-                String::new()
-            };
-            return format!("{name}: {}{left}", e);
+            let mut left = String::new();
+            if queued > 0 {
+                left += &format!(" ({queued} queued)");
+            }
+            if self.expired > 0 {
+                left += &format!(" ({} expired unsent, see `reeve inbox`)", self.expired);
+            }
+            return format!("{name}: {e}{left}");
         }
         let mut parts = vec![];
         if self.pushed + self.duplicates > 0 {
             parts.push(format!("sent {}", self.pushed + self.duplicates));
+        }
+        if self.woke == Some(false) {
+            parts.push("its wake command failed, it is retried".into());
+        }
+        if self.expired > 0 {
+            parts.push(format!(
+                "{} expired unsent (see `reeve inbox`)",
+                self.expired
+            ));
         }
         if self.pulled > 0 {
             parts.push(format!("received {}", self.pulled));
@@ -327,6 +393,13 @@ fn pull_outbox(cx: &Ctx, rep: &mut Report) -> Result<(), Stop> {
     if listing.lines().next().map(str::trim) == Some("nobox") {
         return Err(Stop::box_invalid(&cx.r.name, "it is not set up"));
     }
+    rep.listed = true;
+    rep.heartbeat = listing
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("#status "))
+        .filter(|s| s.len() <= 2048)
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .filter(Value::is_object);
     let ids: Vec<&str> = listing
         .lines()
         .map(str::trim)
@@ -350,6 +423,7 @@ fn pull_outbox(cx: &Ctx, rep: &mut Report) -> Result<(), Stop> {
                         },
                     )?;
                     rep.pulled += 1;
+                    rep.new_ids.push(id.to_string());
                     held += 1;
                 }
                 Err(_) => {
@@ -364,19 +438,76 @@ fn pull_outbox(cx: &Ctx, rep: &mut Report) -> Result<(), Stop> {
     Ok(())
 }
 
+/// Moves queued messages whose `expires_at` has passed to `.expired/` and leaves a note from
+/// `reeve@local` in the inbox for each. It needs no connection, so an unreachable remote still
+/// gets its expiries noticed. Returns how many.
+fn expire_spool(store: &Store, name: &str, now: u64) -> usize {
+    let spool = store.spool(name);
+    let mut n = 0;
+    for m in msg::list(&spool).iter().filter(|m| msg::expired(m, now)) {
+        let id = msg::field(m, "id");
+        let body = format!(
+            "not delivered to {}: it expired at {} before {name} could be reached",
+            msg::field(m, "to"),
+            msg::field(m, "expires_at"),
+        );
+        let Ok(mut note) = msg::compose("reeve@local", "local", &body, Some(id), None, now) else {
+            continue;
+        };
+        // One note per message, even if this repeats after a crash.
+        note["id"] = json!(format!("{id}-expired"));
+        let moved = fs::create_dir_all(spool.join(".expired")).and_then(|_| {
+            msg::write_atomic(&store.inbox(), &note)?;
+            fs::rename(
+                spool.join(format!("{id}.json")),
+                spool.join(".expired").join(format!("{id}.json")),
+            )
+        });
+        n += usize::from(moved.is_ok());
+    }
+    n
+}
+
+/// Runs the remote's wake command if a delivery is waiting for one. Failure keeps it pending.
+fn wake(cx: &Ctx, contact: &mut Contact, rep: &mut Report) {
+    let Some(cmd) = &cx.r.wake else { return };
+    if rep.pushed + rep.duplicates > 0 {
+        contact.wake_pending = true;
+    }
+    if !contact.wake_pending {
+        return;
+    }
+    let ok = ssh::run_command(&cx.r.ssh, cmd, &[], cx.limit).is_ok();
+    rep.woke = Some(ok);
+    if ok {
+        contact.wake_pending = false;
+    }
+}
+
 /// Pushes what is spooled for `r`, then (unless `push_only`) pulls its outbox. Never panics and
 /// never blocks longer than a few ssh limits; an unreachable remote is a result, not a hang.
 pub fn sync(store: &Store, r: &Remote, limit: Duration, push_only: bool) -> Report {
     let cx = Ctx { store, r, limit };
     let mut rep = Report::default();
+    let now = msg::now_secs();
+    rep.expired = expire_spool(store, &r.name, now);
     let mut result = push_spool(&cx, &mut rep);
+    let mut contact = Contact::load(store, &r.name);
+    if result.is_ok() || rep.pushed + rep.duplicates > 0 {
+        wake(&cx, &mut contact, &mut rep);
+    }
     if result.is_ok() && !push_only {
         result = pull_outbox(&cx, &mut rep);
     }
     let now = msg::now_secs();
-    let mut contact = Contact::load(store, &r.name);
     if rep.reached {
         contact.last_ok = Some(now);
+    }
+    if rep.listed {
+        contact.status = rep.heartbeat.take();
+    }
+    if rep.reached {
+        contact.last_fail = None;
     }
     if let Err(stop) = result {
         if stop.down {
@@ -464,6 +595,31 @@ pub fn check(name: &str) -> io::Result<i32> {
     Ok(i32::from(!problems.is_empty()))
 }
 
+/// What the local files say about one remote. Nothing here opens a connection.
+struct Facts {
+    contact: Contact,
+    queued: usize,
+    oldest: Option<u64>,
+    unread: usize,
+}
+
+fn facts(store: &Store, r: &Remote, now: u64) -> Facts {
+    let waiting = msg::list(&store.spool(&r.name));
+    Facts {
+        contact: Contact::load(store, &r.name),
+        queued: waiting.len(),
+        oldest: waiting
+            .iter()
+            .filter_map(|m| msg::parse_utc(msg::field(m, "at")))
+            .min()
+            .map(|t| now.saturating_sub(t)),
+        unread: msg::list(&store.inbox())
+            .iter()
+            .filter(|m| m["via"].as_str() == Some(r.name.as_str()))
+            .count(),
+    }
+}
+
 pub fn ls() -> io::Result<String> {
     let remotes = load()?;
     if remotes.is_empty() {
@@ -478,24 +634,64 @@ pub fn ls() -> io::Result<String> {
         .unwrap_or(0)
         .max(4);
     let mut out = format!(
-        "{:width$}  STATE        LAST OK  QUEUED  OWNER CHANNEL  SSH",
+        "{:width$}  STATE        LAST OK  QUEUED       UNREAD  OWNER CHANNEL  SSH",
         "NAME"
     );
     for r in &remotes {
-        let c = Contact::load(&store, &r.name);
-        let last = c
+        let f = facts(&store, r, now);
+        let last = f
+            .contact
             .last_ok
             .map_or("never".into(), |t| msg::age(now.saturating_sub(t)));
+        let queued = match f.oldest {
+            Some(o) => format!("{} ({})", f.queued, msg::age(o)),
+            None => f.queued.to_string(),
+        };
         out += &format!(
-            "\n{:width$}  {:11}  {last:>7}  {:>6}  {:13}  {}",
+            "\n{:width$}  {:11}  {last:>7}  {queued:11}  {:>6}  {:13}  {}",
             r.name,
-            c.state(),
-            msg::list(&store.spool(&r.name)).len(),
+            f.contact.state(),
+            f.unread,
             r.owner_channel.to_string(),
             r.ssh
         );
     }
     Ok(out)
+}
+
+/// One row per remote for `reeve ls`, from the last contact; a damaged config shows none.
+pub fn ls_rows() -> Vec<crate::workers::Row> {
+    let (Ok(remotes), Ok(store)) = (load(), Store::open()) else {
+        return vec![];
+    };
+    let now = msg::now_secs();
+    remotes
+        .iter()
+        .map(|r| {
+            let f = facts(&store, r, now);
+            let mut detail = vec![];
+            if let Some(o) = f.oldest {
+                detail.push(format!("{} queued, oldest {}", f.queued, msg::age(o)));
+            }
+            if f.unread > 0 {
+                detail.push(format!("{} unread", f.unread));
+            }
+            if let (Some(ok), Some(at)) = (f.contact.last_ok, f.contact.beat_at()) {
+                detail.push(format!("heartbeat {} old", msg::age(ok.saturating_sub(at))));
+            }
+            crate::workers::Row {
+                name: r.name.clone(),
+                state: f.contact.state().into(),
+                agent: "remote".into(),
+                backend: "ssh".into(),
+                age: f
+                    .contact
+                    .last_ok
+                    .map_or("-".into(), |t| msg::age(now.saturating_sub(t))),
+                detail: detail.join(", "),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -507,12 +703,67 @@ mod tests {
         let c = |ok, fail| Contact {
             last_ok: ok,
             last_fail: fail,
+            ..Contact::default()
         };
         assert_eq!(c(None, None).state(), "unknown");
         assert_eq!(c(Some(5), None).state(), "reachable");
         assert_eq!(c(Some(5), Some(9)).state(), "unreachable");
-        assert_eq!(c(Some(9), Some(5)).state(), "reachable");
         assert_eq!(c(None, Some(1)).state(), "unreachable");
+    }
+
+    #[test]
+    fn a_heartbeat_read_at_the_last_contact_decides_up_or_stale() {
+        let at = "2026-10-29T14:00:00Z";
+        let t = msg::parse_utc(at).unwrap();
+        let c = |status: Option<Value>, ok: u64| Contact {
+            last_ok: Some(ok),
+            status,
+            ..Contact::default()
+        };
+        let beat = Some(json!({"state": "running", "at": at}));
+        assert_eq!(c(beat.clone(), t + 30).state(), "up");
+        assert_eq!(c(beat.clone(), t + BEAT_FRESH).state(), "up");
+        assert_eq!(c(beat, t + BEAT_FRESH + 1).state(), "stale");
+        assert_eq!(c(Some(json!({"state": "running"})), t).state(), "stale");
+        assert_eq!(c(None, t).state(), "reachable");
+        let down = Contact {
+            last_fail: Some(t + 100),
+            ..c(Some(json!({"at": at})), t)
+        };
+        assert_eq!(down.state(), "unreachable", "an old beat never means alive");
+    }
+
+    #[test]
+    fn a_queued_message_expires_into_a_note_once() {
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::at(d.path().into());
+        let m = msg::compose("local", "hermes@box", "x", None, Some(60), 1000).unwrap();
+        let id = msg::field(&m, "id").to_string();
+        msg::write_atomic(&store.spool("box"), &m).unwrap();
+        assert_eq!(expire_spool(&store, "box", 1059), 0);
+        assert_eq!(expire_spool(&store, "box", 1060), 1);
+        assert_eq!(expire_spool(&store, "box", 1061), 0);
+        assert!(msg::list(&store.spool("box")).is_empty());
+        assert!(
+            store
+                .spool("box")
+                .join(".expired")
+                .join(format!("{id}.json"))
+                .exists()
+        );
+        let notes = msg::list(&store.inbox());
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0]["from"], "reeve@local");
+        assert_eq!(notes[0]["reply_to"], id.as_str());
+        assert!(msg::field(&notes[0], "body").contains("not delivered to hermes@box"));
+    }
+
+    #[test]
+    fn a_wake_command_is_one_short_line() {
+        assert!(check_wake("touch ~/woke").is_ok());
+        for bad in ["", "  ", "a\nb", &"x".repeat(501)] {
+            assert!(check_wake(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -532,6 +783,7 @@ mod tests {
             ssh: "myserver".into(),
             box_path: default_box(),
             owner_channel: Owner::Unknown,
+            wake: None,
         };
         let s = serde_json::to_string(&ConfigFile {
             remotes: vec![r.clone()],

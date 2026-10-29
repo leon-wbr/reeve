@@ -1011,22 +1011,53 @@ pub fn gone(r: &Registry) -> io::Result<Vec<String>> {
         .collect())
 }
 
-pub fn ls(r: &Registry) -> io::Result<String> {
+/// A line of `reeve ls` for something that is not a worker, such as a remote.
+pub struct Row {
+    pub name: String,
+    pub state: String,
+    pub agent: String,
+    pub backend: String,
+    pub age: String,
+    pub detail: String,
+}
+
+pub fn ls(r: &Registry, extra: &[Row]) -> io::Result<String> {
     let all = r.all()?;
-    let width = all.iter().map(|w| w.name.len()).max().unwrap_or(0).max(4);
-    let mut out = format!("{:width$}  STATE     AGENT   BACKEND  AGE  CWD", "NAME");
+    let width = all
+        .iter()
+        .map(|w| w.name.len())
+        .chain(extra.iter().map(|x| x.name.len()))
+        .max()
+        .unwrap_or(0)
+        .max(4);
+    let state_w = extra
+        .iter()
+        .map(|x| x.state.len())
+        .max()
+        .unwrap_or(0)
+        .max(8);
+    let mut out = format!(
+        "{:width$}  {:state_w$}  AGENT   BACKEND  AGE  CWD",
+        "NAME", "STATE"
+    );
     for (w, state) in all.iter().zip(states(&all)) {
         let backend = match w.backend {
             Backend::Pane => "pane",
             Backend::Bg => "bg",
         };
         out += &format!(
-            "\n{:width$}  {:8}  {:6}  {backend:7}  {:>3}  {}",
+            "\n{:width$}  {:state_w$}  {:6}  {backend:7}  {:>3}  {}",
             w.name,
             state.to_string(),
             w.agent.bin(),
             age(now().saturating_sub(w.started)),
             crate::setup::tilde(&w.cwd)
+        );
+    }
+    for x in extra {
+        out += &format!(
+            "\n{:width$}  {:state_w$}  {:6}  {:7}  {:>3}  {}",
+            x.name, x.state, x.agent, x.backend, x.age, x.detail
         );
     }
     Ok(out)

@@ -18,6 +18,7 @@ mod sandbox;
 mod setup;
 mod ssh;
 mod stats;
+mod watch;
 mod workers;
 
 use clap::parser::ValueSource;
@@ -236,6 +237,10 @@ enum RemoteCmd {
         /// Whether the agent there has its own way to reach you
         #[arg(long, value_enum, default_value_t = remote::Owner::Unknown)]
         owner_channel: remote::Owner,
+        /// A command for the remote's shell, run over ssh after a delivery to tell its agent to
+        /// look in the box. It runs there, never here; a failure never fails the delivery
+        #[arg(long, value_name = "CMD")]
+        wake: Option<String>,
     },
     /// List remotes: whether the last contact worked, and what is queued
     Ls,
@@ -244,7 +249,20 @@ enum RemoteCmd {
     /// Make the box on the remote (inbox/, outbox/, seen/), the only thing it creates there
     Init { name: String },
     /// Push what is queued and pull what the remote wrote, for NAME or every remote
-    Sync { name: Option<String> },
+    Sync {
+        name: Option<String>,
+        /// Keep going: sync every SECS, back off 2, 5, 15, then 60 s while a remote is
+        /// unreachable, and print a line per change (for Claude Code's Monitor tool or a
+        /// background shell). Never exits on a failed connection
+        #[arg(long)]
+        watch: bool,
+        /// Seconds between syncs while all is well
+        #[arg(long, value_name = "SECS", default_value_t = 15, requires = "watch", value_parser = clap::value_parser!(u64).range(1..))]
+        every: u64,
+        /// Stop after this many passes
+        #[arg(long, hide = true, requires = "watch")]
+        rounds: Option<u32>,
+    },
     /// Forget a remote (its box stays where it is)
     Rm {
         name: String,
@@ -727,7 +745,7 @@ fn main() -> ExitCode {
         Top::Ls { brief: false } => workers()
             .and_then(|r| {
                 tidy_predecessors(&r);
-                workers::ls(&r)
+                workers::ls(&r, &remote::ls_rows())
             })
             .map(|out| println!("{out}"))
             .map(|_| 0),
@@ -866,7 +884,15 @@ fn main() -> ExitCode {
                 target,
                 box_path,
                 owner_channel,
-            } => remote::add(&name, &target, box_path.as_deref(), owner_channel).map(|_| {
+                wake,
+            } => remote::add(
+                &name,
+                &target,
+                box_path.as_deref(),
+                owner_channel,
+                wake.as_deref(),
+            )
+            .map(|_| {
                 println!(
                     "added {name}; nothing was contacted. `reeve remote init {name}` makes its box"
                 );
@@ -875,7 +901,17 @@ fn main() -> ExitCode {
             RemoteCmd::Ls => remote::ls().map(|out| println!("{out}")).map(|_| 0),
             RemoteCmd::Check { name } => remote::check(&name),
             RemoteCmd::Init { name } => remote::init(&name),
-            RemoteCmd::Sync { name } => remote::sync_cmd(name.as_deref()),
+            RemoteCmd::Sync {
+                name,
+                watch: true,
+                every,
+                rounds,
+            } => watch::run(
+                name.as_deref(),
+                std::time::Duration::from_secs(every),
+                rounds,
+            ),
+            RemoteCmd::Sync { name, .. } => remote::sync_cmd(name.as_deref()),
             RemoteCmd::Rm { name, force } => remote::rm(&name, force).map(|_| 0),
         },
         Top::Send {

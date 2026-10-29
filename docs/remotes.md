@@ -18,16 +18,16 @@ ssh must already work without a prompt (a key in your agent, and the host known)
 
 | Command | What it does |
 | --- | --- |
-| `remote add NAME TARGET [--box PATH] [--owner-channel known\|unknown]` | Saves the remote in `~/.config/reeve/remotes.json`. TARGET is a host, `user@host` or an alias from your ssh config |
-| `remote ls` | State of the last contact, how many messages are queued, the owner channel |
+| `remote add NAME TARGET [--box PATH] [--owner-channel known\|unknown] [--wake CMD]` | Saves the remote in `~/.config/reeve/remotes.json`. TARGET is a host, `user@host` or an alias from your ssh config |
+| `remote ls` | State as of the last contact, when it was, what is queued and for how long, unread messages, the owner channel |
 | `remote check NAME` | Read-only: ssh, the box, the tools it needs |
 | `remote init NAME` | Makes the box |
-| `remote sync [NAME]` | Pushes the queue, oldest first, then pulls the outbox |
+| `remote sync [NAME] [--watch [--every SECS]]` | Pushes the queue, oldest first, then pulls the outbox. `--watch` keeps doing it |
 | `remote rm NAME [--force]` | Forgets the remote; refuses while messages are queued unless `--force` |
 | `send TO TEXT [--reply-to ID] [--ttl 24h] [--from NAME]` | TO is `name` (here) or `name@remote`. `-` as TEXT reads stdin |
 | `inbox [--from X] [--unanswered] [--all]`, `inbox show ID`, `inbox done ID` | Reads local files only |
 
-`reeve doctor` has a line for remotes and for messages stuck in the queue. It contacts no one.
+`reeve doctor` has a line for remotes and for messages stuck in the queue. It contacts no one. `reeve ls` adds a row per remote, from the last contact, and opens no connection either.
 
 ## The box
 
@@ -36,6 +36,7 @@ ssh must already work without a prompt (a key in your agent, and the host known)
   inbox/    messages for the agent there (reeve writes, the agent reads)
   outbox/   messages from the agent (it writes, reeve pulls)
   seen/     one empty marker per id reeve delivered
+  status.json   optional heartbeat, see below
 ```
 
 The box is reeve's own, apart from any agent's mailbox or memory, and mode 0700. `--box PATH` puts it elsewhere, for an agent that runs as another user: the ssh user needs write access, and reeve never uses sudo. The remote needs a POSIX `sh` with `mkdir`, `mv`, `cat`, `rm` and `wc`, and `find` to prune old markers. No reeve binary, no python.
@@ -65,6 +66,32 @@ The box is reeve's own, apart from any agent's mailbox or memory, and mode 0700.
 - **Offline.** `send` always succeeds here. With the remote down the message waits in `~/.reeve/spool/NAME/` with its final id and goes out on a later `send` or `remote sync`. A `send` right after a failed attempt just queues instead of waiting on ssh again. Nothing else in reeve waits on a remote.
 
 States reeve knows: queued (here), delivered (in the remote's inbox), and read only if the agent moved the file, visible at the next sync. Whether the agent acted is what it writes back.
+
+### Watching, and a connection that drops
+
+`reeve remote sync --watch` is not a daemon: run it in a background shell or Claude Code's Monitor tool, like `reeve watch`. It syncs every 15 seconds (`--every`). When a remote is unreachable it waits 2, 5, 15, then 60 seconds, with ±20% jitter, per remote, and keeps trying until you stop it. It prints a line per change, not per pass:
+
+```
+watching myserver every 15s
+myserver: unreachable; retrying in 2s
+myserver: back online
+myserver: delivered 2
+myserver: new message 20261029T140311Z-9f3a1c (`reeve inbox show 20261029T140311Z-9f3a1c`)
+```
+
+The lines hold remote names, ids and fixed words, never what a remote wrote or ssh's own text, since agents read them. A drop never loses or repeats a message, whenever it comes: before a command runs, after it ran but before its answer arrived, or with a push cut off halfway (the remote checks the length and commits nothing). The next pass repeats the step, and `seen/` and the local inbox make the repeat a no-op. The tests cut the connection at every step of a sync in each of these ways.
+
+### Expiry
+
+`expires_at` is compared on the machine that looks, using the writer's UTC time. A queued message that expires before it could be sent moves to `~/.reeve/spool/NAME/.expired/` and leaves a note in the inbox from `reeve@local` (`reply_to` is the message), so a silent loss can't happen. This needs no connection, so it works while the remote is down. A message without `expires_at` waits as long as it takes. A pulled message that has expired still lands in the inbox, marked `[expired]`, so you can see what was missed.
+
+### Wake
+
+`--wake CMD` is a command for the remote's shell, which reeve runs over ssh after a delivery, for example a script that tells the agent there to look in the box. Without it the agent polls its inbox, which works anywhere there is a file tool. It runs on the remote, never here. A failed wake never fails the delivery; it is retried at the next sync until it works. Hermes-style setups need a one-time configuration on their side first; that is not reeve's to change.
+
+### Heartbeat
+
+If the box has a `status.json` (one line of JSON with an `at` UTC time, written by whatever supervises the agent, say every 30 seconds), each sync reads it with the listing. The state in `remote ls` and `reeve ls` is `up` if the beat was within 90 seconds of that contact, `stale` if not, `reachable` if the box has no heartbeat, `unreachable` if the latest attempt failed (an old beat never means alive) and `unknown` before any contact. Nothing asks the remote when you list; the state is as of the last contact, shown in the age column.
 
 Seen markers, delivered copies and read messages are kept 30 days on both sides.
 
