@@ -28,12 +28,12 @@ reeve is a small, local tool that gives many tasks to coding agents and tracks e
 
 $ reeve setup claude
 backed up ~/.claude/settings.json to ~/.claude/settings.json.reeve-1793022575.bak
-wrote ~/.claude/settings.json: hooks `reeve ls --brief` (session start) and `reeve hook context` (prompts and tool calls)
+wrote ~/.claude/settings.json: hooks `reeve ls --brief` (session start), `reeve hook context` (prompts and tool calls) and `reeve hook background` (Bash calls)
 wrote ~/.claude/skills/reeve/SKILL.md
 `reeve setup claude --remove` takes it all out again
 ```
 
-`reeve setup claude` touches only those two files. One hook prints a line about your workers at the start of each Claude Code session, and nothing when there are none. The other tells a session once it has used more context than its handoff threshold: 350,000 tokens, or `REEVE_HANDOFF_TOKENS`, or else `handoff_tokens` in `~/.config/reeve/config.json`. The skill stub says when to use reeve (heavy commands, long or parallel work as named workers, handoffs when a context check says so) and points agents at `reeve --skill`, the manual in [docs/skill.md](docs/skill.md); it carries no command syntax, so it can't go stale while the binary always prints the current manual. `--claude-md` also adds a short marked block with the same text to `~/.claude/CLAUDE.md` (under `CLAUDE_CONFIG_DIR` when set), so every session knows reeve is there; setup never touches text outside its markers. `reeve doctor` checks the install.
+`reeve setup claude` touches only those two files. One hook prints a line about your workers at the start of each Claude Code session, and nothing when there are none. Another tells a session once it has used more context than its handoff threshold: 350,000 tokens, or `REEVE_HANDOFF_TOKENS`, or else `handoff_tokens` in `~/.config/reeve/config.json`. A third sends any Bash call that starts with `reeve heavy` to the background, so a wait for a slot never blocks the session. The skill stub says when to use reeve (heavy commands, long or parallel work as named workers, handoffs when a context check says so) and points agents at `reeve --skill`, the manual in [docs/skill.md](docs/skill.md); it carries no command syntax, so it can't go stale while the binary always prints the current manual. `--claude-md` also adds a short marked block with the same text to `~/.claude/CLAUDE.md` (under `CLAUDE_CONFIG_DIR` when set), so every session knows reeve is there; setup never touches text outside its markers. `reeve doctor` checks the install.
 
 ## What it is for
 

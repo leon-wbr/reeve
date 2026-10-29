@@ -1,4 +1,5 @@
 mod ask;
+mod background;
 mod bench;
 mod bench_entry;
 mod context;
@@ -175,6 +176,9 @@ enum Hook {
     /// off. The threshold is REEVE_HANDOFF_TOKENS, else `handoff_tokens` in
     /// ~/.config/reeve/config.json, else 350000
     Context,
+    /// Read a PreToolUse hook's JSON on stdin and send a Bash call that starts with
+    /// `reeve heavy` to the background
+    Background,
 }
 
 #[derive(Subcommand)]
@@ -195,8 +199,8 @@ enum Gate {
 #[derive(Subcommand)]
 enum Setup {
     /// Add hooks to ~/.claude/settings.json that run `reeve ls --brief` at session start and
-    /// `reeve hook context` on prompts and tool calls, and a skill stub at
-    /// ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`
+    /// `reeve hook context` on prompts and tool calls, `reeve hook background` before Bash calls,
+    /// and a skill stub at ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`
     Claude {
         /// Only report whether each piece is installed and current
         #[arg(long, conflicts_with = "remove")]
@@ -396,6 +400,12 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    if let Some(Top::Hook(Hook::Background)) = cli.command {
+        if let Some(out) = background::hook(io::stdin()) {
+            println!("{out}");
+        }
+        return ExitCode::SUCCESS;
+    }
     let workers = || workers::Registry::default_dir().map(workers::Registry::at);
     let Some(command) = cli.command else {
         print!("{SKILL}");
@@ -507,7 +517,9 @@ fn main() -> ExitCode {
             ev.worker = Some(name.clone());
             workers().and_then(|r| workers::rm(&r, &name)).map(|_| 0)
         }
-        Top::Hook(Hook::Context) => unreachable!("answered before the event log"),
+        Top::Hook(Hook::Context | Hook::Background) => {
+            unreachable!("answered before the event log")
+        }
         Top::Report { name } => {
             ev.worker = Some(name.clone());
             workers()
@@ -717,6 +729,7 @@ mod tests {
         let parse = |args: &[&str]| Cli::try_parse_from(["reeve"].iter().chain(args)).is_ok();
         assert!(parse(&["rm", "x"]));
         assert!(parse(&["hook", "context"]));
+        assert!(parse(&["hook", "background"]));
         assert!(parse(&["setup", "claude", "--claude-md"]));
         assert!(parse(&["setup", "claude", "--check", "--claude-md"]));
         assert!(!parse(&["setup", "claude", "--remove", "--claude-md"]));

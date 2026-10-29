@@ -1,5 +1,6 @@
 //! `reeve setup claude`: a SessionStart hook that tells each new Claude Code session about
-//! running workers, prompt and tool hooks that tell it when to hand off, a skill stub that says
+//! running workers, prompt and tool hooks that tell it when to hand off, a Bash hook that sends
+//! `reeve heavy` to the background, a skill stub that says
 //! what reeve offers and, with `--claude-md`, a block in CLAUDE.md. All are marked so that
 //! `--check` and `--remove` find exactly what setup wrote.
 
@@ -25,8 +26,12 @@ pub fn context_command() -> String {
     format!("command -v reeve >/dev/null && reeve hook context || true {MARKER}")
 }
 
+pub fn background_command() -> String {
+    format!("command -v reeve >/dev/null && reeve hook background || true {MARKER}")
+}
+
 /// Each hook event setup writes to, with the one group it adds there.
-fn groups() -> [(&'static str, Value); 3] {
+fn groups() -> [(&'static str, Value); 4] {
     let context = || json!({ "hooks": [{ "type": "command", "command": context_command() }] });
     [
         (
@@ -38,6 +43,13 @@ fn groups() -> [(&'static str, Value); 3] {
         ),
         ("UserPromptSubmit", context()),
         ("PostToolUse", context()),
+        (
+            "PreToolUse",
+            json!({
+                "matcher": "Bash",
+                "hooks": [{ "type": "command", "command": background_command() }]
+            }),
+        ),
     ]
 }
 
@@ -347,8 +359,8 @@ pub fn install(p: &Paths, version: &str, claude_md: bool, now: u64) -> io::Resul
     if add_hook(&mut settings).map_err(io::Error::other)? {
         write_settings(&p.settings, &settings, now, &mut out)?;
         out.push(format!(
-            "wrote {}: hooks `reeve ls --brief` (session start) and `reeve hook context` \
-             (prompts and tool calls)",
+            "wrote {}: hooks `reeve ls --brief` (session start), `reeve hook context` \
+             (prompts and tool calls) and `reeve hook background` (Bash calls)",
             tilde(&p.settings)
         ));
     } else {
@@ -638,6 +650,21 @@ mod tests {
         let c = context_command();
         assert!(c.starts_with("command -v reeve >/dev/null && reeve hook context || true"));
         assert!(c.ends_with(MARKER));
+    }
+
+    #[test]
+    fn the_background_hook_runs_before_bash_calls_and_never_fails() {
+        let mut s = others();
+        add_hook(&mut s).unwrap();
+        let gs = s["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(gs.len(), 1);
+        assert_eq!(gs[0]["matcher"], "Bash");
+        assert_eq!(gs[0]["hooks"][0]["command"], background_command());
+        let c = background_command();
+        assert!(c.starts_with("command -v reeve >/dev/null && reeve hook background || true"));
+        assert!(c.ends_with(MARKER));
+        s["hooks"].as_object_mut().unwrap().remove("PreToolUse");
+        assert_eq!(hook_state(&s), Piece::Stale);
     }
 
     #[test]

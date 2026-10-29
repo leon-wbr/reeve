@@ -46,7 +46,7 @@ It writes the handoff file with your workers and starts the successor as a named
 
 ## Heavy commands on a shared machine
 
-Agents share this machine. Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. Waits can be long, so never run it in the foreground: start it in the background (Claude Code: `run_in_background`; Codex: a background terminal) and keep working; you're told when it ends.
+Agents share this machine. Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. Waits can be long, so never run it in the foreground: start it in the background (Claude Code: `run_in_background`, set by reeve's hook; Codex: a background terminal) and keep working; you're told when it ends.
 
 ```sh
 reeve heavy -- cargo test
