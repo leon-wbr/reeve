@@ -862,10 +862,11 @@ pub fn started(w: &Worker) -> String {
         "reeve: worker {name} is starting; its report goes to {}\n\
          reeve: follow it with `reeve watch {name}` (Claude Code: the Monitor tool, timeout_ms \
          1800000, re-armed when it expires; elsewhere a background shell). A line per change \
-         says what to do: done, read the report, then `reeve close {name}`; idle, read its tab: \
+         says what to do: done, read the report, then `reeve close {name}`; idle, read {}: \
          nothing if it waits on its own job, else nudge it, let it carry on, or ask the user; \
          blocked, answer it {} if you can, else ask the user.",
         crate::setup::tilde(&w.report),
+        look_where(w),
         answer_where(w)
     )
 }
@@ -1049,9 +1050,10 @@ fn left_where(w: &Worker) -> String {
 }
 
 fn look_where(w: &Worker) -> String {
-    match w.backend {
-        Backend::Pane => "its tab".to_string(),
-        Backend::Bg => format!("`claude logs {}`", w.name),
+    match (w.backend, w.agent) {
+        (Backend::Pane, _) => "its tab".to_string(),
+        (Backend::Bg, Kind::Claude) => format!("`claude logs {}`", w.name),
+        (Backend::Bg, Kind::Codex) => crate::setup::tilde(&exec_log(w)),
     }
 }
 
@@ -1184,23 +1186,20 @@ pub fn rm(r: &Registry, name: &str) -> io::Result<()> {
 }
 
 /// The command that ends a worker's agent: closes its Herdr pane, which takes the tab with it,
-/// or stops its background session.
+/// stops its Claude background session, or kills the pid of its `codex exec`.
 pub fn close_cmd(w: &Worker) -> (&'static str, Vec<String>) {
-    let args: &[&str] = match w.backend {
-        Backend::Pane => &["pane", "close"],
-        Backend::Bg => &["stop"],
-    };
-    let cmd = match w.backend {
-        Backend::Pane => "herdr",
-        Backend::Bg => "claude",
+    let (cmd, args): (_, &[&str]) = match (w.backend, w.agent) {
+        (Backend::Pane, _) => ("herdr", &["pane", "close"]),
+        (Backend::Bg, Kind::Claude) => ("claude", &["stop"]),
+        (Backend::Bg, Kind::Codex) => ("kill", &[]),
     };
     let args = args.iter().map(|a| a.to_string());
     (cmd, args.chain([w.handle.clone()]).collect())
 }
 
-/// From `git worktree list --porcelain`: the worktree `claude -w NAME` made, which lives under
-/// the main repo's `.claude/worktrees/` whatever checkout the worker ran in, and its lock
-/// reason if it is locked.
+/// From `git worktree list --porcelain`: the worktree of the worker, made by `claude -w NAME`
+/// or `reeve run --worktree`, which lives under the main repo's `.claude/worktrees/` whatever
+/// checkout the worker ran in, and its lock reason if it is locked.
 pub fn worktree_named(list: &str, name: &str) -> Option<(PathBuf, Option<String>)> {
     let tail = format!("/.claude/worktrees/{name}");
     list.split("\n\n").find_map(|b| {
@@ -1248,6 +1247,12 @@ fn remove_worktree(w: &Worker) -> io::Result<String> {
     let Some((dir, lock)) = worktree_named(&list, &w.name) else {
         return Ok("no worktree of its own".to_string());
     };
+    // Not from the worktree itself, which `git worktree remove` is about to delete.
+    let main = list
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("worktree "))
+        .map_or_else(|| w.cwd.clone(), PathBuf::from);
     let shown = crate::setup::tilde(&dir);
     let keep = |why: String| Ok(format!("kept worktree {shown}: {why}"));
     let status = git(&dir, &[o("status"), o("--porcelain")])?;
@@ -1276,9 +1281,9 @@ fn remove_worktree(w: &Worker) -> io::Result<String> {
         if alive {
             return keep(format!("locked ({reason})"));
         }
-        git(&w.cwd, &[o("worktree"), o("unlock"), dir.as_os_str()])?;
+        git(&main, &[o("worktree"), o("unlock"), dir.as_os_str()])?;
     }
-    match git(&w.cwd, &[o("worktree"), o("remove"), dir.as_os_str()]) {
+    match git(&main, &[o("worktree"), o("remove"), dir.as_os_str()]) {
         Ok(_) => Ok(format!("removed worktree {shown}")),
         Err(e) => keep(e.to_string()),
     }
@@ -2028,6 +2033,123 @@ mod tests {
             ..pane
         };
         assert_eq!(close_cmd(&bg), ("claude", s(&["stop", "ab12"])));
+        let exec = Worker {
+            agent: Kind::Codex,
+            handle: "4242".into(),
+            ..bg
+        };
+        assert_eq!(close_cmd(&exec), ("kill", s(&["4242"])));
+        let tab = Worker {
+            backend: Backend::Pane,
+            handle: "w1:p2".into(),
+            ..exec
+        };
+        assert_eq!(close_cmd(&tab), ("herdr", s(&["pane", "close", "w1:p2"])));
+    }
+
+    #[test]
+    fn next_steps_point_a_codex_worker_to_its_tab_or_its_log() {
+        let r = Registry::at(temp("codex-next"));
+        let tab = Worker {
+            agent: Kind::Codex,
+            ..worker(&r, "c", "w1:p1")
+        };
+        let exec = Worker {
+            backend: Backend::Bg,
+            handle: "4242".into(),
+            ..tab.clone()
+        };
+        assert!(change(&tab, None, State::Idle).contains("read its tab"));
+        let idle = change(&exec, None, State::Idle);
+        assert!(idle.contains("c.jsonl"), "{idle}");
+        assert!(!idle.contains("claude logs"), "{idle}");
+        let started = started(&exec);
+        assert!(
+            started.contains("idle, read ") && started.contains("c.jsonl"),
+            "{started}"
+        );
+        assert!(!started.contains("claude attach"), "{started}");
+        assert!(started.contains("codex exec resume"), "{started}");
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
+    /// A repo with a pushed main, and a worker whose worktree `reeve run --worktree` made.
+    fn repo_with_worktree(tag: &str, name: &str) -> (PathBuf, Worker) {
+        let root = temp(tag);
+        let (origin, repo) = (root.join("origin.git"), root.join("repo"));
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&root, &["init", "--bare", "-q", "-b", "main", "origin.git"]);
+        git_ok(&repo, &["init", "-q", "-b", "main"]);
+        git_ok(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        );
+        git_ok(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git_ok(&repo, &["push", "-q", "origin", "main"]);
+        let dir = crate::run::worktree(&repo, name).unwrap();
+        let r = Registry::at(root.join("state/workers"));
+        let w = Worker {
+            agent: Kind::Codex,
+            cwd: dir,
+            ..worker(&r, name, "w1:p1")
+        };
+        (repo, w)
+    }
+
+    #[test]
+    fn a_worktree_made_by_run_goes_when_clean_and_pushed() {
+        let (repo, w) = repo_with_worktree("wt-clean", "w");
+        let msg = remove_worktree(&w).unwrap();
+        assert!(msg.starts_with("removed worktree "), "{msg}");
+        assert!(!repo.join(".claude/worktrees/w").exists());
+    }
+
+    #[test]
+    fn a_worktree_made_by_run_stays_with_unpushed_work() {
+        let (repo, w) = repo_with_worktree("wt-dirty", "w");
+        git_ok(
+            &w.cwd,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "y",
+            ],
+        );
+        let msg = remove_worktree(&w).unwrap();
+        assert!(msg.contains("1 commit not pushed"), "{msg}");
+        assert!(repo.join(".claude/worktrees/w").exists());
     }
 
     #[test]

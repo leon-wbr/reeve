@@ -32,7 +32,7 @@ Follow every worker you start with `reeve watch NAME...`: in Claude Code the Mon
 
 A **gone** worker stopped without a report. See what it left (`reeve wait NAME` says where), then restart it under the same name saying where to pick up, or report it lost. `reeve rm NAME` drops it.
 
-Workers suit long or parallel work, and anything a successor should pick up; for short work you need now, a subagent is simpler.
+Workers suit long or parallel work; for short work you need now, a subagent is simpler.
 
 ## Handoffs
 
@@ -42,7 +42,7 @@ You don't see your own context usage: the hook `reeve setup claude` (or `codex`)
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It writes the handoff file with your workers and starts the successor as a worker told to read it. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` before redoing anything.
+It writes the handoff file and starts the successor as a worker told to read it. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` before redoing anything.
 
 ## Heavy commands on a shared machine
 
@@ -54,7 +54,7 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs and who waits
 ```
 
-You decide what's heavy; when in doubt, queue it. Only quick commands such as `git status` or one unit test skip it. It limits load, it is not a lock: two commands that share one e2e database or port can still run at once.
+You decide what's heavy; when in doubt, queue it. Only quick commands such as `git status` or one unit test skip it. It limits load, it is not a lock: commands sharing one e2e database or port can still collide.
 
 ## Questions for the user
 
