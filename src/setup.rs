@@ -194,7 +194,8 @@ pub fn add_hook(settings: &mut Value, k: Kind) -> Result<bool, String> {
 /// here can go stale or teach a wrong flag.
 pub const USES: &str = "reeve is installed on this machine. Use it for:\n\n\
 - heavy commands: test suites, e2e, builds and installs;\n\
-- long or parallel work, as named workers;\n\
+- long or parallel work, as named workers: follow them, and once a report is read close its \
+tab and worktree; look at an idle one and nudge it, don't leave it;\n\
 - handing off to a successor when a \"Context check\" says so.\n\n\
 Run `reeve --skill` before any of these; it prints the current manual with the exact commands.\n";
 
@@ -690,7 +691,7 @@ mod tests {
         let s = stub(C, "1.2.3");
         assert!(s.starts_with("---\nname: reeve\ndescription: reeve is installed"));
         assert!(s.contains(USES));
-        assert!(s.len() / 4 <= 160, "{}", s.len() / 4);
+        assert!(s.len() / 4 <= 190, "{}", s.len() / 4);
         assert_eq!(stub_version(&s), Some("1.2.3"));
         assert_eq!(stub_version("---\nname: reeve\n---\nmine\n"), None);
         assert!(DESCRIPTION.len() / 4 <= 60, "{}", DESCRIPTION.len() / 4);
@@ -862,12 +863,14 @@ mod tests {
             "reeve is installed",
             "test suites, e2e, builds and installs",
             "named workers",
+            "once a report is read close its tab and worktree",
+            "look at an idle one and nudge it",
             "Context check",
             "`reeve --skill`",
         ] {
             assert!(b.contains(part), "{part}");
         }
-        assert!(b.len() / 4 <= 100, "{}", b.len() / 4);
+        assert!(b.len() / 4 <= 130, "{}", b.len() / 4);
     }
 
     #[test]

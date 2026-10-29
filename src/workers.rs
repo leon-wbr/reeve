@@ -920,7 +920,10 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
         parts.join(", ")
     );
     if shown.iter().any(|(_, s, _)| *s == State::Done) {
-        out += "; `reeve report NAME` prints a report";
+        out += "; `reeve report NAME` prints a report, then `reeve close NAME` tidies up";
+    }
+    if shown.iter().any(|(_, s, _)| *s == State::Idle) {
+        out += "; look at an idle one and nudge it";
     }
     out.push('.');
     let max = BRIEF_MAX - HEAVY_REMINDER.len();
@@ -1195,27 +1198,25 @@ pub fn close_cmd(w: &Worker) -> (&'static str, Vec<String>) {
     (cmd, args.chain([w.handle.clone()]).collect())
 }
 
-/// Where `claude -w NAME` puts a worker's own worktree.
-pub fn worktree_dir(w: &Worker) -> PathBuf {
-    w.cwd.join(".claude/worktrees").join(&w.name)
-}
-
-/// From `git worktree list --porcelain`: `None` if `dir` isn't a worktree, else its lock reason.
-pub fn worktree_lock(list: &str, dir: &Path) -> Option<Option<String>> {
-    let block = list
-        .split("\n\n")
-        .find(|b| b.lines().next().and_then(|l| l.strip_prefix("worktree ")) == dir.to_str())?;
-    Some(
-        block
+/// From `git worktree list --porcelain`: the worktree `claude -w NAME` made, which lives under
+/// the main repo's `.claude/worktrees/` whatever checkout the worker ran in, and its lock
+/// reason if it is locked.
+pub fn worktree_named(list: &str, name: &str) -> Option<(PathBuf, Option<String>)> {
+    let tail = format!("/.claude/worktrees/{name}");
+    list.split("\n\n").find_map(|b| {
+        let dir = b.lines().next()?.strip_prefix("worktree ")?;
+        let lock = b
             .lines()
-            .find_map(|l| l.strip_prefix("locked").map(|r| r.trim().to_string())),
-    )
+            .find_map(|l| l.strip_prefix("locked").map(|r| r.trim().to_string()));
+        dir.ends_with(&tail).then(|| (PathBuf::from(dir), lock))
+    })
 }
 
 /// The pid in Claude Code's lock reason, "claude agent … (pid 123)".
 pub fn lock_pid(reason: &str) -> Option<u32> {
     let rest = reason.split("(pid ").nth(1)?;
-    rest.split(')').next()?.trim().parse().ok()
+    let digits = rest.split(|c: char| !c.is_ascii_digit()).next()?;
+    digits.parse().ok()
 }
 
 /// From `git status --porcelain` and `git rev-list HEAD --not --remotes`: why a worktree must
@@ -1242,14 +1243,10 @@ fn git(dir: &Path, args: &[&OsStr]) -> io::Result<String> {
 /// Removes the worker's own worktree when it is clean and pushed, unlocking a lock whose
 /// process has died; says why it stays otherwise. Never forces.
 fn remove_worktree(w: &Worker) -> io::Result<String> {
-    let none = || Ok("no worktree of its own".to_string());
-    let Ok(dir) = worktree_dir(w).canonicalize() else {
-        return none();
-    };
     let o = |s: &'static str| OsStr::new(s);
     let list = git(&w.cwd, &[o("worktree"), o("list"), o("--porcelain")])?;
-    let Some(lock) = worktree_lock(&list, &dir) else {
-        return none();
+    let Some((dir, lock)) = worktree_named(&list, &w.name) else {
+        return Ok("no worktree of its own".to_string());
     };
     let shown = crate::setup::tilde(&dir);
     let keep = |why: String| Ok(format!("kept worktree {shown}: {why}"));
@@ -1262,12 +1259,19 @@ fn remove_worktree(w: &Worker) -> io::Result<String> {
         return keep(why);
     }
     if let Some(reason) = lock {
+        // The agent was only just closed, so give its process a moment to exit.
         let alive = lock_pid(&reason).is_none_or(|p| {
-            Command::new("kill")
-                .args(["-0", &p.to_string()])
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
+            (0..10).all(|_| {
+                let up = Command::new("kill")
+                    .args(["-0", &p.to_string()])
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if up {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                up
+            })
         });
         if alive {
             return keep(format!("locked ({reason})"));
@@ -1812,7 +1816,12 @@ mod tests {
         assert_eq!(
             brief(&[("a", State::Running, 60), ("b", State::Done, 60)]),
             "reeve: 2 workers: a running, b done (report ready). `reeve ls` shows details; \
-             `reeve report NAME` prints a report. Heavy commands go through `reeve heavy`, in the background."
+             `reeve report NAME` prints a report, then `reeve close NAME` tidies up. Heavy commands go through `reeve heavy`, in the background."
+        );
+        let idle = brief(&[("c", State::Idle, 60)]);
+        assert!(
+            idle.contains("; look at an idle one and nudge it."),
+            "{idle}"
         );
     }
 
@@ -2037,17 +2046,18 @@ mod tests {
                     locked claude agent agent-1 (pid 4242)\n\n\
                     worktree /repo/.claude/worktrees/b\nHEAD ccc\nlocked\n\n\
                     worktree /repo/.claude/worktrees/c\nHEAD ddd\n";
-        let at = |p: &str| worktree_lock(list, Path::new(p));
-        assert_eq!(at("/repo/.claude/worktrees/zz"), None);
-        assert_eq!(at("/repo/.claude/worktrees/c"), Some(None));
-        assert_eq!(at("/repo/.claude/worktrees/b"), Some(Some(String::new())));
-        let reason = at("/repo/.claude/worktrees/a").unwrap().unwrap();
-        assert_eq!(lock_pid(&reason), Some(4242));
-        assert_eq!(lock_pid(""), None);
+        let at = |n: &str| worktree_named(list, n);
+        assert_eq!(at("zz"), None);
+        assert_eq!(at("c"), Some(("/repo/.claude/worktrees/c".into(), None)));
+        assert_eq!(at("b").unwrap().1, Some(String::new()));
+        let (dir, reason) = at("a").unwrap();
+        assert_eq!(dir, PathBuf::from("/repo/.claude/worktrees/a"));
+        assert_eq!(lock_pid(&reason.unwrap()), Some(4242));
         assert_eq!(
-            worktree_dir(&worker(&Registry::at(temp("wt")), "a", "p")),
-            PathBuf::from("/work/x/.claude/worktrees/a")
+            lock_pid("claude session x (pid 69786 start Thu Oct 29 07:00:56 2026)"),
+            Some(69786)
         );
+        assert_eq!(lock_pid(""), None);
     }
 
     #[test]
