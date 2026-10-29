@@ -145,6 +145,58 @@ The clean minimum is 1 intervention, the rename decision.
 
 To run the full grid: `reeve bench block --n 3 --jobs 4`, then `reeve bench block --n 2 --model opus --arm <best> --arm <second>`.
 
+### Full grid, Sonnet, n=3 ([results/block-sonnet-n3.tsv](results/block-sonnet-n3.tsv))
+
+210 runs, $8.95. Cells are runs that fit out of runs; skill first and false positives are out of 15.
+
+| Arm | Role | heavy | parallel | handoff | short | away | skill first | --bg refused | false pos. | turns | cost $ |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| A0 | orch | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 | 0 | 0 | 0 | 2.9 | 0.01 |
+| A0 | worker | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 | 0 | 0 | 0 | 4.3 | 0.06 |
+| A1 | orch | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 12 | 0 | 0 | 4.3 | 0.04 |
+| A1 | worker | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 12 | 0 | 0 | 4.9 | 0.04 |
+| A2 | orch | 3/3 | 1/3 | 3/3 | 3/3 | 2/3 | 10 | 4 | 2 | 4.1 | 0.04 |
+| A2 | worker | 3/3 | 2/3 | 3/3 | 3/3 | 0/3 | 9 | 8 | 4 | 4.7 | 0.04 |
+| A3 | orch | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 10 | 0 | 0 | 3.6 | 0.04 |
+| A3 | worker | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 5 | 0 | 0 | 5.5 | 0.05 |
+| A4 | orch | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 10 | 0 | 0 | 3.9 | 0.04 |
+| A4 | worker | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 9 | 0 | 0 | 4.6 | 0.05 |
+| A5 | orch | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 9 | 0 | 0 | 3.1 | 0.03 |
+| A5 | worker | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 8 | 0 | 0 | 4.8 | 0.05 |
+| A6 | orch | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 12 | 0 | 0 | 5.7 | 0.05 |
+| A6 | worker | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 12 | 0 | 0 | 7.3 | 0.06 |
+
+- **A0 is the floor:** it never uses reeve where it fits (heavy, parallel, away 0/3), and only "passes" handoff and short because a session that does nothing fits those.
+- **A1 and A6 tie at the top:** every orchestrator case fits, 12/15 skill first, and the worker misses one away run each.
+- **A2 (old block, syntax) is the only arm with refused `--bg` calls and false positives.** Dropping syntax from the block was right.
+- A3 to A5 (block plus pasted manual) are no better than A1 and use the skill first less often.
+- **Possible internet drop:** runs between about 09:53 and 09:58 (Tbilisi) were checked for `API Error`, `is_error`, error subtypes, a non-null `api_error_status` and non-empty stderr. None of the 210 had any, so nothing was excluded and the table stands.
+
+### Opus pass, A1 and A6, n=2 ([results/block-opus-n2.tsv](results/block-opus-n2.tsv))
+
+40 runs, $4.63, no errored runs.
+
+| Arm | Role | heavy | parallel | handoff | short | away | skill first | --bg refused | false pos. | turns | cost $ |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| A1 | orch | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 8/10 | 0 | 0/10 | 5.7 | 0.10 |
+| A1 | worker | 2/2 | 0/2 | 1/2 | 2/2 | 2/2 | 6/10 | 0 | 0/10 | 7.1 | 0.08 |
+| A6 | orch | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 8/10 | 0 | 0/10 | 8.3 | 0.13 |
+| A6 | worker | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 | 8/10 | 2 | 1/10 | 9.2 | 0.15 |
+
+- **Orchestrators tie again:** 10/10 fit for both arms. A6 takes 2.6 more turns and costs about 30% more.
+- **Workers differ, but on 2 runs per cell.** A1 started no workers in both parallel runs (it did the jobs itself) and skipped `reeve handoff` once. A6 fit all of those but in one away run tried `--sandbox`, then `--bg` twice (refused, a false positive) before a valid call.
+- **n=2 can't separate them.** Three A1 worker misses against one A6 worker miss is 3 of 10 against 1 of 10 cases; that is a hint, not a result.
+
+### Verdict: A1 (slim block) over A6 (skill stub only), with one open risk
+
+Recommendation for PR 3: **ship the A1 block.**
+
+- **Outcomes tie on Sonnet,** the model with n=3 (orchestrators identical, workers identical).
+- **A1 is cheaper and quicker:** 1.4 fewer turns on Sonnet orchestrators and 2.4 on workers, and 23–47% less cost on Opus. A6 spends the extra turns on reading the skill.
+- **A1 never produced a refused `--bg` call or a false positive** in its 50 runs across both models; A6 did once in its 50, on Opus.
+- **Open risk:** on Opus, A1 workers missed parallel (0/2) and handoff (1/2) where A6 did not. If a worker should split its own task or hand off on a Context check, run Opus workers on parallel and handoff at n≥5 per arm before relying on the block alone. If that holds, the fix to try is a line in the block on those two cases, not the skill stub.
+- **Limits:** Opus is n=2 per cell, so it can't rank the arms. The bench runs in acceptEdits mode, not auto, the worker brief omits the `reeve heavy` sentence real workers get, and the CLAUDE.md block is a project file, not the user-level one.
+
 ### Align runs, Sonnet, orchestrator unless noted
 
 | Run | Arms | Case | n | Outcome |
