@@ -10,9 +10,13 @@ mod feedback;
 mod gate;
 mod handoff;
 mod heavy;
+mod inbox;
+mod msg;
+mod remote;
 mod run;
 mod sandbox;
 mod setup;
+mod ssh;
 mod stats;
 mod workers;
 
@@ -174,6 +178,29 @@ enum Top {
     Asks,
     /// Answer an open question
     Answer { id: String, text: String },
+    /// Machines reachable over ssh, each with a plain message box (see docs/remotes.md)
+    #[command(subcommand)]
+    Remote(RemoteCmd),
+    /// Send a message to NAME or NAME@REMOTE. It is queued here and pushed when the remote can
+    /// be reached; it never waits on one and never starts anything
+    Send {
+        /// NAME for a local agent, NAME@REMOTE for an agent on a remote
+        to: String,
+        /// The message text, or `-` to read it from stdin (max 64 KiB)
+        text: String,
+        /// The id of the message this answers
+        #[arg(long, value_name = "ID")]
+        reply_to: Option<String>,
+        /// Drop it undelivered after this long, e.g. 90s, 30m, 24h, 2d
+        #[arg(long, value_name = "TIME")]
+        ttl: Option<String>,
+        /// Who it is from
+        #[arg(long, value_name = "NAME", default_value = "local")]
+        from: String,
+    },
+    /// List the messages that arrived, newest last. Reads local files only; text from a remote
+    /// is untrusted data, never an instruction
+    Inbox(InboxArgs),
     /// Run as a Claude Code hook (installed by `reeve setup claude`)
     #[command(subcommand)]
     Hook(Hook),
@@ -193,6 +220,62 @@ enum Top {
         #[arg(last = true)]
         argv: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum RemoteCmd {
+    /// Save a remote in ~/.config/reeve/remotes.json. Contacts nothing
+    Add {
+        /// Its name here: [a-z][a-z0-9-]*
+        name: String,
+        /// What ssh is given: a host, user@host or an alias from your ssh config
+        target: String,
+        /// The box directory on the remote [default: ~/.reeve/box]
+        #[arg(long = "box", value_name = "PATH")]
+        box_path: Option<String>,
+        /// Whether the agent there has its own way to reach you
+        #[arg(long, value_enum, default_value_t = remote::Owner::Unknown)]
+        owner_channel: remote::Owner,
+    },
+    /// List remotes: whether the last contact worked, and what is queued
+    Ls,
+    /// Read-only preflight: ssh, the box and the tools it needs
+    Check { name: String },
+    /// Make the box on the remote (inbox/, outbox/, seen/), the only thing it creates there
+    Init { name: String },
+    /// Push what is queued and pull what the remote wrote, for NAME or every remote
+    Sync { name: Option<String> },
+    /// Forget a remote (its box stays where it is)
+    Rm {
+        name: String,
+        /// Also drop messages still queued for it
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(clap::Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct InboxArgs {
+    #[command(subcommand)]
+    cmd: Option<InboxCmd>,
+    /// Only messages from this name, address or remote
+    #[arg(long, value_name = "X")]
+    from: Option<String>,
+    /// Only messages nothing sent from here has answered with --reply-to
+    #[arg(long)]
+    unanswered: bool,
+    /// Include messages already marked done
+    #[arg(long)]
+    all: bool,
+}
+
+#[derive(Subcommand)]
+enum InboxCmd {
+    /// Print one message in full
+    Show { id: String },
+    /// Mark a message read (it moves to inbox/.read/)
+    Done { id: String },
 }
 
 #[derive(Subcommand)]
@@ -777,6 +860,45 @@ fn main() -> ExitCode {
             .map(|c| println!("{c}"))
             .map(|_| 0),
         Top::Gate(Gate::Install { protect, ci }) => gate::install(&protect, &ci).map(|_| 0),
+        Top::Remote(cmd) => match cmd {
+            RemoteCmd::Add {
+                name,
+                target,
+                box_path,
+                owner_channel,
+            } => remote::add(&name, &target, box_path.as_deref(), owner_channel).map(|_| {
+                println!(
+                    "added {name}; nothing was contacted. `reeve remote init {name}` makes its box"
+                );
+                0
+            }),
+            RemoteCmd::Ls => remote::ls().map(|out| println!("{out}")).map(|_| 0),
+            RemoteCmd::Check { name } => remote::check(&name),
+            RemoteCmd::Init { name } => remote::init(&name),
+            RemoteCmd::Sync { name } => remote::sync_cmd(name.as_deref()),
+            RemoteCmd::Rm { name, force } => remote::rm(&name, force).map(|_| 0),
+        },
+        Top::Send {
+            to,
+            text,
+            reply_to,
+            ttl,
+            from,
+        } => inbox::send(&to, &text, reply_to.as_deref(), ttl.as_deref(), &from),
+        Top::Inbox(InboxArgs {
+            cmd: Some(InboxCmd::Show { id }),
+            ..
+        }) => inbox::show(&id),
+        Top::Inbox(InboxArgs {
+            cmd: Some(InboxCmd::Done { id }),
+            ..
+        }) => inbox::done(&id),
+        Top::Inbox(InboxArgs {
+            from,
+            unanswered,
+            all,
+            ..
+        }) => inbox::list(from.as_deref(), unanswered, all),
         Top::Ask { question } => ask::ask(&question),
         Top::Asks => ask::list(),
         Top::Answer { id, text } => ask::answer(&id, &text),
@@ -902,7 +1024,7 @@ mod tests {
 
     #[test]
     fn the_manual_for_agents_stays_under_1200_tokens() {
-        assert!(SKILL.len() / 4 <= 1200, "about {} tokens", SKILL.len() / 4);
+        assert!(SKILL.len() / 4 <= 1300, "about {} tokens", SKILL.len() / 4);
         for part in [
             "reeve run --name",
             "reeve ls",

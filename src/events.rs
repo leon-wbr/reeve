@@ -93,8 +93,13 @@ pub fn actor(var: impl Fn(&str) -> Option<String>) -> (&'static str, Option<&'st
 }
 
 /// Messages carry names and paths, so only a fixed kind is logged.
-const KINDS: [(&str, &str); 18] = [
+const KINDS: [(&str, &str); 23] = [
+    ("is unreachable", "remote_unreachable"),
+    ("ssh timed out", "remote_timeout"),
+    ("box is invalid", "box_invalid"),
+    ("box script failed", "box_invalid"),
     ("no worker ", "no_worker"),
+    ("no remote ", "no_remote"),
     ("must match [a-z]", "bad_name"),
     ("needs its prompt", "no_prompt"),
     ("still has an agent", "worker_busy"),

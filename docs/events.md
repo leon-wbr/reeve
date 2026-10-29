@@ -19,7 +19,7 @@ Every reeve command appends one JSON line to `~/.local/state/reeve/events.jsonl`
 | `worker` | The named worker, for `run --name`, `wait` and `report` |
 | `label` | A heavy command's `--label`, else only its program's name; or a sandbox name |
 | `exit` | reeve's exit code; missing for a nested `reeve heavy`, which replaces itself with its command |
-| `error` | A fixed kind such as `no_worker`, `worker_gone`, `timeout`, `usage`, `herdr`; never the message |
+| `error` | A fixed kind such as `no_worker`, `worker_gone`, `timeout`, `usage`, `herdr`, `remote_unreachable`, `remote_timeout`, `box_invalid`; never the message |
 | `ms` | How long the command took |
 | `heavy_wait_ms`, `heavy_run_ms` | Time in the heavy queue, and the command's run time |
 | `handoff_ms` | From `reeve run --name` until the new worker's agent is up |
