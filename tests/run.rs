@@ -11,8 +11,8 @@ fn executable(path: &Path, script: &str) {
 /// A `claude` and a `herdr` on PATH that log the directory they were started in and their
 /// arguments to `<name>.log`, and answer the way reeve expects. `herdr pane get` answers with
 /// `pane.json` when it exists, and otherwise with a pane that has no agent; `herdr pane read`
-/// with `pane-text`. `herdr agent start`
-/// waits while `hold` exists, fails if `fail` does, and fails with the error code in
+/// with `pane-text`, `herdr workspace list` with `workspaces.json` or no workspace, and
+/// `herdr workspace create` like `tab create`. `herdr agent start` waits while `hold` exists, fails if `fail` does, and fails with the error code in
 /// `start-error` if that does.
 fn fakes(dir: &Path) -> String {
     let bin = dir.join("bin");
@@ -40,9 +40,10 @@ fn fakes(dir: &Path) -> String {
         &bin.join("herdr"),
         &format!(
             "echo \"$*\" >> {}\ncase \"$1 $2\" in\n\
-             'tab create') echo '{{\"result\":{{\"tab\":{{\"tab_id\":\"t1\"}},\"root_pane\":{{\"pane_id\":\"p1\"}}}}}}' ;;\n\
+             'tab create'|'workspace create') echo '{{\"result\":{{\"tab\":{{\"tab_id\":\"t1\"}},\"root_pane\":{{\"pane_id\":\"p1\"}}}}}}' ;;\n\
              'pane get') if [ -f {pane} ]; then cat {pane}; else echo '{{\"result\":{{}}}}'; fi ;;\n\
              'pane read') cat {text} ;;\n\
+             'workspace list') if [ -f {ws} ]; then cat {ws}; else echo '{{\"result\":{{\"workspaces\":[]}}}}'; fi ;;\n\
              'agent start') while [ -f {hold} ]; do sleep 0.05; done\n\
                if [ -f {fail} ]; then echo '{{\"error\":{{\"code\":\"boom\",\"message\":\"no shell\"}}}}' >&2; exit 1; fi\n\
                if [ -f {err} ]; then printf '{{\"error\":{{\"code\":\"%s\",\"message\":\"m\"}}}}\\n' \"$(cat {err})\" >&2; exit 1; fi\n\
@@ -51,6 +52,7 @@ fn fakes(dir: &Path) -> String {
             log("herdr"),
             pane = dir.join("pane.json").display(),
             text = dir.join("pane-text").display(),
+            ws = dir.join("workspaces.json").display(),
             hold = dir.join("hold").display(),
             fail = dir.join("fail").display(),
             err = dir.join("start-error").display()
@@ -177,7 +179,7 @@ fn a_pane_worker_opens_its_tab_in_the_cwd_it_is_given() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(started(&root, "w")["handle"], "p1");
     let create = read(root.join("herdr.log"));
-    let create = create.lines().next().unwrap();
+    let create = create.lines().nth(1).unwrap();
     assert!(
         create.contains(&format!("--cwd {} ", project.display())),
         "{create}"
@@ -251,7 +253,43 @@ fn inside_herdr_a_worker_without_bg_gets_its_own_tab() {
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     started(&root, "w");
-    assert!(read(root.join("herdr.log")).starts_with("tab create"));
+    let log = read(root.join("herdr.log"));
+    let opened: Vec<_> = log.lines().take(3).collect();
+    let create = format!(
+        "workspace create --label project --cwd {} --no-focus",
+        project.display()
+    );
+    assert_eq!(
+        opened,
+        ["workspace list", create.as_str(), "tab rename t1 w"],
+        "{log}"
+    );
+}
+
+#[test]
+fn inside_herdr_a_worker_opens_its_tab_in_its_projects_existing_workspace() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("workspaces.json"),
+        r#"{"result":{"workspaces":[{"label":"work","workspace_id":"w1"},{"label":"project","workspace_id":"w2"}]}}"#,
+    )
+    .unwrap();
+    let o = reeve_with(
+        &root,
+        &project,
+        &["run", "--name", "w", "--", "go"],
+        &[("HERDR_ENV", "1"), ("HERDR_WORKSPACE_ID", "w1")],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "w");
+    let log = read(root.join("herdr.log"));
+    let create = format!(
+        "tab create --label w --cwd {} --no-focus --workspace w2",
+        project.display()
+    );
+    assert_eq!(log.lines().nth(1), Some(create.as_str()), "{log}");
+    assert!(!log.contains("workspace create"), "{log}");
 }
 
 #[test]
@@ -431,7 +469,7 @@ fn a_run_returns_while_its_worker_starts_and_ls_shows_it_starting_then_running()
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stderr).contains("worker w is starting"));
     // The tab is open and labelled while claude is still on its way.
-    assert!(read(root.join("herdr.log")).starts_with("tab create --label w "));
+    assert!(read(root.join("herdr.log")).contains("\ntab rename t1 w\n"));
     assert_eq!(ls_state(&root, &project, "w"), "starting");
     let again = reeve(
         &root,

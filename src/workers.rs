@@ -466,12 +466,66 @@ pub fn exec_argv(codex: &[String], prompt: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn tab_create_args(name: &str, cwd: &str, workspace: Option<&str>) -> Vec<String> {
-    ["tab", "create", "--label", name, "--cwd", cwd, "--no-focus"]
-        .into_iter()
-        .chain(workspace.into_iter().flat_map(|w| ["--workspace", w]))
+pub fn tab_create_args(name: &str, cwd: &str, workspace: &str) -> Vec<String> {
+    [
+        "tab",
+        "create",
+        "--label",
+        name,
+        "--cwd",
+        cwd,
+        "--no-focus",
+        "--workspace",
+        workspace,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+/// The project a worker in `cwd` belongs to, from git's toplevel and common dir there: the
+/// main checkout, also for a linked worktree of it, or `cwd` itself outside git.
+pub fn project_dir(cwd: &Path, toplevel: Option<&Path>, common: Option<&Path>) -> PathBuf {
+    match (toplevel, common) {
+        (_, Some(c)) if c.file_name().is_some_and(|n| n == ".git") => {
+            c.parent().unwrap_or(c).to_path_buf()
+        }
+        (Some(t), _) => t.to_path_buf(),
+        (None, _) => cwd.to_path_buf(),
+    }
+}
+
+/// The label of a project's Herdr workspace: its directory's name.
+pub fn workspace_label(project: &Path) -> String {
+    project.file_name().map_or_else(
+        || project.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// From `herdr workspace list`: the ID of the first workspace labelled `label`.
+pub fn workspace_named(list: &Value, label: &str) -> Option<String> {
+    list["result"]["workspaces"]
+        .as_array()?
+        .iter()
+        .find(|w| w["label"] == label)
+        .and_then(|w| w["workspace_id"].as_str())
         .map(String::from)
-        .collect()
+}
+
+pub fn workspace_create_args(label: &str, cwd: &str) -> Vec<String> {
+    [
+        "workspace",
+        "create",
+        "--label",
+        label,
+        "--cwd",
+        cwd,
+        "--no-focus",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// The tab ID and root pane ID from `herdr tab create`.
@@ -623,13 +677,29 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Opens a tab labelled NAME in the caller's workspace without focusing it. Returns its tab
-/// and pane IDs.
+/// Opens a tab labelled NAME, without focusing it, in the Herdr workspace named after the
+/// worker's project. A missing workspace is created unfocused and its first tab becomes the
+/// worker's, so Herdr closes the workspace with the last tab when it holds nothing else.
+/// Returns the tab and pane IDs.
 fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String)> {
-    let workspace = std::env::var("HERDR_WORKSPACE_ID").ok();
+    let git = |args: &[&str]| crate::run::git(cwd, args).ok().map(PathBuf::from);
+    let project = project_dir(
+        cwd,
+        git(&["rev-parse", "--show-toplevel"]).as_deref(),
+        git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).as_deref(),
+    );
+    let label = workspace_label(&project);
     let cwd = cwd.display().to_string();
-    let created = herdr(tab_create_args(name, &cwd, workspace.as_deref()))?;
-    created_tab(&created).ok_or_else(|| io::Error::other("herdr tab create returned no pane id"))
+    let no_pane = || io::Error::other("herdr returned no pane id");
+    match workspace_named(&herdr(["workspace", "list"])?, &label) {
+        Some(ws) => created_tab(&herdr(tab_create_args(name, &cwd, &ws))?).ok_or_else(no_pane),
+        None => {
+            let (tab, pane) =
+                created_tab(&herdr(workspace_create_args(&label, &cwd))?).ok_or_else(no_pane)?;
+            let _ = herdr(["tab", "rename", &tab, name]);
+            Ok((tab, pane))
+        }
+    }
 }
 
 /// Starts the agent in the tab's pane with the prompt as its argument; the tab is closed again
@@ -1727,7 +1797,7 @@ mod tests {
     #[test]
     fn a_worker_gets_a_labelled_tab_without_focus() {
         assert_eq!(
-            tab_create_args("x", "/w", Some("w1")),
+            tab_create_args("x", "/w", "w1"),
             s(&[
                 "tab",
                 "create",
@@ -1740,9 +1810,84 @@ mod tests {
                 "w1"
             ])
         );
+    }
+
+    #[test]
+    fn a_workers_project_is_its_main_checkout_or_its_dir_outside_git() {
+        let p = |top: Option<&str>, common: Option<&str>| {
+            project_dir(
+                Path::new("/w/app/sub"),
+                top.map(Path::new),
+                common.map(Path::new),
+            )
+        };
         assert_eq!(
-            tab_create_args("x", "/w", None),
-            s(&["tab", "create", "--label", "x", "--cwd", "/w", "--no-focus"])
+            p(Some("/w/app"), Some("/w/app/.git")),
+            PathBuf::from("/w/app")
+        );
+        // A worktree of app, under app/.claude/worktrees/, belongs to app.
+        assert_eq!(
+            p(Some("/w/app/.claude/worktrees/fix"), Some("/w/app/.git")),
+            PathBuf::from("/w/app")
+        );
+        // A submodule's or a bare repo's git dir is no checkout: its toplevel is.
+        assert_eq!(
+            p(Some("/w/app/lib"), Some("/w/app/.git/modules/lib")),
+            PathBuf::from("/w/app/lib")
+        );
+        assert_eq!(p(None, None), PathBuf::from("/w/app/sub"));
+    }
+
+    #[test]
+    fn a_projects_workspace_is_labelled_by_its_dirs_name() {
+        assert_eq!(
+            workspace_label(Path::new("/w/junction-dream")),
+            "junction-dream"
+        );
+        assert_eq!(workspace_label(Path::new("/")), "/");
+    }
+
+    #[test]
+    fn an_existing_workspace_is_found_by_its_label() {
+        let list: Value = serde_json::from_str(
+            r#"{"result":{"type":"workspace_list","workspaces":[
+                {"label":"work","workspace_id":"wGR"},
+                {"label":"reeve","workspace_id":"wGS"},
+                {"label":"reeve","workspace_id":"wGT"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(workspace_named(&list, "reeve"), Some("wGS".to_string()));
+        assert_eq!(workspace_named(&list, "reev"), None);
+        assert_eq!(workspace_named(&serde_json::json!({}), "reeve"), None);
+    }
+
+    #[test]
+    fn a_new_workspace_is_labelled_and_opens_without_focus() {
+        assert_eq!(
+            workspace_create_args("reeve", "/w/reeve"),
+            s(&[
+                "workspace",
+                "create",
+                "--label",
+                "reeve",
+                "--cwd",
+                "/w/reeve",
+                "--no-focus"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_created_workspace_names_its_root_tab_and_pane() {
+        let out: Value = serde_json::from_str(
+            r#"{"result":{"root_pane":{"pane_id":"wGS:p1","tab_id":"wGS:t1"},
+                "tab":{"tab_id":"wGS:t1"},"type":"workspace_created",
+                "workspace":{"label":"reeve","workspace_id":"wGS"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            created_tab(&out),
+            Some(("wGS:t1".to_string(), "wGS:p1".to_string()))
         );
     }
 
