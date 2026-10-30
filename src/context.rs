@@ -122,9 +122,13 @@ fn tail_of(path: &Path) -> io::Result<String> {
 }
 
 /// Reads the hook payload from stdin and prints the hook's output, if any. A hook must never
-/// get in the session's way, so every failure means no output.
+/// get in the session's way, so every failure means no output. A session that handed off
+/// passes its prompts on instead (see `handoff::on_prompt`).
 pub fn hook(stdin: impl Read) -> Option<String> {
     let payload: Value = serde_json::from_reader(stdin).ok()?;
+    if let Some(out) = crate::handoff::on_prompt(&payload) {
+        return Some(out.to_string());
+    }
     let tail = tail_of(Path::new(payload["transcript_path"].as_str()?)).ok()?;
     let env = std::env::var(ENV).ok();
     let config = config_path().and_then(|p| fs::read_to_string(p).ok());

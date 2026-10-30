@@ -42,7 +42,7 @@ You don't see your own context usage: the hook `reeve setup claude` (or `codex`)
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It writes the handoff file and starts the successor as a worker told to read it. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` before redoing anything. `ls` closes the old session once idle, or says why.
+It writes the handoff file and starts the successor as a worker told to read it. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` before redoing anything. `ls` closes the old session once idle, or says why. A message the user sends the old session after the handoff goes to the successor's tab instead, and the old session closes; don't relay one by hand.
 
 ## Heavy commands on a shared machine
 
