@@ -4,7 +4,7 @@
 
 use crate::workers::{self, Agent, Kind, Registry, State};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -79,13 +79,6 @@ pub fn starting(all: &[workers::Worker], kind: Kind, now: u64) -> Vec<String> {
         .collect()
 }
 
-fn on_path(bin: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join(bin))
-        .find(|p| p.is_file())
-}
-
 /// The first line of `BIN --version`, or "unknown" if it fails or takes over 10 s.
 fn version(bin: &str) -> String {
     let read = || -> Option<String> {
@@ -125,7 +118,7 @@ pub fn main(dry_run: bool) -> io::Result<i32> {
     let mut code = 0;
     for kind in [Kind::Claude, Kind::Codex] {
         let bin = kind.bin();
-        let Some(exe) = on_path(bin) else {
+        let Some(exe) = crate::run::on_path(bin) else {
             println!("{bin}: not on PATH, skipped");
             continue;
         };

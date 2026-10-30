@@ -844,6 +844,16 @@ pub fn run(
 ) -> io::Result<()> {
     check_name(name).map_err(io::Error::other)?;
     let (flags, prompt) = split_prompt(args).map_err(io::Error::other)?;
+    if let Some(f) = crate::run::unchecked_flag(kind, flags) {
+        return Err(io::Error::other(crate::run::unchecked_refusal(&f)));
+    }
+    // A pane's shell finds the agent itself, and Herdr says so when it can't.
+    if let Some(why) = (backend == Backend::Bg)
+        .then(|| crate::run::missing_agent(kind))
+        .flatten()
+    {
+        return Err(io::Error::other(why));
+    }
     if let Ok(old) = r.get(name) {
         let a = agent(&old);
         if state_of(&old, now(), || a) == State::Starting {
@@ -916,6 +926,32 @@ pub fn run(
             w.error = Some(why.clone());
         })?;
         return Err(io::Error::other(why));
+    }
+    match backend {
+        Backend::Bg => started_bg(r, name, started),
+        Backend::Pane => Ok(()),
+    }
+}
+
+/// A background start has no tab to show how it went, and is quick, so `reeve run` waits for
+/// it: a refusal such as an untrusted folder then fails the run, and the session id is known.
+/// One still starting after START_SECS is left to `reeve ls` and `reeve wait`.
+fn started_bg(r: &Registry, name: &str, started: u64) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(START_SECS);
+    while Instant::now() < deadline {
+        match r.get(name) {
+            Ok(w) if w.started != started => return Ok(()),
+            Ok(w) if w.starting => {}
+            Ok(w) => {
+                return w.error.map_or(Ok(()), |e| {
+                    Err(io::Error::other(format!(
+                        "worker {name} failed to start: {e}"
+                    )))
+                });
+            }
+            Err(e) => return Err(e),
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
     Ok(())
 }
@@ -1164,6 +1200,10 @@ const POLL: Duration = Duration::from_secs(2);
 fn answer_where(w: &Worker) -> String {
     match (w.backend, w.agent) {
         (Backend::Pane, _) => "in its tab".to_string(),
+        // Still starting: its session id isn't known yet.
+        (Backend::Bg, Kind::Claude) if w.handle.is_empty() => {
+            format!("from `claude agents`, where it is named {}", w.name)
+        }
         (Backend::Bg, Kind::Claude) => format!("with `claude attach {}`", w.handle),
         (Backend::Bg, Kind::Codex) => format!("with {}", resume_hint(w)),
     }
@@ -1578,10 +1618,10 @@ pub fn close(r: &Registry, name: &str) -> io::Result<()> {
 pub fn report(r: &Registry, name: &str) -> io::Result<String> {
     let w = r.get(name)?;
     match fs::read_to_string(&w.report) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(io::Error::other(format!(
-            "worker {name} has no report yet ({})",
-            state(&w)
-        ))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(io::Error::other(match state(&w) {
+            State::Gone => format!("worker {name} has no report yet: it {}", gone_why(&w)),
+            s => format!("worker {name} has no report yet ({s})"),
+        })),
         r => r,
     }
 }
@@ -2214,6 +2254,14 @@ mod tests {
             ..pane
         };
         assert!(started(&bg).contains("`claude attach ab12`"));
+        // Before claude has given it an id, there is none to attach to.
+        let early = Worker {
+            handle: String::new(),
+            ..bg
+        };
+        let out = started(&early);
+        assert!(!out.contains("claude attach"), "{out}");
+        assert!(out.contains("from `claude agents`"), "{out}");
     }
 
     fn polled(ws: &[(&Worker, State)]) -> Vec<(Worker, State)> {

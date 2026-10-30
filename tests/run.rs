@@ -13,7 +13,8 @@ fn executable(path: &Path, script: &str) {
 /// `pane.json` when it exists, and otherwise with a pane that has no agent; `herdr pane read`
 /// with `pane-text`, `herdr workspace list` with `workspaces.json` or no workspace, and
 /// `herdr workspace create` like `tab create`. `herdr agent start` waits while `hold` exists, fails if `fail` does, and fails with the error code in
-/// `start-error` if that does.
+/// `start-error` if that does. `claude` refuses an untrusted folder, as Claude Code does, while
+/// `untrusted` exists.
 fn fakes(dir: &Path) -> String {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -21,8 +22,11 @@ fn fakes(dir: &Path) -> String {
     executable(
         &bin.join("claude"),
         &format!(
-            "pwd -P >> {}\necho \"$*\" >> {0}\necho 'backgrounded · abc123 · w'",
-            log("claude")
+            "pwd -P >> {}\necho \"$*\" >> {0}\n\
+             if [ -f {untrusted} ]; then echo 'Workspace not trusted. Run `claude` here once and accept the trust prompt, then retry.' >&2; exit 1; fi\n\
+             echo 'backgrounded · abc123 · w'",
+            log("claude"),
+            untrusted = dir.join("untrusted").display()
         ),
     );
     // Prints exec's first event, then writes the report when its prompt asks for `report`.
@@ -514,6 +518,119 @@ fn a_start_that_fails_leaves_the_worker_gone_with_the_reason() {
     assert!(err.contains("no shell"), "{err}");
 
     let o = reeve(&root, &project, &["rm", "w"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
+fn a_background_worker_that_claude_refuses_fails_the_run_with_claudes_reason() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(root.join("untrusted"), "").unwrap();
+    let o = reeve(&root, &project, &["run", "--name", "w", "--bg", "--", "go"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(err.contains("Workspace not trusted"), "{err}");
+    assert!(!err.contains("is starting"), "{err}");
+    assert_eq!(ls_state(&root, &project, "w"), "gone");
+
+    let o = reeve(&root, &project, &["report", "w"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success());
+    assert!(err.contains("Workspace not trusted"), "{err}");
+}
+
+#[test]
+fn a_background_worker_is_named_by_its_session_id_once_the_run_returns() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve(&root, &project, &["run", "--name", "w", "--bg", "--", "go"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("`claude attach abc123`"), "{err}");
+}
+
+#[test]
+fn a_run_without_the_agent_on_path_fails_at_once_and_says_which() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    for args in [
+        &["run", "--name", "w", "--bg", "--", "go"][..],
+        &["run", "--", "-p", "hi"],
+        &["run", "--agent", "codex", "--name", "cx", "--", "go"],
+    ] {
+        let o = reeve_with(&root, &project, args, &[("PATH", "/usr/bin:/bin")]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success(), "{args:?}: {err}");
+        assert!(err.contains("isn't on PATH"), "{args:?}: {err}");
+    }
+    assert_eq!(read(root.join("state/reeve/workers.json")), "");
+}
+
+#[test]
+fn flags_that_turn_off_permission_checks_are_refused_on_the_host() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    for args in [
+        &[
+            "run",
+            "--name",
+            "w",
+            "--bg",
+            "--",
+            "--dangerously-skip-permissions",
+            "go",
+        ][..],
+        &[
+            "run",
+            "--name",
+            "w",
+            "--",
+            "--permission-mode",
+            "bypassPermissions",
+            "go",
+        ],
+        &[
+            "run",
+            "--",
+            "--permission-mode=bypassPermissions",
+            "-p",
+            "hi",
+        ],
+        &["run", "--agent", "codex", "--", "--yolo", "hi"],
+        &[
+            "handoff",
+            "--name",
+            "next",
+            "--notes",
+            "n.md",
+            "--",
+            "--allowedTools",
+            "Bash",
+        ],
+    ] {
+        std::fs::write(project.join("n.md"), "notes").unwrap();
+        let o = reeve(&root, &project, args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success(), "{args:?}: {err}");
+        assert!(err.contains("permission checks"), "{args:?}: {err}");
+    }
+    assert_eq!(read(root.join("claude.log")), "");
+    assert_eq!(read(root.join("codex.log")), "");
+
+    let o = reeve(
+        &root,
+        &project,
+        &[
+            "run",
+            "--name",
+            "w",
+            "--bg",
+            "--",
+            "--permission-mode",
+            "auto",
+            "go",
+        ],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
