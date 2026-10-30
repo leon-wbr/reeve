@@ -18,6 +18,7 @@ mod sandbox;
 mod setup;
 mod ssh;
 mod stats;
+mod update;
 mod watch;
 mod workers;
 
@@ -166,6 +167,14 @@ enum Top {
     Setup(Setup),
     /// Check PATH, the Claude Code setup, the state dir, the agent CLIs and gone workers
     Doctor,
+    /// Upgrade Claude Code and Codex with the tool that installed each (Homebrew, npm or
+    /// `claude update`), through `reeve heavy`, and print the versions before and after. An
+    /// agent with a worker still starting is skipped
+    Update {
+        /// Only print what would run
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Benchmark a communicator setup on a fixed scenario with a simulated user, and measure how
     /// agents choose with reeve installed
     #[command(subcommand)]
@@ -821,6 +830,7 @@ fn main() -> ExitCode {
             agents_md,
         }) => setup_agent(workers::Kind::Codex, check, remove, agents_md),
         Top::Doctor => doctor::main(VERSION),
+        Top::Update { dry_run } => update::main(dry_run),
         Top::Bench(Bench::Entry {
             n,
             cases,
