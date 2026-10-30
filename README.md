@@ -91,6 +91,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - `reeve setup claude [--claude-md] [--check] [--remove]`: add, check or remove the hooks, the skill stub and, with `--claude-md`, the CLAUDE.md block.
 - `reeve setup codex [--agents-md] [--check] [--remove]`: the same for Codex ([docs/codex.md](docs/codex.md)).
 - `reeve --skill`: print the manual for agents.
+- `reeve update [--dry-run]`: upgrade Claude Code and Codex with whatever installed each (a Homebrew cask or formula, global npm, or `claude update` for Claude's own installer), through `reeve heavy`, and print the versions before and after. It tells the install from where the executable on PATH really lives, leaves one it doesn't know alone, and skips an agent while a worker of it is still starting. To run it on a schedule, use cron or launchd with a PATH that finds reeve, the CLIs and their installer, e.g. the crontab line `0 9 * * * PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin reeve update`.
 - `reeve doctor`: check PATH, the setup's version, the state dir, the agent CLIs and gone workers.
 - `reeve bench entry`: run fresh sessions on four cases and report whether each chose well, which can mean not using reeve.
 
