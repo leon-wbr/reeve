@@ -190,6 +190,95 @@ pub fn add_hook(settings: &mut Value, k: Kind) -> Result<bool, String> {
     Ok(true)
 }
 
+/// reeve's own subcommands, which agents run without a prompt. Claude Code resolves a matching
+/// allow rule before auto mode's classifier, so the brief in a `reeve run` is never judged. Not
+/// `heavy`: it runs any command, so its rule would let any command past the classifier.
+const ALLOWED: [&str; 14] = [
+    "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "answer", "feedback",
+    "doctor", "wait", "rm", "--skill",
+];
+
+/// The `permissions.allow` entries setup writes for Claude Code. `reeve --skill` is a flag, so
+/// its rule has no `:*`.
+pub fn allow_rules() -> Vec<String> {
+    ALLOWED
+        .iter()
+        .map(|s| match *s {
+            "--skill" => "Bash(reeve --skill)".to_string(),
+            s => format!("Bash(reeve {s}:*)"),
+        })
+        .collect()
+}
+
+/// Ok when every rule is there, Stale when only some are, Missing when none is.
+pub fn perms_state(settings: &Value) -> Piece {
+    let have = settings["permissions"]["allow"].as_array().map_or(0, |l| {
+        allow_rules()
+            .iter()
+            .filter(|r| l.iter().any(|v| v.as_str() == Some(r)))
+            .count()
+    });
+    match have {
+        0 => Piece::Missing,
+        n if n == ALLOWED.len() => Piece::Ok,
+        _ => Piece::Stale,
+    }
+}
+
+/// Appends the missing allow rules after the user's own. Returns whether anything changed.
+pub fn add_perms(settings: &mut Value) -> Result<bool, String> {
+    if perms_state(settings) == Piece::Ok {
+        return Ok(false);
+    }
+    let Some(top) = settings.as_object_mut() else {
+        return Err("settings.json is not a JSON object".into());
+    };
+    let perms = top.entry("permissions").or_insert_with(|| json!({}));
+    let Some(perms) = perms.as_object_mut() else {
+        return Err("`permissions` in settings.json is not an object".into());
+    };
+    let allow = perms.entry("allow").or_insert_with(|| json!([]));
+    let Some(list) = allow.as_array_mut() else {
+        return Err("`permissions.allow` in settings.json is not a list".into());
+    };
+    for r in allow_rules() {
+        if !list.iter().any(|v| v.as_str() == Some(&r)) {
+            list.push(json!(r));
+        }
+    }
+    Ok(true)
+}
+
+/// Takes out the allow rules setup writes, and an `allow` list or `permissions` object left
+/// empty by that. Returns whether anything changed.
+pub fn remove_perms(settings: &mut Value) -> bool {
+    let rules = allow_rules();
+    let Some(perms) = settings
+        .get_mut("permissions")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    let Some(list) = perms.get_mut("allow").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let before = list.len();
+    list.retain(|v| !v.as_str().is_some_and(|s| rules.iter().any(|r| r == s)));
+    if list.len() == before {
+        return false;
+    }
+    if list.is_empty() {
+        perms.remove("allow");
+    }
+    if perms.is_empty() {
+        settings
+            .as_object_mut()
+            .expect("an object")
+            .remove("permissions");
+    }
+    true
+}
+
 /// When to use reeve, without syntax: `reeve --skill` prints the current manual, so nothing
 /// here can go stale or teach a wrong flag.
 pub const USES: &str = "reeve is installed on this machine. Use it for:\n\n\
@@ -229,7 +318,7 @@ pub fn rules() -> String {
         "{RULES_START} reeve's bookkeeping writes ~/.local/state/reeve, which Codex's sandbox\n\
          # doesn't allow. `reeve heavy` isn't here: it runs any command, so Codex asks as usual.\n\
          prefix_rule(\n    pattern = [\"reeve\", [\"ls\", \"wait\", \"watch\", \"report\", \"rm\", \"run\", \
-         \"handoff\", \"ask\", \"asks\", \"answer\"]],\n    decision = \"allow\",\n    \
+         \"close\", \"handoff\", \"ask\", \"asks\", \"answer\", \"feedback\", \"doctor\"]],\n    decision = \"allow\",\n    \
          match = [\"reeve ls\", \"reeve run --name x -- go\"],\n    \
          not_match = [\"reeve heavy -- cargo test\"],\n)\n"
     )
@@ -445,8 +534,13 @@ pub fn install(p: &Paths, version: &str, with_md: bool, now: u64) -> io::Result<
     let md_piece = block_state(md.as_deref()).map_err(md_err(p))?;
     let mut out = vec![];
     let mut settings = read_settings(&p.settings)?.unwrap_or_else(|| json!({}));
-    if add_hook(&mut settings, p.kind).map_err(io::Error::other)? {
+    let hooks_changed = add_hook(&mut settings, p.kind).map_err(io::Error::other)?;
+    let perms_changed =
+        p.kind == Kind::Claude && add_perms(&mut settings).map_err(io::Error::other)?;
+    if hooks_changed || perms_changed {
         write_settings(&p.settings, &settings, now, &mut out)?;
+    }
+    if hooks_changed {
         let hooks = match p.kind {
             Kind::Claude => {
                 "hooks `reeve ls --brief` (session start), `reeve hook context` (prompts and \
@@ -458,7 +552,14 @@ pub fn install(p: &Paths, version: &str, with_md: bool, now: u64) -> io::Result<
             }
         };
         out.push(format!("wrote {}: {hooks}", tilde(&p.settings)));
-    } else {
+    }
+    if perms_changed {
+        out.push(format!(
+            "wrote {}: allows reeve's own subcommands, which auto mode's classifier then skips",
+            tilde(&p.settings)
+        ));
+    }
+    if !hooks_changed && !perms_changed {
         out.push(format!("unchanged {}", tilde(&p.settings)));
     }
     if stub_state(read_text(&p.skill)?.as_deref(), p.kind, version) == Piece::Ok {
@@ -503,11 +604,21 @@ fn shares_claude_md(md: &Path) -> bool {
 /// Takes out what setup wrote, and nothing else: a SKILL.md that setup didn't write stays.
 pub fn remove(p: &Paths, now: u64) -> io::Result<Vec<String>> {
     let mut out = vec![];
-    if let Some(mut settings) = read_settings(&p.settings)?
-        && remove_hook(&mut settings, p.kind)
-    {
-        write_settings(&p.settings, &settings, now, &mut out)?;
-        out.push(format!("removed the hooks from {}", tilde(&p.settings)));
+    if let Some(mut settings) = read_settings(&p.settings)? {
+        let hooks = remove_hook(&mut settings, p.kind);
+        let perms = p.kind == Kind::Claude && remove_perms(&mut settings);
+        if hooks || perms {
+            write_settings(&p.settings, &settings, now, &mut out)?;
+        }
+        if hooks {
+            out.push(format!("removed the hooks from {}", tilde(&p.settings)));
+        }
+        if perms {
+            out.push(format!(
+                "removed the allow rules from {}",
+                tilde(&p.settings)
+            ));
+        }
     }
     match read_text(&p.skill)? {
         Some(t) if stub_version(&t).is_some() => {
@@ -563,6 +674,12 @@ pub fn check(p: &Paths, version: &str, with_md: bool) -> io::Result<Vec<(String,
             stub_state(stub.as_deref(), p.kind, version),
         ),
     ];
+    if p.kind == Kind::Claude {
+        out.push((
+            format!("allow rules in {}", tilde(&p.settings)),
+            perms_state(&settings),
+        ));
+    }
     if let Some(path) = &p.rules {
         out.push((tilde(path), rules_state(read_text(path)?.as_deref())));
     }
@@ -712,7 +829,7 @@ mod tests {
                 .map(|(_, piece)| piece)
                 .collect()
         };
-        assert_eq!(pieces(&p, "1.0.0"), [Piece::Missing, Piece::Missing]);
+        assert_eq!(pieces(&p, "1.0.0"), [Piece::Missing; 3]);
 
         let out = install(&p, "1.0.0", false, 7).unwrap();
         assert!(out[0].starts_with("backed up"), "{out:?}");
@@ -720,9 +837,9 @@ mod tests {
             fs::read_to_string(dir.join("settings.json.reeve-7.bak")).unwrap(),
             original
         );
-        assert_eq!(out.len(), 3, "{out:?}");
-        assert_eq!(pieces(&p, "1.0.0"), [Piece::Ok, Piece::Ok]);
-        assert_eq!(pieces(&p, "1.0.1"), [Piece::Ok, Piece::Stale]);
+        assert_eq!(out.len(), 4, "{out:?}");
+        assert_eq!(pieces(&p, "1.0.0"), [Piece::Ok; 3]);
+        assert_eq!(pieces(&p, "1.0.1"), [Piece::Ok, Piece::Stale, Piece::Ok]);
         let again = install(&p, "1.0.0", false, 8).unwrap();
         assert!(
             again.iter().all(|l| l.starts_with("unchanged")),
@@ -884,17 +1001,17 @@ mod tests {
         fs::write(&p.md, "# Mine\n").unwrap();
         install(&p, "1.0.0", false, 1).unwrap();
         assert_eq!(fs::read_to_string(&p.md).unwrap(), "# Mine\n");
-        assert_eq!(check(&p, "1.0.0", false).unwrap().len(), 2);
+        assert_eq!(check(&p, "1.0.0", false).unwrap().len(), 3);
         let asked = check(&p, "1.0.0", true).unwrap();
-        assert_eq!(asked[2].1, Piece::Missing);
+        assert_eq!(asked[3].1, Piece::Missing);
         assert!(render_check(&asked, C, true).contains("`reeve setup claude --claude-md` adds it"));
 
         install(&p, "1.0.0", true, 2).unwrap();
         let md = fs::read_to_string(&p.md).unwrap();
         assert_eq!(md, format!("# Mine\n\n{}\n", block()));
-        assert_eq!(check(&p, "1.0.0", false).unwrap()[2].1, Piece::Ok);
+        assert_eq!(check(&p, "1.0.0", false).unwrap()[3].1, Piece::Ok);
         fs::write(&p.md, md.replace("reeve is installed", "old")).unwrap();
-        assert_eq!(check(&p, "1.0.0", false).unwrap()[2].1, Piece::Stale);
+        assert_eq!(check(&p, "1.0.0", false).unwrap()[3].1, Piece::Stale);
         install(&p, "1.0.0", false, 3).unwrap();
         assert_eq!(fs::read_to_string(&p.md).unwrap(), md);
 
@@ -992,7 +1109,8 @@ mod tests {
         let r = rules();
         assert!(r.starts_with(RULES_START));
         for sub in [
-            "ls", "wait", "watch", "report", "rm", "run", "handoff", "ask", "answer",
+            "ls", "wait", "watch", "report", "rm", "run", "close", "handoff", "ask", "answer",
+            "feedback", "doctor",
         ] {
             assert!(r.contains(&format!("\"{sub}\"")), "{sub}");
         }
@@ -1038,6 +1156,117 @@ mod tests {
         assert!(!p.skill.exists());
         assert!(!p.rules.as_ref().unwrap().exists());
         assert!(!p.md.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn mine() -> Value {
+        json!({ "model": "opus", "permissions": { "allow": ["Bash(git status)"], "deny": ["Bash(rm:*)"] } })
+    }
+
+    #[test]
+    fn the_allow_rules_cover_reeves_subcommands_and_nothing_broad() {
+        let rules = allow_rules();
+        for sub in [
+            "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "answer",
+            "feedback", "doctor", "wait", "rm",
+        ] {
+            assert!(rules.contains(&format!("Bash(reeve {sub}:*)")), "{sub}");
+        }
+        assert!(rules.contains(&"Bash(reeve --skill)".to_string()));
+        assert!(
+            rules
+                .iter()
+                .all(|r| r.starts_with("Bash(reeve ") && r.ends_with(')'))
+        );
+        assert!(
+            !rules
+                .iter()
+                .any(|r| r == "Bash(reeve:*)" || r.contains('*') && !r.ends_with(":*)"))
+        );
+    }
+
+    #[test]
+    fn allow_rules_merge_after_the_users_own_idempotently_and_come_out_exactly() {
+        for before in [mine(), json!({})] {
+            let mut s = before.clone();
+            assert_eq!(perms_state(&s), Piece::Missing);
+            assert_eq!(add_perms(&mut s), Ok(true));
+            assert_eq!(perms_state(&s), Piece::Ok);
+            let once = s.clone();
+            assert_eq!(add_perms(&mut s), Ok(false));
+            assert_eq!(s, once);
+            assert!(remove_perms(&mut s));
+            assert_eq!(s, before);
+            assert!(!remove_perms(&mut s));
+        }
+        let mut s = mine();
+        add_perms(&mut s).unwrap();
+        assert_eq!(s["permissions"]["allow"][0], "Bash(git status)");
+        assert_eq!(s["permissions"]["deny"], mine()["permissions"]["deny"]);
+    }
+
+    #[test]
+    fn some_allow_rules_missing_is_stale_and_gets_completed_without_duplicates() {
+        let mut s = json!({"permissions": {"allow": ["Bash(reeve close:*)", "Bash(reeve ls:*)"]}});
+        assert_eq!(perms_state(&s), Piece::Stale);
+        assert_eq!(add_perms(&mut s), Ok(true));
+        assert_eq!(perms_state(&s), Piece::Ok);
+        let list = s["permissions"]["allow"].as_array().unwrap();
+        assert_eq!(list.len(), allow_rules().len());
+        assert_eq!(list[0], "Bash(reeve close:*)");
+    }
+
+    #[test]
+    fn permissions_of_the_wrong_shape_are_refused() {
+        assert!(add_perms(&mut json!([])).is_err());
+        assert!(add_perms(&mut json!({"permissions": []})).is_err());
+        assert!(add_perms(&mut json!({"permissions": {"allow": "x"}})).is_err());
+    }
+
+    #[test]
+    fn claude_setup_installs_checks_and_removes_the_allow_rules_on_disk() {
+        let dir = temp("perms");
+        let p = Paths::at(&dir);
+        let original = serde_json::to_string_pretty(&mine()).unwrap() + "\n";
+        fs::write(&p.settings, &original).unwrap();
+        let out = install(&p, "1.0.0", false, 1).unwrap();
+        assert!(
+            out.iter().any(|l| l.contains("allows reeve's own")),
+            "{out:?}"
+        );
+        let s = read_settings(&p.settings).unwrap().unwrap();
+        assert_eq!(perms_state(&s), Piece::Ok);
+        let checked = check(&p, "1.0.0", false).unwrap();
+        assert_eq!(checked[2].1, Piece::Ok);
+        assert!(checked[2].0.starts_with("allow rules in"), "{checked:?}");
+        let again = install(&p, "1.0.0", false, 2).unwrap();
+        assert!(
+            again.iter().all(|l| l.starts_with("unchanged")),
+            "{again:?}"
+        );
+
+        // Dropping one rule shows up as stale and install restores it.
+        let mut s = s;
+        s["permissions"]["allow"].as_array_mut().unwrap().pop();
+        fs::write(&p.settings, serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(check(&p, "1.0.0", false).unwrap()[2].1, Piece::Stale);
+        install(&p, "1.0.0", false, 3).unwrap();
+        assert_eq!(check(&p, "1.0.0", false).unwrap()[2].1, Piece::Ok);
+
+        let out = remove(&p, 4).unwrap();
+        assert!(out.iter().any(|l| l.contains("allow rules")), "{out:?}");
+        assert_eq!(fs::read_to_string(&p.settings).unwrap(), original);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn codex_setup_leaves_permissions_alone() {
+        let dir = temp("codexperms");
+        let p = Paths::codex(&dir.join(".codex"), &dir.join("home"));
+        install(&p, "1.0.0", false, 1).unwrap();
+        let s = read_settings(&p.settings).unwrap().unwrap();
+        assert!(s.get("permissions").is_none());
+        assert_eq!(check(&p, "1.0.0", false).unwrap().len(), 3);
         fs::remove_dir_all(&dir).unwrap();
     }
 
