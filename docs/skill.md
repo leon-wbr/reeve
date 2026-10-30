@@ -9,7 +9,7 @@ reeve is a small local CLI that runs coding agents beside your session. Two rule
 
 `reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session and writes its report to `~/.local/state/reeve/reports/NAME.md`, where any later session finds it. Pass the project root as `--cwd` for its `.claude/` setup.
 
-Inside Herdr each worker gets its own tab, labelled NAME, where the user can see and answer it; use `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session (`--bg`, for that case only). `--force` skips reeve's safety checks, such as that one.
+Inside Herdr each worker gets its own tab, labelled NAME, in its project's workspace, where the user can see and answer it; use `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session (`--bg`, for that case only). `--force` skips reeve's safety checks, such as that one.
 
 ```sh
 reeve run --name fix-flaky --cwd ~/app -- "Find and fix the flaky test in tests/api; run it 20 times to confirm."

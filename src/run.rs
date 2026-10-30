@@ -51,7 +51,7 @@ pub fn worktree_branch(name: &str) -> String {
     format!("worktree-{name}")
 }
 
-fn git(dir: &Path, args: &[&str]) -> io::Result<String> {
+pub fn git(dir: &Path, args: &[&str]) -> io::Result<String> {
     let o = Command::new("git")
         .args(args)
         .current_dir(dir)
