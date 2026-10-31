@@ -13,8 +13,8 @@ fn executable(path: &Path, script: &str) {
 /// `pane.json` when it exists, and otherwise with a pane that has no agent; `herdr pane read`
 /// with `pane-text`, `herdr workspace list` with `workspaces.json` or no workspace, and
 /// `herdr workspace create` like `tab create`. `herdr agent start` waits while `hold` exists, fails if `fail` does, and fails with the error code in
-/// `start-error` if that does. `claude` refuses an untrusted folder, as Claude Code does, while
-/// `untrusted` exists.
+/// `start-error` if that does. `herdr agent prompt` fails as blocked while `busy` exists.
+/// `claude` refuses an untrusted folder, as Claude Code does, while `untrusted` exists.
 fn fakes(dir: &Path) -> String {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -48,16 +48,20 @@ fn fakes(dir: &Path) -> String {
              'pane get') if [ -f {pane} ]; then cat {pane}; else echo '{{\"result\":{{}}}}'; fi ;;\n\
              'pane read') cat {text} ;;\n\
              'workspace list') if [ -f {ws} ]; then cat {ws}; else echo '{{\"result\":{{\"workspaces\":[]}}}}'; fi ;;\n\
+             'agent prompt') if [ -f {busy} ]; then echo refused >> {log}; echo '{{\"error\":{{\"code\":\"agent_blocked\",\"message\":\"m\"}}}}' >&2; exit 1; fi\n\
+               echo '{{\"result\":{{}}}}' ;;\n\
              'agent start') while [ -f {hold} ]; do sleep 0.05; done\n\
                if [ -f {fail} ]; then echo '{{\"error\":{{\"code\":\"boom\",\"message\":\"no shell\"}}}}' >&2; exit 1; fi\n\
                if [ -f {err} ]; then printf '{{\"error\":{{\"code\":\"%s\",\"message\":\"m\"}}}}\\n' \"$(cat {err})\" >&2; exit 1; fi\n\
                echo '{{\"result\":{{}}}}' ;;\n\
              *) echo '{{\"result\":{{}}}}' ;;\nesac",
             log("herdr"),
+            log = log("herdr"),
             pane = dir.join("pane.json").display(),
             text = dir.join("pane-text").display(),
             ws = dir.join("workspaces.json").display(),
             hold = dir.join("hold").display(),
+            busy = dir.join("busy").display(),
             fail = dir.join("fail").display(),
             err = dir.join("start-error").display()
         ),
@@ -988,4 +992,139 @@ fn ls_closes_the_predecessor_once_it_is_quiet_and_says_why_until_then() {
     );
     assert!(read(root.join("herdr.log")).contains("pane close p-old"));
     assert!(!from.exists());
+}
+
+/// `reeve hook context` in the pane `pane`, for the user's prompt `prompt`.
+fn prompt_hook(dir: &Path, from: &Path, pane: &str, prompt: &str) -> Output {
+    use std::io::Write;
+    let payload = serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": prompt,
+        "transcript_path": dir.join("no-transcript.jsonl"),
+    });
+    let mut c = Command::new(env!("CARGO_BIN_EXE_reeve"))
+        .args(["hook", "context"])
+        .current_dir(from)
+        .env("PATH", fakes(dir))
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("REEVE_EVENTS", dir.join("events.jsonl"))
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", pane)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin
+        .take()
+        .unwrap()
+        .write_all(payload.to_string().as_bytes())
+        .unwrap();
+    c.wait_with_output().unwrap()
+}
+
+/// Waits until herdr's log contains `what`, and returns the log.
+fn herdr_until(root: &Path, what: &str) -> String {
+    for _ in 0..800 {
+        let log = read(root.join("herdr.log"));
+        if log.contains(what) {
+            return log;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!(
+        "herdr never got {what:?}:\n{}",
+        read(root.join("herdr.log"))
+    );
+}
+
+/// A predecessor `old` that handed off to `next` and wrote its report, both idle in their panes.
+/// Its tab no longer shows the handoff: its history moved on since.
+fn handed_off(root: &Path) {
+    registry(root, &["old", "next"]);
+    report(root, "old");
+    std::fs::create_dir_all(root.join("state/reeve/handoffs")).unwrap();
+    std::fs::write(root.join("state/reeve/handoffs/next.from"), "old").unwrap();
+    idle_pane(root, "");
+    std::fs::write(
+        root.join("pane-text"),
+        "⏺ Compacted.\n❯ also check the docs\n──── old ─\n❯ \n────\n  footer\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_message_to_the_predecessor_after_the_handoff_goes_to_the_successor_then_it_closes() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    handed_off(&root);
+
+    let o = prompt_hook(
+        &root,
+        &project,
+        "p-old",
+        "also check the docs\nand the README",
+    );
+    assert!(o.status.success());
+    // The predecessor doesn't act on it: the prompt is blocked there, saying where it went.
+    let out: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(out["decision"], "block", "{out}");
+    assert!(out["reason"].as_str().unwrap().contains("next"), "{out}");
+
+    let log = herdr_until(&root, "pane close p-old");
+    let sent = log.find("agent prompt p-next").expect("never forwarded");
+    assert!(sent < log.find("pane close p-old").unwrap(), "{log}");
+    assert!(
+        log[sent..].contains("also check the docs\nand the README"),
+        "{log}"
+    );
+    // The handoff is forgotten once the close returns, just after herdr closed the pane; its
+    // `.from` marker goes last, so once it is gone the queued messages are gone too.
+    let from = root.join("state/reeve/handoffs/next.from");
+    for _ in 0..800 {
+        if !from.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(!from.exists());
+    assert!(!root.join("state/reeve/handoffs/next.pending").exists());
+}
+
+#[test]
+fn a_message_the_successor_cannot_take_yet_keeps_the_predecessor_until_it_can() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    handed_off(&root);
+    std::fs::write(root.join("busy"), "").unwrap();
+
+    let o = prompt_hook(&root, &project, "p-old", "ship it");
+    let out: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(out["decision"], "block", "{out}");
+    herdr_until(&root, "agent prompt p-next");
+    let ls = reeve(&root, &project, &["ls"]);
+    let ls = String::from_utf8_lossy(&ls.stdout).to_string();
+    assert!(
+        ls.contains("reeve: old has a message for next that reeve could not pass on yet"),
+        "{ls}"
+    );
+    assert!(!read(root.join("herdr.log")).contains("pane close"));
+
+    // Once the successor can take it, the message goes there and the predecessor closes.
+    std::fs::remove_file(root.join("busy")).unwrap();
+    let log = herdr_until(&root, "pane close p-old");
+    let closed = log.find("pane close p-old").unwrap();
+    let last = log[..closed].rfind("agent prompt p-next").unwrap();
+    assert!(log[last..closed].contains("ship it"), "{log}");
+    assert!(!log[last..closed].contains("refused"), "{log}");
+}
+
+#[test]
+fn a_prompt_in_a_session_that_has_not_handed_off_is_left_alone() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    handed_off(&root);
+    let o = prompt_hook(&root, &project, "p-next", "hello");
+    assert!(o.status.success());
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "");
+    assert!(!read(root.join("herdr.log")).contains("agent prompt"));
 }

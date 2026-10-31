@@ -236,6 +236,17 @@ impl Registry {
         self.dir.join("handoffs").join(format!("{next}.from"))
     }
 
+    /// Messages the predecessor of `next` got after the handoff, one file each, until they are
+    /// passed on to `next`.
+    pub fn pending_path(&self, next: &str) -> PathBuf {
+        self.dir.join("handoffs").join(format!("{next}.pending"))
+    }
+
+    /// Kept while the messages for `next` are passed on, so each goes exactly once.
+    pub fn forward_lock(&self, next: &str) -> PathBuf {
+        self.dir.join("handoffs").join(format!("{next}.lock"))
+    }
+
     /// The (successor, predecessor) pairs still waiting for the predecessor to be closed.
     pub fn predecessors(&self) -> Vec<(String, String)> {
         let Ok(dir) = fs::read_dir(self.dir.join("handoffs")) else {
@@ -791,6 +802,12 @@ fn start_exec(argv: &[String], log: &Path) -> io::Result<String> {
         .spawn()
         .map_err(|e| io::Error::other(format!("codex exec failed to start: {e}")))?;
     Ok(child.id().to_string())
+}
+
+/// Submits `text` to the agent in `pane` as the user would; Claude Code and Codex queue it if
+/// the agent is busy. Herdr refuses an agent that waits at a question.
+pub fn prompt(pane: &str, text: &str) -> io::Result<()> {
+    herdr(["agent", "prompt", pane, text]).map(|_| ())
 }
 
 /// A pane's recent terminal text, as Herdr reads it.

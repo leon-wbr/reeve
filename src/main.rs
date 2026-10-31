@@ -230,6 +230,10 @@ enum Top {
         #[arg(last = true)]
         argv: Vec<String>,
     },
+    /// Pass the messages the predecessor of NEXT got after the handoff on to NEXT, then close
+    /// the predecessor; the prompt hook runs this in the background
+    #[command(hide = true)]
+    Tidy { next: String },
 }
 
 #[derive(Subcommand)]
@@ -794,6 +798,10 @@ fn main() -> ExitCode {
             workers()
                 .and_then(|r| workers::start(&r, &name, tab.as_deref(), &argv))
                 .map(|_| 0)
+        }
+        Top::Tidy { next } => {
+            ev.worker = Some(next.clone());
+            workers().map(|r| handoff::follow(&r, &next)).map(|_| 0)
         }
         Top::Hook(Hook::Context | Hook::Background) => {
             unreachable!("answered before the event log")
