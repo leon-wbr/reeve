@@ -194,10 +194,11 @@ enum Top {
     /// Machines reachable over ssh, each with a plain message box (see docs/remotes.md)
     #[command(subcommand)]
     Remote(RemoteCmd),
-    /// Send a message to NAME or NAME@REMOTE. It is queued here and pushed when the remote can
-    /// be reached; it never waits on one and never starts anything
+    /// Send a message to a named worker here, or to NAME@REMOTE. A worker sees it through its
+    /// `reeve inbox --follow` Monitor or at its next prompt or tool call; for a remote it is
+    /// queued here and pushed when the remote can be reached. It never waits on one
     Send {
-        /// NAME for a local agent, NAME@REMOTE for an agent on a remote
+        /// NAME for a named worker here, NAME@REMOTE for an agent on a remote
         to: String,
         /// The message text, or `-` to read it from stdin (max 64 KiB)
         text: String,
@@ -302,6 +303,17 @@ struct InboxArgs {
     /// Only messages from this name, address or remote
     #[arg(long, value_name = "X")]
     from: Option<String>,
+    /// Only messages to this worker; with --follow, the worker to follow [default: the named
+    /// worker this session is]
+    #[arg(long, value_name = "NAME")]
+    to: Option<String>,
+    /// Keep going: print a line per new message for this worker and mark it delivered, for
+    /// Claude Code's Monitor tool. Never exits on its own; re-arming it repeats nothing
+    #[arg(long, conflicts_with_all = ["from", "unanswered", "all"])]
+    follow: bool,
+    /// Stop after this many looks
+    #[arg(long, hide = true, requires = "follow")]
+    rounds: Option<u32>,
     /// Only messages nothing sent from here has answered with --reply-to
     #[arg(long)]
     unanswered: bool,
@@ -735,11 +747,15 @@ fn main() -> ExitCode {
             workers()
                 .and_then(|r| {
                     tidy_predecessors(&r);
-                    workers::ls_brief(&r)
+                    let hint = workers::caller(&r, &workers::Caller::from_env())
+                        .map(|w| inbox::start_hint(&w.name, w.agent));
+                    Ok((workers::ls_brief(&r)?, hint))
                 })
-                .map(|out| {
-                    if !out.is_empty() {
-                        println!("{out}");
+                .map(|(out, hint)| {
+                    for l in [Some(out), hint].into_iter().flatten() {
+                        if !l.is_empty() {
+                            println!("{l}");
+                        }
                     }
                 })
                 .map(|_| 0)
@@ -781,7 +797,10 @@ fn main() -> ExitCode {
         Top::Ls { brief: false } => workers()
             .and_then(|r| {
                 tidy_predecessors(&r);
-                workers::ls(&r, &remote::ls_rows())
+                let unread = msg::Store::open()
+                    .map(|s| inbox::unread_counts(&s, msg::now_secs()))
+                    .unwrap_or_default();
+                workers::ls(&r, &remote::ls_rows(), &unread)
             })
             .map(|out| println!("{out}"))
             .map(|_| 0),
@@ -973,11 +992,29 @@ fn main() -> ExitCode {
             ..
         }) => inbox::done(&id),
         Top::Inbox(InboxArgs {
+            follow: true,
+            to,
+            rounds,
+            ..
+        }) => to
+            .map(Ok)
+            .unwrap_or_else(|| {
+                workers::caller(&workers()?, &workers::Caller::from_env())
+                    .map(|w| w.name)
+                    .ok_or_else(|| {
+                        io::Error::other(
+                            "this session is no named worker reeve knows; pass --to NAME",
+                        )
+                    })
+            })
+            .and_then(|name| inbox::follow(&name, rounds)),
+        Top::Inbox(InboxArgs {
             from,
+            to,
             unanswered,
             all,
             ..
-        }) => inbox::list(from.as_deref(), unanswered, all),
+        }) => inbox::list(from.as_deref(), to.as_deref(), unanswered, all),
         Top::Ask { question } => ask::ask(&question),
         Top::Asks => ask::list(),
         Top::Answer { id, text } => ask::answer(&id, &text),

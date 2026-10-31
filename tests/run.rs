@@ -79,8 +79,11 @@ fn reeve_with(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> O
         .current_dir(from)
         .env("PATH", fakes(dir))
         .env("XDG_STATE_HOME", dir.join("state"))
+        .env("REEVE_HOME", dir.join("reeve-home"))
         .env("REEVE_EVENTS", dir.join("events.jsonl"))
         .env_remove("HERDR_ENV")
+        .env_remove("HERDR_PANE_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .env_remove("HERDR_WORKSPACE_ID")
         .env_remove("CLAUDECODE")
         .env_remove("CODEX_THREAD_ID")
@@ -996,20 +999,27 @@ fn ls_closes_the_predecessor_once_it_is_quiet_and_says_why_until_then() {
 
 /// `reeve hook context` in the pane `pane`, for the user's prompt `prompt`.
 fn prompt_hook(dir: &Path, from: &Path, pane: &str, prompt: &str) -> Output {
-    use std::io::Write;
     let payload = serde_json::json!({
         "hook_event_name": "UserPromptSubmit",
         "prompt": prompt,
         "transcript_path": dir.join("no-transcript.jsonl"),
     });
+    hook(dir, from, pane, &payload)
+}
+
+/// `reeve hook context` in the pane `pane`, with `payload` on stdin.
+fn hook(dir: &Path, from: &Path, pane: &str, payload: &Value) -> Output {
+    use std::io::Write;
     let mut c = Command::new(env!("CARGO_BIN_EXE_reeve"))
         .args(["hook", "context"])
         .current_dir(from)
         .env("PATH", fakes(dir))
         .env("XDG_STATE_HOME", dir.join("state"))
+        .env("REEVE_HOME", dir.join("reeve-home"))
         .env("REEVE_EVENTS", dir.join("events.jsonl"))
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", pane)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -1052,8 +1062,24 @@ fn handed_off(root: &Path) {
     .unwrap();
 }
 
+/// The unread messages in the local inbox, oldest first.
+fn unread(root: &Path) -> Vec<Value> {
+    let dir = root.join("reeve-home/inbox");
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".json") && !n.starts_with('.'))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|n| serde_json::from_str(&read(dir.join(n))).unwrap())
+        .collect()
+}
+
 #[test]
-fn a_message_to_the_predecessor_after_the_handoff_goes_to_the_successor_then_it_closes() {
+fn a_message_to_the_predecessor_after_the_handoff_goes_to_the_successors_inbox_then_it_closes() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();
     handed_off(&root);
@@ -1070,15 +1096,19 @@ fn a_message_to_the_predecessor_after_the_handoff_goes_to_the_successor_then_it_
     assert_eq!(out["decision"], "block", "{out}");
     assert!(out["reason"].as_str().unwrap().contains("next"), "{out}");
 
-    let log = herdr_until(&root, "pane close p-old");
-    let sent = log.find("agent prompt p-next").expect("never forwarded");
-    assert!(sent < log.find("pane close p-old").unwrap(), "{log}");
+    // It waits in the successor's inbox, whole; nothing is typed into any tab.
+    let msgs = unread(&root);
+    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    assert_eq!(msgs[0]["to"], "next");
+    assert_eq!(msgs[0]["from"], "old");
+    let body = msgs[0]["body"].as_str().unwrap();
     assert!(
-        log[sent..].contains("also check the docs\nand the README"),
-        "{log}"
+        body.ends_with("also check the docs\nand the README"),
+        "{body}"
     );
-    // The handoff is forgotten once the close returns, just after herdr closed the pane; its
-    // `.from` marker goes last, so once it is gone the queued messages are gone too.
+
+    herdr_until(&root, "pane close p-old");
+    assert!(!read(root.join("herdr.log")).contains("agent prompt"));
     let from = root.join("state/reeve/handoffs/next.from");
     for _ in 0..800 {
         if !from.exists() {
@@ -1087,35 +1117,164 @@ fn a_message_to_the_predecessor_after_the_handoff_goes_to_the_successor_then_it_
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(!from.exists());
-    assert!(!root.join("state/reeve/handoffs/next.pending").exists());
+    assert!(!root.join("state/reeve/handoffs/next.forwards").exists());
 }
 
 #[test]
-fn a_message_the_successor_cannot_take_yet_keeps_the_predecessor_until_it_can() {
+fn send_refuses_an_unknown_local_name_and_queues_for_a_worker() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();
-    handed_off(&root);
-    std::fs::write(root.join("busy"), "").unwrap();
+    registry(&root, &["a"]);
+    let o = reeve(&root, &project, &["send", "nobody", "hi"]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("no worker nobody"), "{err}");
+    assert!(err.contains("NAME@REMOTE"), "{err}");
+    assert!(unread(&root).is_empty());
 
-    let o = prompt_hook(&root, &project, "p-old", "ship it");
-    let out: Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(out["decision"], "block", "{out}");
-    herdr_until(&root, "agent prompt p-next");
-    let ls = reeve(&root, &project, &["ls"]);
-    let ls = String::from_utf8_lossy(&ls.stdout).to_string();
+    let o = reeve(&root, &project, &["send", "a", "please rebase"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.starts_with("queued ") && out.contains("for a"), "{out}");
+    let msgs = unread(&root);
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0]["to"], "a");
+    assert_eq!(msgs[0]["body"], "please rebase");
+}
+
+#[test]
+fn follow_prints_each_message_for_the_calling_worker_once() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["a", "b"]);
+    let send = |to: &str, text: &str| {
+        let o = reeve(&root, &project, &["send", to, text, "--from", "boss"]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    };
+    send("a", "first\nsecond line");
+    send("b", "not for a");
+    let follow = || {
+        let o = reeve_with(
+            &root,
+            &project,
+            &["inbox", "--follow", "--rounds", "2"],
+            &[("HERDR_PANE_ID", "p-a")],
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let out = follow();
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(out.contains("from boss"), "{out}");
     assert!(
-        ls.contains("reeve: old has a message for next that reeve could not pass on yet"),
-        "{ls}"
+        out.contains("first") && out.contains("second line"),
+        "{out}"
     );
-    assert!(!read(root.join("herdr.log")).contains("pane close"));
+    assert!(!out.contains("not for a"), "{out}");
+    // Re-armed, it shows nothing it showed before; b's message is still b's.
+    assert_eq!(follow(), "");
+    let left = unread(&root);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0]["to"], "b");
 
-    // Once the successor can take it, the message goes there and the predecessor closes.
-    std::fs::remove_file(root.join("busy")).unwrap();
-    let log = herdr_until(&root, "pane close p-old");
-    let closed = log.find("pane close p-old").unwrap();
-    let last = log[..closed].rfind("agent prompt p-next").unwrap();
-    assert!(log[last..closed].contains("ship it"), "{log}");
-    assert!(!log[last..closed].contains("refused"), "{log}");
+    // A session that is no named worker is told how to name one.
+    let o = reeve_with(
+        &root,
+        &project,
+        &["inbox", "--follow", "--rounds", "1"],
+        &[("HERDR_PANE_ID", "p-user")],
+    );
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--to NAME"));
+    let o = reeve(
+        &root,
+        &project,
+        &["inbox", "--follow", "--to", "b", "--rounds", "1"],
+    );
+    assert!(String::from_utf8_lossy(&o.stdout).contains("not for a"));
+}
+
+#[test]
+fn a_busy_worker_sees_its_messages_at_its_next_tool_call_once() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["a"]);
+    let o = reeve(
+        &root,
+        &project,
+        &["send", "a", "stop and push", "--from", "boss"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "transcript_path": root.join("no-transcript.jsonl"),
+    });
+    let o = hook(&root, &project, "p-a", &payload);
+    let out: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PostToolUse");
+    assert!(
+        ctx.contains("stop and push") && ctx.contains("boss"),
+        "{ctx}"
+    );
+    // Shown once: neither the next hook nor a follow shows it again.
+    assert_eq!(
+        String::from_utf8_lossy(&hook(&root, &project, "p-a", &payload).stdout),
+        ""
+    );
+    let o = reeve_with(
+        &root,
+        &project,
+        &["inbox", "--follow", "--rounds", "1"],
+        &[("HERDR_PANE_ID", "p-a")],
+    );
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "");
+    // Another worker's hook doesn't see it.
+    reeve(&root, &project, &["send", "a", "again"]);
+    assert_eq!(
+        String::from_utf8_lossy(&hook(&root, &project, "p-b", &payload).stdout),
+        ""
+    );
+}
+
+#[test]
+fn ls_shows_unread_messages_and_a_worker_is_told_to_follow_its_inbox_at_start() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["a", "b"]);
+    let plain = String::from_utf8_lossy(&reeve(&root, &project, &["ls"]).stdout).into_owned();
+    assert!(!plain.contains("UNREAD"), "{plain}");
+    reeve(&root, &project, &["send", "a", "one"]);
+    reeve(&root, &project, &["send", "a", "two"]);
+    let ls = String::from_utf8_lossy(&reeve(&root, &project, &["ls"]).stdout).into_owned();
+    assert!(ls.lines().next().unwrap().contains("UNREAD"), "{ls}");
+    let cols = |name: &str| -> Vec<String> {
+        ls.lines()
+            .find(|l| l.starts_with(&format!("{name} ")))
+            .unwrap()
+            .split_whitespace()
+            .map(String::from)
+            .collect()
+    };
+    assert_eq!(cols("a")[5], "2", "{ls}");
+    assert_ne!(cols("b")[5], "2", "{ls}");
+
+    let brief = |pane: &str| {
+        let o = reeve_with(
+            &root,
+            &project,
+            &["ls", "--brief"],
+            &[("HERDR_PANE_ID", pane)],
+        );
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let me = brief("p-a");
+    assert!(me.contains("You are worker a"), "{me}");
+    assert!(me.contains("`reeve inbox --follow`"), "{me}");
+    assert!(me.contains("Monitor") && me.contains("1800000"), "{me}");
+    assert!(!brief("p-user").contains("You are worker"));
 }
 
 #[test]
