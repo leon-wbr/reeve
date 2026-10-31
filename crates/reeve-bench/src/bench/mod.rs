@@ -1,4 +1,4 @@
-//! `reeve bench`: drives a communicator session through a fixed scenario with a simulated user
+//! `reeve-bench`: drives a communicator session through a fixed scenario with a simulated user
 //! and scores the runs. Results are laid out as by the Node harness it replaces, so both compare.
 
 pub mod check;
@@ -8,12 +8,27 @@ pub mod score;
 mod sim;
 
 use serde_json::{Value, json};
+use std::io;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
-/// The scenario and arms; the bench runs from the source tree.
+/// The scenario and arms, in the repo's `bench/`; the bench runs from the source tree.
 pub fn root() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/bench"))
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../bench"))
+}
+
+/// The real `reeve`, built or installed beside this binary: the shims hand it `--skill`, help
+/// and the hook, and the sessions run it.
+pub fn reeve_bin() -> io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let bin = exe.with_file_name("reeve");
+    if bin.is_file() {
+        return Ok(bin);
+    }
+    Err(io::Error::other(format!(
+        "no reeve beside {}; build both with `cargo build --workspace` or install both",
+        exe.display()
+    )))
 }
 
 pub fn home() -> PathBuf {

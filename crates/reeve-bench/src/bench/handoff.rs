@@ -1,12 +1,12 @@
 //! The handoff scenario: a session starts four long tasks, is told to hand off once all four run,
 //! and its successor has to bring the four results home. The tasks are stand-ins
-//! (`reeve bench task`) that wait on a simulated clock, which the driver jumps ahead whenever
+//! (`reeve-bench task`) that wait on a simulated clock, which the driver jumps ahead whenever
 //! every live session is just waiting on it.
 
 use super::run::{Comm, append, bench_env, clock, read_stderr, read_stdout, say, usage};
 use super::score::fmt;
 use super::{js_str, root, round, term, trials};
-use crate::workers::Registry;
+use reeve::workers::Registry;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -88,11 +88,11 @@ fn tasks_in(file: &Path) -> io::Result<Vec<Task>> {
     serde_json::from_str(&fs::read_to_string(file)?).map_err(io::Error::other)
 }
 
-/// `reeve bench task <id>`: waits out the task's simulated duration, then prints its result.
+/// `reeve-bench task <id>`: waits out the task's simulated duration, then prints its result.
 pub fn task(id: &str) -> io::Result<i32> {
     let sim = PathBuf::from(
         std::env::var_os("REEVE_BENCH_SIM")
-            .ok_or_else(|| io::Error::other("reeve bench task only runs inside a bench run"))?,
+            .ok_or_else(|| io::Error::other("reeve-bench task only runs inside a bench run"))?,
     );
     let tasks = tasks_in(&sim.join("tasks.json"))?;
     let t = tasks

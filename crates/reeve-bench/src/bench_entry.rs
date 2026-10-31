@@ -1,10 +1,10 @@
-//! `reeve bench entry`: whether fresh Claude Code sessions choose well with reeve installed
+//! `reeve-bench entry`: whether fresh Claude Code sessions choose well with reeve installed
 //! through `reeve setup claude`. A good choice is sometimes not to use reeve at all. Each run is
 //! a real `claude -p` session in a scratch workspace; `reeve` there is a shim that logs its
 //! calls, answers `ls`, `report` and `wait` for the case, and starts nothing.
 
-use crate::setup::{self, Piece};
-use crate::workers::{self, State};
+use reeve::setup::{self, Piece};
+use reeve::workers::{self, State};
 use serde_json::Value;
 use std::fs;
 use std::io;
@@ -238,7 +238,7 @@ esac
         ls = sh_quote(&ls),
         worker = sh_quote(worker),
         real = sh_quote(&real.display().to_string()),
-        bg_in_herdr = sh_quote(&crate::bg_in_herdr("worker")),
+        bg_in_herdr = sh_quote(&reeve::bg_in_herdr("worker")),
     )
 }
 
@@ -305,7 +305,7 @@ fn run_one(case: Case, dir: &Path, o: &Opts, settings: Option<&str>) -> io::Resu
         let bin = dir.join("bin");
         fs::create_dir_all(&bin)?;
         let shim_path = bin.join("reeve");
-        fs::write(&shim_path, shim(case, dir, &std::env::current_exe()?))?;
+        fs::write(&shim_path, shim(case, dir, &crate::bench::reeve_bin()?))?;
         fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o755))?;
         format!("{}:{}", bin.display(), path_without_reeve(&path))
     };
@@ -366,21 +366,21 @@ pub fn main(o: &Opts, version: &str) -> io::Result<i32> {
     let (hook, stub) = (pieces[0].1, pieces[1].1);
     let settings = (hook != Piece::Ok).then(hook_settings);
     if settings.is_some() {
-        eprintln!("reeve bench: the hook isn't installed; each session gets it through --settings");
+        eprintln!("reeve-bench: the hook isn't installed; each session gets it through --settings");
     }
     if stub != Piece::Ok {
         eprintln!(
-            "reeve bench: the skill stub isn't installed or current, so sessions run without it; `reeve setup claude` adds it"
+            "reeve-bench: the skill stub isn't installed or current, so sessions run without it; `reeve setup claude` adds it"
         );
     }
     let root: PathBuf = workers::Registry::default_dir()?
         .join("bench/entry")
-        .join(crate::events::now_ms().to_string());
+        .join(reeve::events::now_ms().to_string());
     let mut rows = vec![];
     for &case in &o.cases {
         for i in 1..=o.n {
             let dir = root.join(format!("{}-{i}", case.name()));
-            eprintln!("reeve bench: {} run {i} in {}", case.name(), dir.display());
+            eprintln!("reeve-bench: {} run {i} in {}", case.name(), dir.display());
             let mut row = run_one(case, &dir, o, settings.as_deref())?;
             row.run = i;
             rows.push(row);

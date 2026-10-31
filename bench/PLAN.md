@@ -22,7 +22,7 @@ What it suggests:
 
 ## Phase 1: field metrics, cheap, first
 
-1. Port the mining script to `reeve bench field [--days N]` (Rust, local, read-only).
+1. Port the mining script to `reeve-bench field [--days N]` (Rust, local, read-only).
    - Per day: typed messages, peer messages, polls, trouble messages, questions and their wait, AskUserQuestion uses, denials by kind (classifier, permission, sandbox), PRs created and merged, worker starts, sessions per task.
    - Exclude bench directories.
    - Print aggregates only, never message text.
@@ -41,7 +41,7 @@ Output: `bench/results/field-<date>.txt`, aggregates only, because the repo is p
 
 ### Task generator
 
-`reeve bench backlog --seed S --count 300` writes `backlog.jsonl`. Each task comes from about 15 parameterised templates, and every task carries its own hidden check:
+`reeve-bench backlog --seed S --count 300` writes `backlog.jsonl`. Each task comes from about 15 parameterised templates, and every task carries its own hidden check:
 
 | Template | Example | Hidden check |
 |---|---|---|
@@ -60,7 +60,7 @@ Mix: about 70% autonomous, about 20% with a decision found mid-work, and about 1
 
 ### Run
 
-`reeve bench backlog-run <arm> --minutes 30 --seed S`.
+`reeve-bench backlog-run <arm> --minutes 30 --seed S`.
 
 - The arm gets the backlog as a file plus one message: "work through backlog.jsonl in order, as much as you can".
 - **The simulated user has an attention budget,** for example 5 minutes per 30. It reads only when something needs it: an idle session, a queued question, or a message. Each read costs its own reading time plus a fixed 30 s. Each reply comes after a latency drawn from the field wait distribution. When the budget runs out, questions wait.
@@ -98,6 +98,6 @@ Mix: about 70% autonomous, about 20% with a decision found mid-work, and about 1
 
 1. Phase 1, steps 1–2 (Rust port of the miner, labelled sample), about 1.5 h, no model cost.
 2. Phase 2: fixtures and generator with 6 templates first, plus the hidden checks, about 3 h.
-3. The backlog driver: attention-budgeted simulated user and throughput score, reusing `reeve bench run`'s driver, about 2 h.
+3. The backlog driver: attention-budgeted simulated user and throughput score, reusing `reeve-bench run`'s driver, about 2 h.
 4. Calibration run, about 20 min, about $10.
 5. C3 against B0 against B0-par, 30 minutes, n=2, if usage allows.

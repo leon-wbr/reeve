@@ -1,4 +1,4 @@
-//! `reeve bench block`: whether the CLAUDE.md block `reeve setup claude --claude-md` writes gets
+//! `reeve-bench block`: whether the CLAUDE.md block `reeve setup claude --claude-md` writes gets
 //! fresh sessions to use reeve, as an orchestrator and as a worker under Herdr. It reuses the
 //! entry bench's shim, workspace and transcript reading. Each session is isolated from the
 //! owner's setup: only project settings load, so the owner's plugins, hooks and skills stay out,
@@ -7,7 +7,7 @@
 //! A6 has a skill stub, and no arm has a session-start hook.
 
 use crate::bench_entry::{self, Case as EntryCase};
-use crate::{context, setup};
+use reeve::{context, setup};
 use serde_json::{Value, json};
 use std::fs;
 use std::io;
@@ -48,10 +48,10 @@ pub const ARMS: [Arm; 7] = [
 ];
 
 /// `docs/skill.md` with the `/goal` line, as A5 measured it.
-pub const GOAL_LINE_MANUAL: &str = include_str!("../bench/manual-goal-line.md");
+pub const GOAL_LINE_MANUAL: &str = include_str!("../../../bench/manual-goal-line.md");
 
 /// `docs/skill.md` before the `/goal` line, as A4 measured it.
-pub const OLD_MANUAL: &str = include_str!("../bench/manual-before-goal.md");
+pub const OLD_MANUAL: &str = include_str!("../../../bench/manual-before-goal.md");
 
 /// `block()` as of a3575f4, the block in CLAUDE.md files written before the slim one.
 pub const OLD_BLOCK: &str = "<!-- reeve setup claude: start -->\n## reeve\n\nreeve is installed on this machine.\n\n\
@@ -95,8 +95,7 @@ impl Arm {
 
     /// The project skill the session gets, if any.
     pub fn skill(self) -> Option<String> {
-        (self == Arm::A6)
-            .then(|| setup::stub(crate::workers::Kind::Claude, env!("CARGO_PKG_VERSION")))
+        (self == Arm::A6).then(|| setup::stub(reeve::workers::Kind::Claude, reeve::VERSION))
     }
 
     /// The CLAUDE.md the session gets, if any.
@@ -562,7 +561,7 @@ fn run_one(arm: Arm, role: Role, case: Case, dir: &Path, o: &Opts) -> io::Result
             "reeve",
             checked(
                 &skill_from_file(
-                    &bench_entry::shim(entry_case, dir, &std::env::current_exe()?),
+                    &bench_entry::shim(entry_case, dir, &crate::bench::reeve_bin()?),
                     &dir.join("manual.md"),
                 ),
                 &std::env::current_exe()?,
@@ -644,13 +643,13 @@ fn run_one(arm: Arm, role: Role, case: Case, dir: &Path, o: &Opts) -> io::Result
     ))
 }
 
-/// The shim refusing, with the real binary's own error, any call that binary wouldn't parse,
-/// and logging it as `rejected …` instead of faking it.
-pub fn checked(shim: &str, real: &Path, log: &Path) -> String {
+/// The shim refusing, with the real reeve's own error, any call that reeve wouldn't parse (asked
+/// through `bench`, this binary's `parse`), and logging it as `rejected …` instead of faking it.
+pub fn checked(shim: &str, bench: &Path, log: &Path) -> String {
     let q = |p: &Path| bench_entry::sh_quote(&p.display().to_string());
     let line = format!(
-        "{} bench parse -- \"$@\" || {{ printf 'rejected %s\\n' \"$*\" >> {}; exit 2; }}\n",
-        q(real),
+        "{} parse -- \"$@\" || {{ printf 'rejected %s\\n' \"$*\" >> {}; exit 2; }}\n",
+        q(bench),
         q(log)
     );
     shim.replacen("#!/bin/sh\n", &format!("#!/bin/sh\n{line}"), 1)
@@ -678,7 +677,7 @@ pub fn ancestor_instructions(dir: &Path) -> Vec<PathBuf> {
 pub fn main(o: &Opts) -> io::Result<i32> {
     let root = std::env::temp_dir().join("reeve-bench-block").join(format!(
         "{}-{}",
-        crate::events::now_ms(),
+        reeve::events::now_ms(),
         std::process::id()
     ));
     let mut queue = vec![];
@@ -727,9 +726,9 @@ pub fn main(o: &Opts) -> io::Result<i32> {
                                 run: i,
                                 score,
                             });
-                            eprintln!("reeve bench: {}/{total} {tag}", rows.len());
+                            eprintln!("reeve-bench: {}/{total} {tag}", rows.len());
                         }
-                        Err(e) => eprintln!("reeve bench: {tag} failed: {e}"),
+                        Err(e) => eprintln!("reeve-bench: {tag} failed: {e}"),
                     }
                 }
             });
@@ -822,11 +821,11 @@ mod tests {
         assert!(shim.contains("[ \"$1\" = --skill ] && exec cat '/d/m.md'\ncase \"$1\" in"));
         let checked = checked(
             "#!/bin/sh\nlog\n",
-            Path::new("/b/reeve"),
+            Path::new("/b/reeve-bench"),
             Path::new("/d/c.log"),
         );
         assert!(checked.starts_with(
-            "#!/bin/sh\n'/b/reeve' bench parse -- \"$@\" || { printf 'rejected %s\\n' \"$*\" >> '/d/c.log'; exit 2; }\nlog\n"
+            "#!/bin/sh\n'/b/reeve-bench' parse -- \"$@\" || { printf 'rejected %s\\n' \"$*\" >> '/d/c.log'; exit 2; }\nlog\n"
         ));
         let rejected = score(
             &[],

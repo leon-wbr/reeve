@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[workspace]
+members = ["crates/reeve-bench"]
+
 [dependencies]
 clap = { version = "4.6", features = ["derive", "env"] }
 ctrlc = { version = "3.5", features = ["termination"] }
