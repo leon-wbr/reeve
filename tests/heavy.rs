@@ -325,11 +325,15 @@ fn in_a_terminal_the_command_can_read_from_it() {
 }
 
 /// Runs `script` under `--lock key`; the script marks that it is inside with a directory named
-/// after the key and fails (exit 99) if another run on the same key is already inside.
+/// after the key and fails (exit 99) if another run on the same key is already inside. Slots are
+/// set explicitly: the default is a quarter of the cores, so a small CI runner has one, and then
+/// slots alone would serialise the runs and hide whether the lock does.
 fn locked(state: &Path, key: &str, script: &str) -> Child {
     heavy(
         state,
-        &["--lock", key, "--label", key, "--", "sh", "-c", script],
+        &[
+            "--slots", "8", "--lock", key, "--label", key, "--", "sh", "-c", script,
+        ],
     )
     .stderr(Stdio::null())
     .spawn()
@@ -380,7 +384,16 @@ fn a_lock_waiter_names_the_holder_and_ls_shows_holder_and_waiter() {
     wait_for("the holder to start", || started.exists());
     let waiter = heavy(
         d.path(),
-        &["--lock", "shared-db", "--label", "second", "--", "true"],
+        &[
+            "--slots",
+            "8",
+            "--lock",
+            "shared-db",
+            "--label",
+            "second",
+            "--",
+            "true",
+        ],
     )
     .stderr(Stdio::piped())
     .spawn()
@@ -430,10 +443,13 @@ fn a_killed_run_frees_its_lock_once_its_command_is_gone() {
     // SIGKILL gives reeve heavy no chance to clean up.
     unsafe { libc::kill(holder.id() as i32, libc::SIGKILL) };
     holder.wait().unwrap();
-    let next = heavy(d.path(), &["--lock", "shared-db", "--", "true"])
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let next = heavy(
+        d.path(),
+        &["--slots", "8", "--lock", "shared-db", "--", "true"],
+    )
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
     std::thread::sleep(Duration::from_millis(800));
     let mut next = next;
     assert!(
@@ -456,8 +472,11 @@ fn a_run_that_ends_or_is_terminated_frees_its_lock() {
     wait_for("the holder to start", || started.exists());
     stop(holder);
     assert!(
-        run(d.path(), &["--lock", "shared-db", "--", "true"])
-            .status
-            .success()
+        run(
+            d.path(),
+            &["--slots", "8", "--lock", "shared-db", "--", "true"]
+        )
+        .status
+        .success()
     );
 }
