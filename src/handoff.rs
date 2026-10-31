@@ -180,7 +180,7 @@ fn tidy_one(r: &Registry, next: &str, from: &str) -> Option<String> {
     let tab = tab.as_ref().map(|t| t.as_deref().map_err(String::as_str));
     match verdict(a, w.report.exists(), tab, next, forwards) {
         Verdict::Keep(why) => Some(format!("{from} {why}")),
-        Verdict::Close => match workers::close(r, from) {
+        Verdict::Close => match workers::close(r, from, false) {
             Ok(()) => {
                 forget();
                 Some(format!("closed {from}, which handed off to {next}"))
