@@ -5,6 +5,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::workers::Kind;
+
 /// Where the agent runs.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Target {
@@ -104,6 +106,78 @@ pub fn worktree(from: &Path, name: &str) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Where `bin` is on PATH, if anywhere.
+pub fn on_path(bin: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join(bin))
+        .find(|p| p.is_file())
+}
+
+/// Why reeve can't start `kind` on the host, if it can't.
+pub fn missing_agent(kind: Kind) -> Option<String> {
+    let bin = kind.bin();
+    on_path(bin).is_none().then(|| {
+        format!(
+            "{bin} isn't on PATH, so reeve can't start it; install it, and `reeve doctor` checks the install"
+        )
+    })
+}
+
+/// Claude flags that skip its permission prompts, or pre-approve tools or settings that do.
+const CLAUDE_UNCHECKED: [&str; 5] = [
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "--allowedTools",
+    "--allowed-tools",
+    "--settings",
+];
+
+/// Codex flags that drop its approvals or its sandbox.
+const CODEX_UNCHECKED: [&str; 2] = ["--dangerously-bypass-approvals-and-sandbox", "--yolo"];
+
+/// The first of `args` by which the agent would act on the host without asking first. The
+/// allow rules `reeve setup` writes let an agent run `reeve run` and `reeve handoff` without a
+/// prompt, so these would let it start one that never asks; in a sandbox that is the point.
+pub fn unchecked_flag(kind: Kind, args: &[String]) -> Option<String> {
+    let mut prev = "";
+    for a in args {
+        let (flag, value) = match a.split_once('=') {
+            Some((f, v)) if f.starts_with('-') => (f, Some(v)),
+            _ => (a.as_str(), None),
+        };
+        let unchecked = match kind {
+            Kind::Claude => {
+                CLAUDE_UNCHECKED.contains(&flag)
+                    || flag == "--permission-mode" && value == Some("bypassPermissions")
+                    || prev == "--permission-mode" && a == "bypassPermissions"
+            }
+            Kind::Codex => {
+                CODEX_UNCHECKED.contains(&flag)
+                    || ["-s", "--sandbox", "-c", "--config"].contains(&flag)
+                        && value.is_some_and(|v| v.contains("danger-full-access"))
+                    || ["-s", "--sandbox", "-c", "--config"].contains(&prev)
+                        && a.contains("danger-full-access")
+            }
+        };
+        if unchecked {
+            return Some(match prev {
+                p if !a.starts_with('-') => format!("{p} {a}"),
+                _ => a.clone(),
+            });
+        }
+        prev = a;
+    }
+    None
+}
+
+/// Why reeve won't pass `flag` to an agent on the host.
+pub fn unchecked_refusal(flag: &str) -> String {
+    format!(
+        "`{flag}` skips the agent's permission checks, so reeve won't pass it on the host: an agent allowed to run reeve could start one that never asks. Use `reeve run --sandbox`, or start the agent yourself"
+    )
+}
+
 /// The claude command line; in a sandbox it skips permission prompts.
 pub fn claude_argv(bg: bool, sandboxed: bool, args: &[String]) -> Vec<String> {
     let flags = [(sandboxed, "--dangerously-skip-permissions"), (bg, "--bg")];
@@ -166,6 +240,59 @@ mod tests {
             target(Some(None), true, 7)
                 .unwrap_err()
                 .contains("--sandbox <NAME>")
+        );
+    }
+
+    #[test]
+    fn flags_that_skip_permission_checks_are_found_in_every_form() {
+        for (kind, args) in [
+            (Kind::Claude, &["--dangerously-skip-permissions", "go"][..]),
+            (
+                Kind::Claude,
+                &["--allow-dangerously-skip-permissions", "go"],
+            ),
+            (
+                Kind::Claude,
+                &["--permission-mode", "bypassPermissions", "go"],
+            ),
+            (Kind::Claude, &["--permission-mode=bypassPermissions", "go"]),
+            (Kind::Claude, &["--allowedTools", "Bash", "go"]),
+            (Kind::Claude, &["--allowed-tools=Bash", "go"]),
+            (Kind::Claude, &["--settings", "s.json", "go"]),
+            (
+                Kind::Codex,
+                &["--dangerously-bypass-approvals-and-sandbox", "go"],
+            ),
+            (Kind::Codex, &["--yolo", "go"]),
+            (Kind::Codex, &["-s", "danger-full-access", "go"]),
+            (Kind::Codex, &["--sandbox=danger-full-access", "go"]),
+            (
+                Kind::Codex,
+                &["-c", "sandbox_mode=\"danger-full-access\"", "go"],
+            ),
+        ] {
+            assert!(unchecked_flag(kind, &s(args)).is_some(), "{kind} {args:?}");
+        }
+    }
+
+    #[test]
+    fn flags_that_keep_permission_checks_pass() {
+        for (kind, args) in [
+            (Kind::Claude, &["--permission-mode", "auto", "go"][..]),
+            (Kind::Claude, &["--model", "sonnet", "-n", "w", "go"]),
+            (Kind::Claude, &["--disallowedTools", "Bash", "go"]),
+            (Kind::Codex, &["-s", "workspace-write", "go"]),
+            (Kind::Codex, &["--model", "o3", "go"]),
+        ] {
+            assert_eq!(unchecked_flag(kind, &s(args)), None, "{kind} {args:?}");
+        }
+        // The prompt is the user's text, not a flag.
+        assert_eq!(
+            unchecked_flag(
+                Kind::Claude,
+                &s(&["-p", "why --dangerously-skip-permissions?"])
+            ),
+            None
         );
     }
 

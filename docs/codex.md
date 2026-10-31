@@ -27,7 +27,7 @@ Everything after `--` goes to codex, the prompt last, as with claude. The worker
 - **Hooks** in `~/.codex/hooks.json` (under `CODEX_HOME` when set), the same format as Claude Code's: `reeve ls --brief` at session start, and `reeve hook context` on prompts and tool calls. Codex runs a new or changed hook only after the user trusts it in `/hooks`, and reeve doesn't write that trust for them; setup says so.
 - **Skill stub** at `~/.agents/skills/reeve/SKILL.md`, where Codex looks for user skills. Same text as Claude's, pointing at `reeve --skill`.
 - **`--agents-md`** adds the marked reeve block to `~/.codex/AGENTS.md`. When that file links to `~/.claude/CLAUDE.md` and the block is already there, nothing changes.
-- **Rules** in `~/.codex/rules/reeve.rules` let reeve's own bookkeeping commands (`ls`, `wait`, `watch`, `report`, `rm`, `run`, `handoff`, `ask`, `asks`, `answer`) run outside the sandbox, which can't write `~/.local/state/reeve`. `reeve heavy` isn't among them, since it runs any command; Codex asks for it as for any other command that needs more than the sandbox.
+- **Rules** in `~/.codex/rules/reeve.rules` let reeve's own bookkeeping commands (`ls`, `wait`, `watch`, `report`, `rm`, `run`, `handoff`, `ask`, `asks`) run outside the sandbox, which can't write `~/.local/state/reeve`. `reeve heavy` isn't among them, since it runs any command, nor `reeve answer`, whose answers come from the user; Codex asks for those as for any other command that needs more than the sandbox.
 
 `reeve doctor` reports the Codex setup next to Claude's when codex is installed.
 

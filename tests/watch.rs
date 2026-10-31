@@ -153,16 +153,18 @@ fn a_queued_message_that_expires_is_not_delivered_and_leaves_a_note() {
     e.add_remote("myserver");
     e.ok(&["remote", "init", "myserver"]);
     e.down(true);
+    // Each send syncs what is queued, and `expires_at` is in whole seconds, so the expiring one
+    // goes last and gets 2s: no send of the test's own can expire it before the sync below.
+    let keep = last_id(&e.ok(&["send", "hermes@myserver", "no expiry"]));
     let sent = e.ok(&[
         "send",
         "hermes@myserver",
-        "only useful for a second",
+        "only useful for a moment",
         "--ttl",
-        "1s",
+        "2s",
     ]);
     let id = last_id(&sent);
-    let keep = last_id(&e.ok(&["send", "hermes@myserver", "no expiry"]));
-    std::thread::sleep(std::time::Duration::from_millis(2200));
+    std::thread::sleep(std::time::Duration::from_millis(3200));
     let failed = e.run(&["remote", "sync", "myserver"]);
     assert!(!failed.status.success());
     assert!(

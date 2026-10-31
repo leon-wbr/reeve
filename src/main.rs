@@ -493,7 +493,10 @@ fn start(
     let argv = run::claude_argv(bg, target != Target::Host, args);
     let code = |s: std::process::ExitStatus| s.code().unwrap_or(1);
     match target {
-        Target::Host => Command::new(&argv[0]).args(&argv[1..]).status().map(code),
+        Target::Host => {
+            host_check(workers::Kind::Claude, args)?;
+            Command::new(&argv[0]).args(&argv[1..]).status().map(code)
+        }
         Target::Named(name) => {
             if explicit && sandbox::running(&name) {
                 eprintln!(
@@ -526,6 +529,14 @@ fn start(
             status.map(code)
         }
     }
+}
+
+/// Refuses to start the agent on the host without its permission checks, or when it isn't there.
+fn host_check(kind: workers::Kind, args: &[String]) -> io::Result<()> {
+    if let Some(f) = run::unchecked_flag(kind, args) {
+        return Err(io::Error::other(run::unchecked_refusal(&f)));
+    }
+    run::missing_agent(kind).map_or(Ok(()), |why| Err(io::Error::other(why)))
 }
 
 /// The subcommand path, e.g. `sandbox build`, without any arguments.
@@ -689,10 +700,12 @@ fn main() -> ExitCode {
                 "codex has no background session of its own; pass --name for a codex worker",
             )),
             (_, true) => Err(io::Error::other("sandbox options need --sandbox")),
-            _ => Command::new("codex")
-                .args(&args)
-                .status()
-                .map(|s| s.code().unwrap_or(1)),
+            _ => host_check(workers::Kind::Codex, &args).and_then(|_| {
+                Command::new("codex")
+                    .args(&args)
+                    .status()
+                    .map(|s| s.code().unwrap_or(1))
+            }),
         },
         Top::Run {
             bg,

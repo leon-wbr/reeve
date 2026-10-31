@@ -192,11 +192,20 @@ pub fn add_hook(settings: &mut Value, k: Kind) -> Result<bool, String> {
 
 /// reeve's own subcommands, which agents run without a prompt. Claude Code resolves a matching
 /// allow rule before auto mode's classifier, so the brief in a `reeve run` is never judged. Not
-/// `heavy`: it runs any command, so its rule would let any command past the classifier.
-const ALLOWED: [&str; 14] = [
-    "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "answer", "feedback",
-    "doctor", "wait", "rm", "--skill",
+/// `heavy`: it runs any command, so its rule would let any command past the classifier. Not
+/// `answer`: answers to the user's questions come from the user. `run` and `handoff` refuse
+/// agent flags that skip permission checks on the host (`run::unchecked_flag`).
+const ALLOWED: [&str; 13] = [
+    "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "feedback", "doctor",
+    "wait", "rm", "--skill",
 ];
+
+/// Rules an earlier setup wrote that this one takes out again.
+const RETIRED: [&str; 1] = ["Bash(reeve answer:*)"];
+
+fn retired(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| RETIRED.contains(&s))
+}
 
 /// The `permissions.allow` entries setup writes for Claude Code. `reeve --skill` is a flag, so
 /// its rule has no `:*`.
@@ -210,17 +219,20 @@ pub fn allow_rules() -> Vec<String> {
         .collect()
 }
 
-/// Ok when every rule is there, Stale when only some are, Missing when none is.
+/// Ok when every rule is there and no retired one, Stale when only some are or a retired one
+/// is, Missing when none is.
 pub fn perms_state(settings: &Value) -> Piece {
-    let have = settings["permissions"]["allow"].as_array().map_or(0, |l| {
+    let list = settings["permissions"]["allow"].as_array();
+    let have = list.map_or(0, |l| {
         allow_rules()
             .iter()
             .filter(|r| l.iter().any(|v| v.as_str() == Some(r)))
             .count()
     });
+    let old = list.is_some_and(|l| l.iter().any(retired));
     match have {
-        0 => Piece::Missing,
-        n if n == ALLOWED.len() => Piece::Ok,
+        0 if !old => Piece::Missing,
+        n if n == ALLOWED.len() && !old => Piece::Ok,
         _ => Piece::Stale,
     }
 }
@@ -241,6 +253,7 @@ pub fn add_perms(settings: &mut Value) -> Result<bool, String> {
     let Some(list) = allow.as_array_mut() else {
         return Err("`permissions.allow` in settings.json is not a list".into());
     };
+    list.retain(|v| !retired(v));
     for r in allow_rules() {
         if !list.iter().any(|v| v.as_str() == Some(&r)) {
             list.push(json!(r));
@@ -263,7 +276,7 @@ pub fn remove_perms(settings: &mut Value) -> bool {
         return false;
     };
     let before = list.len();
-    list.retain(|v| !v.as_str().is_some_and(|s| rules.iter().any(|r| r == s)));
+    list.retain(|v| !retired(v) && !v.as_str().is_some_and(|s| rules.iter().any(|r| r == s)));
     if list.len() == before {
         return false;
     }
@@ -318,7 +331,7 @@ pub fn rules() -> String {
         "{RULES_START} reeve's bookkeeping writes ~/.local/state/reeve, which Codex's sandbox\n\
          # doesn't allow. `reeve heavy` isn't here: it runs any command, so Codex asks as usual.\n\
          prefix_rule(\n    pattern = [\"reeve\", [\"ls\", \"wait\", \"watch\", \"report\", \"rm\", \"run\", \
-         \"close\", \"handoff\", \"ask\", \"asks\", \"answer\", \"feedback\", \"doctor\"]],\n    decision = \"allow\",\n    \
+         \"close\", \"handoff\", \"ask\", \"asks\", \"feedback\", \"doctor\"]],\n    decision = \"allow\",\n    \
          match = [\"reeve ls\", \"reeve run --name x -- go\"],\n    \
          not_match = [\"reeve heavy -- cargo test\"],\n)\n"
     )
@@ -1109,12 +1122,13 @@ mod tests {
         let r = rules();
         assert!(r.starts_with(RULES_START));
         for sub in [
-            "ls", "wait", "watch", "report", "rm", "run", "close", "handoff", "ask", "answer",
-            "feedback", "doctor",
+            "ls", "wait", "watch", "report", "rm", "run", "close", "handoff", "ask", "feedback",
+            "doctor",
         ] {
             assert!(r.contains(&format!("\"{sub}\"")), "{sub}");
         }
         assert!(!r.contains("\"heavy\","), "{r}");
+        assert!(!r.contains("\"answer\""), "{r}");
         assert!(r.contains("decision = \"allow\""));
         assert_eq!(rules_state(Some(&r)), Piece::Ok);
         assert_eq!(rules_state(Some("old")), Piece::Stale);
@@ -1167,11 +1181,13 @@ mod tests {
     fn the_allow_rules_cover_reeves_subcommands_and_nothing_broad() {
         let rules = allow_rules();
         for sub in [
-            "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "answer",
-            "feedback", "doctor", "wait", "rm",
+            "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "feedback",
+            "doctor", "wait", "rm",
         ] {
             assert!(rules.contains(&format!("Bash(reeve {sub}:*)")), "{sub}");
         }
+        // Answers to the user's questions come from the user.
+        assert!(!rules.iter().any(|r| r.contains("answer")), "{rules:?}");
         assert!(rules.contains(&"Bash(reeve --skill)".to_string()));
         assert!(
             rules
@@ -1214,6 +1230,27 @@ mod tests {
         let list = s["permissions"]["allow"].as_array().unwrap();
         assert_eq!(list.len(), allow_rules().len());
         assert_eq!(list[0], "Bash(reeve close:*)");
+    }
+
+    #[test]
+    fn a_rule_an_earlier_setup_wrote_is_stale_and_taken_out_by_setup_and_remove() {
+        let mut full = json!({});
+        add_perms(&mut full).unwrap();
+        let old = || {
+            let mut s = full.clone();
+            s["permissions"]["allow"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("Bash(reeve answer:*)"));
+            s
+        };
+        let mut s = old();
+        assert_eq!(perms_state(&s), Piece::Stale);
+        assert_eq!(add_perms(&mut s), Ok(true));
+        assert_eq!(s, full);
+        let mut s = old();
+        assert!(remove_perms(&mut s));
+        assert_eq!(s, json!({}));
     }
 
     #[test]
