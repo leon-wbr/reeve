@@ -1077,7 +1077,8 @@ fn a_message_to_the_predecessor_after_the_handoff_goes_to_the_successor_then_it_
         log[sent..].contains("also check the docs\nand the README"),
         "{log}"
     );
-    // The handoff is forgotten once the close returns, just after herdr closed the pane.
+    // The handoff is forgotten once the close returns, just after herdr closed the pane; its
+    // `.from` marker goes last, so once it is gone the queued messages are gone too.
     let from = root.join("state/reeve/handoffs/next.from");
     for _ in 0..800 {
         if !from.exists() {

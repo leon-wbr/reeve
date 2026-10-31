@@ -162,9 +162,12 @@ fn tidy_one(r: &Registry, next: &str, from: &str) -> Option<String> {
             "{from} has {what} for {next} that reeve could not pass on yet: {e}"
         ));
     }
+    // The `.from` file is the handoff's marker, so it goes after the queued messages: once it
+    // is gone, nothing of the handoff is left. The lock goes last, after another `tidy` that
+    // takes a fresh one would find no `.from` and stop.
     let forget = || {
-        let _ = fs::remove_file(r.predecessor_path(next));
         let _ = fs::remove_dir_all(r.pending_path(next));
+        let _ = fs::remove_file(r.predecessor_path(next));
         let _ = fs::remove_file(r.forward_lock(next));
     };
     let Ok(w) = r.get(from) else {
