@@ -1,6 +1,7 @@
 //! `reeve doctor`: checks what reeve needs from the machine, with one fix line per problem.
 
 use crate::setup::{self, Piece, tilde};
+use crate::update::Standing;
 use crate::workers::{Kind, Registry};
 use std::ffi::OsStr;
 use std::fs;
@@ -48,8 +49,11 @@ pub fn path_checks(
     version: &str,
 ) -> Vec<Check> {
     let want = format!("reeve {version}");
+    // `reeve 0.1.0 (271c42c 2026-10-31)`: two builds of one version are told apart by
+    // `shadow_check`, not here.
+    let same = |v: &str| v == want || v.strip_prefix(&want).is_some_and(|r| r.starts_with(" ("));
     let mut out = vec![match found {
-        Some(p) if found_version.is_some_and(|v| v != want) => problem(
+        Some(p) if found_version.is_some_and(|v| !same(v)) => problem(
             Status::Fail,
             format!(
                 "reeve on PATH ({p}) is {}, this is {want}",
@@ -95,6 +99,40 @@ pub fn shadow_check(path: &OsStr) -> Option<Check> {
         ),
         "remove the one you don't want, or `ln -sf` it to the other",
     ))
+}
+
+/// Whether the installed build lacks commits of the remote default branch, as last fetched.
+/// None when reeve wasn't built from a git checkout, which says nothing worth showing.
+pub fn behind_check(current: &str, standing: Option<io::Result<Standing>>) -> Option<Check> {
+    Some(match standing? {
+        Ok(Standing::Current) => ok(format!("reeve {current} has the latest of its checkout")),
+        Ok(Standing::Behind { branch, behind, .. }) => problem(
+            Status::Note,
+            format!(
+                "reeve {current} is {}",
+                crate::update::behind_text(&branch, behind)
+            ),
+            "`reeve update` builds and installs the latest",
+        ),
+        Err(e) => problem(
+            Status::Note,
+            format!("can't tell if reeve {current} is behind its checkout: {e}"),
+            "`git fetch` in the checkout it was built from, or `reeve update`",
+        ),
+    })
+}
+
+fn build_standing() -> Option<io::Result<Standing>> {
+    let (source, commit) = (crate::build_info::source()?, crate::build_info::commit()?);
+    // Doctor doesn't fetch: it compares with the branch as last fetched.
+    Some(if source.join(".git").exists() {
+        crate::update::standing(&source, commit)
+    } else {
+        Err(io::Error::other(format!(
+            "{} is gone or not a git checkout",
+            tilde(&source)
+        )))
+    })
 }
 
 /// `stub` is the skill stub's text, `hook` the hook's state in settings.json.
@@ -327,6 +365,10 @@ pub fn main(version: &str) -> io::Result<i32> {
         version,
     );
     checks.extend(shadow_check(&std::env::var_os("PATH").unwrap_or_default()));
+    checks.extend(behind_check(
+        crate::build_info::LONG_VERSION,
+        build_standing(),
+    ));
 
     let paths = setup::Paths::at(&setup::Paths::default_dir()?);
     match setup::check(&paths, version, false) {
@@ -408,6 +450,38 @@ mod tests {
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].status, Status::Fail);
         assert!(missing[0].fix.is_some());
+    }
+
+    #[test]
+    fn the_same_version_built_from_another_commit_is_not_a_different_reeve() {
+        let r = Some("/bin/reeve");
+        let line = Some("reeve 1.0.0 (271c42c 2026-10-31)");
+        assert_eq!(path_checks(r, line, r, "1.0.0")[0].status, Status::Ok);
+        let other = Some("reeve 1.0.01");
+        assert_eq!(path_checks(r, other, r, "1.0.0")[0].status, Status::Fail);
+    }
+
+    #[test]
+    fn a_build_behind_origin_is_a_note_that_points_at_update() {
+        assert_eq!(behind_check("1.0.0", None), None);
+        let ok_ = behind_check("1.0.0", Some(Ok(Standing::Current))).unwrap();
+        assert_eq!(ok_.status, Status::Ok);
+        let behind = Standing::Behind {
+            branch: "origin/main".into(),
+            tip: "abc".into(),
+            behind: Some(2),
+        };
+        let c = behind_check("1.0.0 (271c42c 2026-10-31)", Some(Ok(behind))).unwrap();
+        assert_eq!(c.status, Status::Note);
+        assert!(
+            c.what.contains("2 commits behind origin/main"),
+            "{}",
+            c.what
+        );
+        assert!(c.fix.unwrap().contains("reeve update"));
+        let err = io::Error::other("no origin/main");
+        let c = behind_check("1.0.0", Some(Err(err))).unwrap();
+        assert_eq!(c.status, Status::Note);
     }
 
     #[test]

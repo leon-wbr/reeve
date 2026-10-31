@@ -3,6 +3,7 @@ mod background;
 mod bench;
 mod bench_block;
 mod bench_entry;
+mod build_info;
 mod context;
 mod doctor;
 mod events;
@@ -34,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Parser)]
 #[command(
     name = "reeve",
-    version,
+    version = build_info::LONG_VERSION,
     arg_required_else_help = true,
     args_conflicts_with_subcommands = true
 )]
@@ -168,8 +169,10 @@ enum Top {
     /// Check PATH, the Claude Code setup, the state dir, the agent CLIs and gone workers
     Doctor,
     /// Upgrade Claude Code and Codex with the tool that installed each (Homebrew, npm or
-    /// `claude update`), through `reeve heavy`, and print the versions before and after. An
-    /// agent with a worker still starting is skipped
+    /// `claude update`), and reeve itself from `origin`'s default branch in the checkout it was
+    /// built in (built from a dedicated worktree, never the checkout's own tree), through
+    /// `reeve heavy`, and print the versions before and after. An agent with a worker still
+    /// starting is skipped
     Update {
         /// Only print what would run
         #[arg(long)]
@@ -217,8 +220,14 @@ enum Top {
     /// Drop a worker that is gone or done from `reeve ls`; its report stays
     Rm { name: String },
     /// Close a done, idle or gone worker: its tab (or background session), and its own worktree
-    /// when that is clean and pushed (never forced). Its report and `reeve ls` entry stay
-    Close { name: String },
+    /// when that is clean, pushed and holds no git-ignored files under `.claude/` (never forced;
+    /// it lists such files instead). Its report and `reeve ls` entry stay
+    Close {
+        name: String,
+        /// Close the tab but keep the worktree, with its ignored files
+        #[arg(long)]
+        preserve: bool,
+    },
     /// Bring up a worker that `reeve run` registered; it runs this in the background
     #[command(hide = true)]
     Start {
@@ -789,9 +798,11 @@ fn main() -> ExitCode {
             ev.worker = Some(name.clone());
             workers().and_then(|r| workers::rm(&r, &name)).map(|_| 0)
         }
-        Top::Close { name } => {
+        Top::Close { name, preserve } => {
             ev.worker = Some(name.clone());
-            workers().and_then(|r| workers::close(&r, &name)).map(|_| 0)
+            workers()
+                .and_then(|r| workers::close(&r, &name, preserve))
+                .map(|_| 0)
         }
         Top::Start { name, tab, argv } => {
             ev.worker = Some(name.clone());

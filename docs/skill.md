@@ -17,7 +17,7 @@ reeve run --name review --cwd ~/app -- --model sonnet "Review it."
 reeve ls                 # every worker: starting, running, blocked, idle, done or gone
 reeve watch fix-flaky    # a line per change, with the next step
 reeve report fix-flaky   # prints the report
-reeve close fix-flaky    # closes its tab; removes its worktree if clean and pushed
+reeve close fix-flaky    # closes its tab and clean pushed worktree; --preserve keeps it
 ```
 
 The last argument after `--` is the prompt; agent flags such as `--model` go before it. `--worktree` gives it its own git worktree; `--agent codex` runs Codex instead of Claude.

@@ -1432,8 +1432,8 @@ fn git(dir: &Path, args: &[&OsStr]) -> io::Result<String> {
     stdout("git", all)
 }
 
-/// Whether a git-ignored file is one a worker made on purpose and `reeve close` should save:
-/// under `.claude/`, but not other worktrees, local settings or build output.
+/// Whether a git-ignored file is one a worker made on purpose, which `reeve close` won't delete
+/// with the worktree: under `.claude/`, but not other worktrees, local settings or build output.
 pub fn savable(rel: &str) -> bool {
     let Some(rest) = rel.strip_prefix(".claude/") else {
         return false;
@@ -1506,10 +1506,10 @@ fn unlock_dead(main: &Path, dir: &Path, lock: Option<&str>) -> io::Result<Option
     Ok(None)
 }
 
-/// Copies the worktree's ignored files under `.claude/` to `to`, keeping their relative paths,
-/// and returns those paths. A worker's PR body or notes are often ignored, so they are in no
-/// commit and would go with the worktree.
-fn save_ignored(dir: &Path, to: &Path) -> io::Result<Vec<String>> {
+/// The worktree's git-ignored files under `.claude/` that a worker made on purpose. A PR body
+/// or notes kept there are in no commit, and `git status` doesn't show them, so they would go
+/// with the worktree.
+fn ignored_files(dir: &Path) -> io::Result<Vec<String>> {
     let o = |s: &'static str| OsStr::new(s);
     let args = [
         o("ls-files"),
@@ -1520,26 +1520,28 @@ fn save_ignored(dir: &Path, to: &Path) -> io::Result<Vec<String>> {
         o("--"),
         o(".claude"),
     ];
-    let files: Vec<String> = git(dir, &args)?
+    Ok(git(dir, &args)?
         .split('\0')
         .filter(|f| savable(f))
         .map(String::from)
-        .collect();
-    for f in &files {
-        let dest = to.join(f);
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(dir.join(f), dest)?;
-    }
-    Ok(files)
+        .collect())
 }
 
-/// Removes the worker's own worktree when it is clean and pushed: first the worktrees nested
-/// in it that are pushed at their HEAD, and after saving its ignored files under `.claude/`
-/// next to the report. Unlocks a lock whose process has died; says why it stays otherwise.
-/// Never forces.
-fn remove_worktree(w: &Worker) -> io::Result<String> {
+/// The files for a message, the first few of them.
+fn some_files(files: &[String]) -> String {
+    const SHOWN: usize = 8;
+    let mut out = files[..files.len().min(SHOWN)].join(", ");
+    if files.len() > SHOWN {
+        out.push_str(&format!(", and {} more", files.len() - SHOWN));
+    }
+    out
+}
+
+/// Removes the worker's own worktree when it is clean and pushed and holds no git-ignored files
+/// under `.claude/`: first the worktrees nested in it that are pushed at their HEAD. With
+/// `preserve` it stays whatever its state. Unlocks a lock whose process has died; says why it
+/// stays otherwise. Never forces.
+fn remove_worktree(w: &Worker, preserve: bool) -> io::Result<String> {
     let o = |s: &'static str| OsStr::new(s);
     let none = || Ok("no worktree of its own".to_string());
     if git(&w.cwd, &[o("rev-parse"), o("--is-inside-work-tree")]).is_err() {
@@ -1557,6 +1559,9 @@ fn remove_worktree(w: &Worker) -> io::Result<String> {
         .map_or_else(|| w.cwd.clone(), PathBuf::from);
     let shown = crate::setup::tilde(&dir);
     let keep = |why: String| Ok(format!("kept worktree {shown}: {why}"));
+    if preserve {
+        return keep("--preserve".into());
+    }
     let nested = nested_in(&list, &dir);
     for (n, _) in &nested {
         if let Some(why) = nested_stays(n)? {
@@ -1583,11 +1588,17 @@ fn remove_worktree(w: &Worker) -> io::Result<String> {
     if let Err(why) = removable(&status, &unpushed) {
         return keep(why);
     }
-    let saved_to = w.report.with_file_name(&w.name);
-    let saved = match save_ignored(&dir, &saved_to) {
+    let ignored = match ignored_files(&dir) {
         Ok(files) => files,
-        Err(e) => return keep(format!("could not save its ignored files: {e}")),
+        Err(e) => return keep(format!("could not list its ignored files: {e}")),
     };
+    if !ignored.is_empty() {
+        return keep(format!(
+            "it holds git-ignored files git status doesn't show: {}; rerun with --preserve to \
+             keep it, or remove them",
+            some_files(&ignored)
+        ));
+    }
     if let Some(why) = unlock_dead(&main, &dir, lock.as_deref())? {
         return keep(why);
     }
@@ -1598,20 +1609,15 @@ fn remove_worktree(w: &Worker) -> io::Result<String> {
         git(&main, &[o("worktree"), o("remove"), n.as_os_str()])?;
     }
     match git(&main, &[o("worktree"), o("remove"), dir.as_os_str()]) {
-        Ok(_) if saved.is_empty() => Ok(format!("removed worktree {shown}")),
-        Ok(_) => Ok(format!(
-            "removed worktree {shown}; saved {} to {}",
-            saved.join(", "),
-            crate::setup::tilde(&saved_to)
-        )),
+        Ok(_) => Ok(format!("removed worktree {shown}")),
         Err(e) => keep(e.to_string()),
     }
 }
 
 /// Ends a finished worker's agent (its tab, or its background session) and removes its
-/// worktree when that loses nothing. The registry entry and the report stay. A worker that is
-/// still running or waiting for the user is refused.
-pub fn close(r: &Registry, name: &str) -> io::Result<()> {
+/// worktree when that loses nothing (never with `preserve`). The registry entry and the report
+/// stay. A worker that is still running or waiting for the user is refused.
+pub fn close(r: &Registry, name: &str, preserve: bool) -> io::Result<()> {
     let w = r.get(name)?;
     let a = agent(&w);
     let s = state_of(&w, now(), || a);
@@ -1628,7 +1634,7 @@ pub fn close(r: &Registry, name: &str) -> io::Result<()> {
         stdout(cmd, &args)?;
         eprintln!("reeve: closed {name}'s agent");
     }
-    eprintln!("reeve: {}", remove_worktree(&w)?);
+    eprintln!("reeve: {}", remove_worktree(&w, preserve)?);
     Ok(())
 }
 
@@ -2527,7 +2533,7 @@ mod tests {
     #[test]
     fn a_worktree_made_by_run_goes_when_clean_and_pushed() {
         let (repo, w) = repo_with_worktree("wt-clean", "w");
-        let msg = remove_worktree(&w).unwrap();
+        let msg = remove_worktree(&w, false).unwrap();
         assert!(msg.starts_with("removed worktree "), "{msg}");
         assert!(!repo.join(".claude/worktrees/w").exists());
     }
@@ -2549,7 +2555,7 @@ mod tests {
                 "y",
             ],
         );
-        let msg = remove_worktree(&w).unwrap();
+        let msg = remove_worktree(&w, false).unwrap();
         assert!(msg.contains("1 commit not pushed"), "{msg}");
         assert!(repo.join(".claude/worktrees/w").exists());
     }
@@ -2580,7 +2586,7 @@ mod tests {
     }
 
     #[test]
-    fn ignored_files_under_claude_are_saved_before_the_worktree_goes() {
+    fn a_worktree_with_ignored_files_under_claude_stays_and_lists_them() {
         let (repo, w) = repo_with_worktree("wt-ignored", "w");
         let ignore = ".claude/pr-body.md\n.claude/notes\nsettings.local.json\nnode_modules\n";
         fs::write(repo.join(".git/info/exclude"), ignore).unwrap();
@@ -2593,38 +2599,44 @@ mod tests {
         fs::write(w.cwd.join(".claude/node_modules/x/a.js"), "").unwrap();
         // Ignored, but not under .claude/.
         fs::write(w.cwd.join("node_modules"), "").unwrap();
-        let saved = w.report.parent().unwrap().join("w");
-        let msg = remove_worktree(&w).unwrap();
-        assert!(msg.starts_with("removed worktree "), "{msg}");
+        let msg = remove_worktree(&w, false).unwrap();
+        assert!(msg.starts_with("kept worktree "), "{msg}");
         assert!(msg.contains(".claude/pr-body.md"), "{msg}");
-        assert!(msg.contains(&crate::setup::tilde(&saved)), "{msg}");
+        assert!(msg.contains(".claude/notes/guide.md"), "{msg}");
+        assert!(msg.contains("--preserve"), "{msg}");
+        assert!(!msg.contains("settings.local.json"), "{msg}");
+        assert!(!msg.contains("node_modules"), "{msg}");
         assert_eq!(
-            fs::read_to_string(saved.join(".claude/pr-body.md")).unwrap(),
+            fs::read_to_string(w.cwd.join(".claude/pr-body.md")).unwrap(),
             "body"
         );
-        assert_eq!(
-            fs::read_to_string(saved.join(".claude/notes/guide.md")).unwrap(),
-            "the guide"
-        );
-        assert!(!saved.join(".claude/settings.local.json").exists());
-        assert!(!saved.join(".claude/node_modules").exists());
-        assert!(!saved.join("node_modules").exists());
+        // Once the files are gone, the worktree goes too.
+        fs::remove_file(w.cwd.join(".claude/pr-body.md")).unwrap();
+        fs::remove_dir_all(&notes).unwrap();
+        let msg = remove_worktree(&w, false).unwrap();
+        assert!(msg.starts_with("removed worktree "), "{msg}");
         assert!(!w.cwd.exists());
     }
 
     #[test]
-    fn a_worktree_stays_when_its_ignored_files_cannot_be_saved() {
-        let (repo, w) = repo_with_worktree("wt-nosave", "w");
-        fs::write(repo.join(".git/info/exclude"), ".claude/pr-body.md\n").unwrap();
-        fs::create_dir_all(w.cwd.join(".claude")).unwrap();
-        fs::write(w.cwd.join(".claude/pr-body.md"), "body").unwrap();
-        let reports = w.report.parent().unwrap();
-        fs::create_dir_all(reports).unwrap();
-        fs::write(reports.join("w"), "in the way").unwrap();
-        let msg = remove_worktree(&w).unwrap();
+    fn preserve_keeps_a_clean_pushed_worktree() {
+        let (repo, w) = repo_with_worktree("wt-preserve", "w");
+        let msg = remove_worktree(&w, true).unwrap();
         assert!(msg.starts_with("kept worktree "), "{msg}");
-        assert!(msg.contains("could not save"), "{msg}");
-        assert!(w.cwd.join(".claude/pr-body.md").exists());
+        assert!(msg.contains("--preserve"), "{msg}");
+        assert!(repo.join(".claude/worktrees/w").exists());
+    }
+
+    #[test]
+    fn preserve_on_a_worker_without_a_worktree_says_so() {
+        let dir = temp("wt-preserve-plain");
+        fs::create_dir_all(&dir).unwrap();
+        let r = Registry::at(dir.join("state"));
+        let w = Worker {
+            cwd: dir.clone(),
+            ..worker(&r, "w", "w1:p1")
+        };
+        assert_eq!(remove_worktree(&w, true).unwrap(), "no worktree of its own");
     }
 
     #[test]
@@ -2636,7 +2648,10 @@ mod tests {
             cwd: dir.clone(),
             ..worker(&r, "w", "w1:p1")
         };
-        assert_eq!(remove_worktree(&w).unwrap(), "no worktree of its own");
+        assert_eq!(
+            remove_worktree(&w, false).unwrap(),
+            "no worktree of its own"
+        );
     }
 
     #[test]
@@ -2645,7 +2660,7 @@ mod tests {
         let nested = nested_worktree(&w, "pr-assets-x");
         commit(&nested);
         git_ok(&nested, &["push", "-q", "origin", "pr-assets-x"]);
-        let msg = remove_worktree(&w).unwrap();
+        let msg = remove_worktree(&w, false).unwrap();
         assert!(msg.starts_with("removed worktree "), "{msg}");
         assert!(!nested.exists());
         assert!(!repo.join(".claude/worktrees/w").exists());
@@ -2656,7 +2671,7 @@ mod tests {
         let (repo, w) = repo_with_worktree("wt-nested-keep", "w");
         let nested = nested_worktree(&w, "pr-assets-x");
         commit(&nested);
-        let msg = remove_worktree(&w).unwrap();
+        let msg = remove_worktree(&w, false).unwrap();
         assert!(msg.starts_with("kept worktree "), "{msg}");
         assert!(
             msg.contains("pr-assets-x") && msg.contains("not pushed"),
@@ -2671,7 +2686,7 @@ mod tests {
         let (_, w) = repo_with_worktree("wt-nested-dirty", "w");
         let nested = nested_worktree(&w, "pr-assets-x");
         fs::write(nested.join("shot.png"), "").unwrap();
-        let msg = remove_worktree(&w).unwrap();
+        let msg = remove_worktree(&w, false).unwrap();
         assert!(
             msg.contains("pr-assets-x") && msg.contains("uncommitted"),
             "{msg}"
@@ -2695,7 +2710,7 @@ mod tests {
             dead_pid()
         );
         git_ok(&w.cwd, &["worktree", "lock", "--reason", &reason, "."]);
-        let msg = remove_worktree(&w).unwrap();
+        let msg = remove_worktree(&w, false).unwrap();
         assert!(msg.starts_with("removed worktree "), "{msg}");
         assert!(!repo.join(".claude/worktrees/w").exists());
     }
