@@ -1,6 +1,7 @@
 //! `reeve handoff`: writes a handoff file that lists the session's named workers, and starts the
 //! successor as a named worker whose launch prompt points at that file. A message the user sends
-//! the predecessor after that goes to the successor, and the predecessor is closed.
+//! the predecessor after that goes to the successor's inbox, like any `reeve send`, and the
+//! predecessor is closed.
 
 use crate::workers::{self, Agent, Backend, Kind, Registry, State, Worker};
 use serde_json::{Value, json};
@@ -8,7 +9,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub fn doc(notes: &str, workers: &[(Worker, State)]) -> String {
     let mut d = notes.trim_end().to_string();
@@ -44,8 +45,8 @@ pub fn predecessor<'a>(all: &'a [Worker], pane: Option<&str>) -> Option<&'a Work
 
 /// What a predecessor's tab shows: `Err` says why it must stay open. `text` is the pane read;
 /// the handoff shows in it as the `reeve handoff --name NEXT` command the predecessor ran. Once
-/// reeve `forwards` the predecessor's messages, the hook caught each one, so only the input box
-/// counts.
+/// the hook `forwards` the predecessor's messages to the successor, it caught each one, so only
+/// the input box counts.
 pub fn tab_verdict(text: &str, next: &str, forwards: bool) -> Result<(), String> {
     let lines: Vec<&str> = text.lines().collect();
     let is_prompt = |l: &&str| l.starts_with('❯') || l.starts_with('›');
@@ -143,8 +144,8 @@ pub fn tidy(r: &Registry) -> Vec<String> {
         .collect()
 }
 
-/// `tidy` for one handoff: first passes on the messages the predecessor got since, then closes
-/// it if `verdict` allows. Holds the handoff's lock, so each message goes once.
+/// `tidy` for one handoff: closes the predecessor if `verdict` allows. Holds the handoff's
+/// lock, so two tidies don't close it at once.
 fn tidy_one(r: &Registry, next: &str, from: &str) -> Option<String> {
     let lock = File::create(r.forward_lock(next)).ok()?;
     lock.lock().ok()?;
@@ -152,21 +153,12 @@ fn tidy_one(r: &Registry, next: &str, from: &str) -> Option<String> {
     if !r.predecessor_path(next).exists() {
         return None;
     }
-    let forwards = r.pending_path(next).is_dir();
-    if forwards && let Err((left, e)) = forward(r, next, from) {
-        let what = match left {
-            1 => "a message".to_string(),
-            n => format!("{n} messages"),
-        };
-        return Some(format!(
-            "{from} has {what} for {next} that reeve could not pass on yet: {e}"
-        ));
-    }
-    // The `.from` file is the handoff's marker, so it goes after the queued messages: once it
-    // is gone, nothing of the handoff is left. The lock goes last, after another `tidy` that
-    // takes a fresh one would find no `.from` and stop.
+    let forwards = r.forwards_path(next).exists();
+    // The `.from` file is the handoff's marker, so it goes after the rest: once it is gone,
+    // nothing of the handoff is left. The lock goes last, after another `tidy` that takes a
+    // fresh one would find no `.from` and stop.
     let forget = || {
-        let _ = fs::remove_dir_all(r.pending_path(next));
+        let _ = fs::remove_file(r.forwards_path(next));
         let _ = fs::remove_file(r.predecessor_path(next));
         let _ = fs::remove_file(r.forward_lock(next));
     };
@@ -198,60 +190,30 @@ pub fn forwarded(from: &str, text: &str) -> String {
     )
 }
 
-/// The messages queued for `next`, oldest first.
-fn queued(r: &Registry, next: &str) -> Vec<std::path::PathBuf> {
-    let mut all: Vec<_> = fs::read_dir(r.pending_path(next))
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
-        .collect();
-    all.sort();
-    all
-}
-
-/// Passes the messages queued for `next` on to its tab, oldest first, and stops at the first
-/// it can't take. `Err` has how many are left, and why.
-fn forward(r: &Registry, next: &str, from: &str) -> Result<(), (usize, String)> {
-    let all = queued(r, next);
-    let pane = match r.get(next) {
-        Ok(w) if w.backend == Backend::Pane => w.handle,
-        Ok(_) => return Err((all.len(), format!("{next} has no tab"))),
-        Err(e) => return Err((all.len(), e.to_string())),
-    };
-    for (i, file) in all.iter().enumerate() {
-        let left = |e: &dyn std::fmt::Display| (all.len() - i, e.to_string());
-        let text = fs::read_to_string(file).map_err(|e| left(&e))?;
-        workers::prompt(&pane, &forwarded(from, &text)).map_err(|e| left(&e))?;
-        fs::remove_file(file).map_err(|e| left(&e))?;
-    }
-    Ok(())
-}
-
-/// The handoff whose predecessor runs in `pane`, as (successor, predecessor), when the
-/// successor has a tab that reeve can pass messages on to.
+/// The handoff whose predecessor runs in `pane`, as (successor, predecessor).
 pub fn handed_off_from(r: &Registry, pane: &str) -> Option<(String, String)> {
     let all = r.all().ok()?;
     let me = predecessor(&all, Some(pane))?;
-    r.predecessors().into_iter().find(|(next, from)| {
-        *from == me.name
-            && all
-                .iter()
-                .any(|w| w.name == *next && w.backend == Backend::Pane)
-    })
+    r.predecessors()
+        .into_iter()
+        .find(|(next, from)| *from == me.name && all.iter().any(|w| w.name == *next))
 }
 
-/// Keeps `text` for `next` until `tidy` passes it on; file names sort in arrival order.
-pub fn queue(r: &Registry, next: &str, text: &str) -> io::Result<()> {
-    let dir = r.pending_path(next);
-    fs::create_dir_all(&dir)?;
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let name = format!("{t:024}-{}", std::process::id());
-    let tmp = dir.join(format!("{name}.tmp"));
-    fs::write(&tmp, text)?;
-    fs::rename(&tmp, dir.join(format!("{name}.txt")))
+/// Puts `text` in `next`'s inbox as a message from `from`, the way `reeve send` would, and
+/// marks the handoff as forwarding.
+pub fn queue(r: &Registry, next: &str, from: &str, text: &str) -> io::Result<()> {
+    use crate::msg;
+    let m = msg::compose(
+        from,
+        next,
+        &forwarded(from, text),
+        None,
+        None,
+        msg::now_secs(),
+    )
+    .map_err(io::Error::other)?;
+    msg::write_atomic(&msg::Store::open()?.inbox(), &m)?;
+    fs::write(r.forwards_path(next), "")
 }
 
 /// What the predecessor's prompt hook answers: the prompt is kept from the predecessor, and the
@@ -260,15 +222,15 @@ pub fn blocked(next: &str) -> Value {
     json!({
         "decision": "block",
         "reason": format!(
-            "This session handed off to {next}, so reeve passes your message on to {next}'s tab \
-             and closes this one."
+            "This session handed off to {next}, so reeve passes your message on to {next}'s \
+             inbox, where {next} sees it, and closes this one."
         ),
     })
 }
 
-/// For the prompt hook: a prompt the user sends a predecessor after its handoff is queued for
-/// the successor and kept from the predecessor, and `reeve tidy` starts in the background to
-/// pass it on and close the predecessor. `None` lets the prompt through, as when anything here
+/// For the prompt hook: a prompt the user sends a predecessor after its handoff goes to the
+/// successor's inbox and is kept from the predecessor, and `reeve tidy` starts in the
+/// background to close the predecessor. `None` lets the prompt through, as when anything here
 /// fails, so a message is never dropped.
 pub fn on_prompt(payload: &Value) -> Option<Value> {
     if payload["hook_event_name"] != "UserPromptSubmit" {
@@ -277,8 +239,8 @@ pub fn on_prompt(payload: &Value) -> Option<Value> {
     let text = payload["prompt"].as_str()?;
     let pane = std::env::var("HERDR_PANE_ID").ok()?;
     let r = Registry::at(Registry::default_dir().ok()?);
-    let (next, _) = handed_off_from(&r, &pane)?;
-    queue(&r, &next, text).ok()?;
+    let (next, from) = handed_off_from(&r, &pane)?;
+    queue(&r, &next, &from, text).ok()?;
     let _ = spawn_follow(&next);
     Some(blocked(&next))
 }
@@ -486,7 +448,7 @@ mod tests {
         assert!(f.ends_with("\n\nline one\nline two"), "{f}");
         let b = blocked("next");
         assert_eq!(b["decision"], "block");
-        assert!(b["reason"].as_str().unwrap().contains("next's tab"));
+        assert!(b["reason"].as_str().unwrap().contains("next's inbox"));
     }
 
     #[test]

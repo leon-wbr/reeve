@@ -236,13 +236,12 @@ impl Registry {
         self.dir.join("handoffs").join(format!("{next}.from"))
     }
 
-    /// Messages the predecessor of `next` got after the handoff, one file each, until they are
-    /// passed on to `next`.
-    pub fn pending_path(&self, next: &str) -> PathBuf {
-        self.dir.join("handoffs").join(format!("{next}.pending"))
+    /// Marks a handoff whose predecessor's prompt hook has sent a message on to `next`.
+    pub fn forwards_path(&self, next: &str) -> PathBuf {
+        self.dir.join("handoffs").join(format!("{next}.forwards"))
     }
 
-    /// Kept while the messages for `next` are passed on, so each goes exactly once.
+    /// Kept while a handoff is tidied, so its predecessor is closed once.
     pub fn forward_lock(&self, next: &str) -> PathBuf {
         self.dir.join("handoffs").join(format!("{next}.lock"))
     }
@@ -804,10 +803,69 @@ fn start_exec(argv: &[String], log: &Path) -> io::Result<String> {
     Ok(child.id().to_string())
 }
 
-/// Submits `text` to the agent in `pane` as the user would; Claude Code and Codex queue it if
-/// the agent is busy. Herdr refuses an agent that waits at a question.
-pub fn prompt(pane: &str, text: &str) -> io::Result<()> {
-    herdr(["agent", "prompt", pane, text]).map(|_| ())
+/// What a session knows about itself: its Herdr pane, its Claude Code session id, its Codex
+/// thread.
+#[derive(Debug, Default, Clone)]
+pub struct Caller {
+    pub pane: Option<String>,
+    pub claude_session: Option<String>,
+    pub codex_thread: Option<String>,
+}
+
+impl Caller {
+    pub fn from_env() -> Caller {
+        let var = |k| std::env::var(k).ok().filter(|v| !v.is_empty());
+        Caller {
+            pane: var("HERDR_PANE_ID"),
+            claude_session: var("CLAUDE_CODE_SESSION_ID"),
+            codex_thread: var("CODEX_THREAD_ID"),
+        }
+    }
+}
+
+/// The named worker a session is: the pane worker in its Herdr pane; else the background
+/// Claude worker whose session `claude agents` (`agents`, asked only then) lists under the
+/// session's id; else the background Codex worker whose log (`thread_of`) has its thread.
+pub fn caller_of<'a>(
+    all: &'a [Worker],
+    c: &Caller,
+    agents: impl FnOnce() -> Option<String>,
+    thread_of: impl Fn(&Worker) -> Option<String>,
+) -> Option<&'a Worker> {
+    if let Some(pane) = &c.pane
+        && let Some(w) = all
+            .iter()
+            .find(|w| w.backend == Backend::Pane && w.handle == *pane)
+    {
+        return Some(w);
+    }
+    let bg = |kind| {
+        all.iter()
+            .filter(move |w: &&Worker| w.backend == Backend::Bg && w.agent == kind)
+    };
+    if let Some(sid) = &c.claude_session
+        && bg(Kind::Claude).next().is_some()
+    {
+        let listed: Vec<Value> = serde_json::from_str(&agents()?).ok()?;
+        let me = listed.iter().find(|a| a["sessionId"] == sid.as_str())?;
+        return bg(Kind::Claude).find(|w| {
+            (!w.handle.is_empty() && me["id"] == w.handle.as_str()) || me["name"] == w.name.as_str()
+        });
+    }
+    let thread = c.codex_thread.as_deref()?;
+    bg(Kind::Codex).find(|w| thread_of(w).as_deref() == Some(thread))
+}
+
+/// The named worker the calling session is, if any.
+pub fn caller(r: &Registry, c: &Caller) -> Option<Worker> {
+    let all = r.all().ok()?;
+    caller_of(
+        &all,
+        c,
+        || probe("claude", ["agents", "--json"]).ok(),
+        |w| exec_thread(&fs::read_to_string(exec_log(w)).ok()?),
+    )
+    .cloned()
 }
 
 /// A pane's recent terminal text, as Herdr reads it.
@@ -1021,8 +1079,8 @@ pub fn started(w: &Worker) -> String {
          reeve: follow it with `reeve watch {name}` (Claude Code: the Monitor tool, timeout_ms \
          1800000, re-armed when it expires; elsewhere a background shell). A line per change \
          says what to do: done, read the report, then `reeve close {name}`; idle, read {}: \
-         nothing if it waits on its own job, else nudge it, let it carry on, or ask the user; \
-         blocked, answer it {} if you can, else ask the user.",
+         nothing if it waits on its own job, else nudge it with `reeve send {name} \"TEXT\"`, \
+         let it carry on, or ask the user; blocked, answer it {} if you can, else ask the user.",
         crate::setup::tilde(&w.report),
         look_where(w),
         answer_where(w)
@@ -1144,8 +1202,21 @@ pub struct Row {
     pub detail: String,
 }
 
-pub fn ls(r: &Registry, extra: &[Row]) -> io::Result<String> {
+/// The table `reeve ls` prints. An UNREAD column, the messages each worker hasn't been shown,
+/// appears only while some worker has one.
+pub fn ls(
+    r: &Registry,
+    extra: &[Row],
+    unread: &std::collections::HashMap<String, usize>,
+) -> io::Result<String> {
     let all = r.all()?;
+    let count = |name: &str| unread.get(name).copied().unwrap_or(0);
+    let any = all.iter().any(|w| count(&w.name) > 0);
+    let col = |n: usize| match (any, n) {
+        (false, _) => String::new(),
+        (true, 0) => format!("{:6}  ", ""),
+        (true, n) => format!("{n:>6}  "),
+    };
     let width = all
         .iter()
         .map(|w| w.name.len())
@@ -1160,8 +1231,10 @@ pub fn ls(r: &Registry, extra: &[Row]) -> io::Result<String> {
         .unwrap_or(0)
         .max(8);
     let mut out = format!(
-        "{:width$}  {:state_w$}  AGENT   BACKEND  AGE  CWD",
-        "NAME", "STATE"
+        "{:width$}  {:state_w$}  AGENT   BACKEND  AGE  {}CWD",
+        "NAME",
+        "STATE",
+        if any { "UNREAD  " } else { "" }
     );
     for (w, state) in all.iter().zip(states(&all)) {
         let backend = match w.backend {
@@ -1169,18 +1242,25 @@ pub fn ls(r: &Registry, extra: &[Row]) -> io::Result<String> {
             Backend::Bg => "bg",
         };
         out += &format!(
-            "\n{:width$}  {:state_w$}  {:6}  {backend:7}  {:>3}  {}",
+            "\n{:width$}  {:state_w$}  {:6}  {backend:7}  {:>3}  {}{}",
             w.name,
             state.to_string(),
             w.agent.bin(),
             age(now().saturating_sub(w.started)),
+            col(count(&w.name)),
             crate::setup::tilde(&w.cwd)
         );
     }
     for x in extra {
         out += &format!(
-            "\n{:width$}  {:state_w$}  {:6}  {:7}  {:>3}  {}",
-            x.name, x.state, x.agent, x.backend, x.age, x.detail
+            "\n{:width$}  {:state_w$}  {:6}  {:7}  {:>3}  {}{}",
+            x.name,
+            x.state,
+            x.agent,
+            x.backend,
+            x.age,
+            col(0),
+            x.detail
         );
     }
     Ok(out)
@@ -1318,7 +1398,7 @@ fn change(w: &Worker, before: Option<State>, s: State) -> String {
         State::Running => format!("{name} running again"),
         State::Idle => format!(
             "{name} idle without a report: read {}; if it waits on its own job do nothing, else \
-             nudge it, let it carry on, or ask the user",
+             nudge it with `reeve send {name} \"TEXT\"`, let it carry on, or ask the user",
             look_where(w)
         ),
         State::Blocked => format!(
@@ -2787,6 +2867,62 @@ mod tests {
         assert!(b.len() <= BRIEF_MAX + 3, "{}", b.len());
         assert!(b.contains("492 more"), "{b}");
         assert!(b.ends_with(HEAVY_REMINDER), "{b}");
+    }
+
+    #[test]
+    fn a_session_is_the_worker_in_its_pane_or_its_listed_session_or_its_thread() {
+        let mk = |name: &str, backend, agent, handle: &str| Worker {
+            name: name.into(),
+            backend,
+            agent,
+            cwd: "/w".into(),
+            started: 1,
+            report: format!("/st/reports/{name}.md").into(),
+            handle: handle.into(),
+            starting: false,
+            error: None,
+        };
+        let all = [
+            mk("pane", Backend::Pane, Kind::Claude, "w1:p2"),
+            mk("bg", Backend::Bg, Kind::Claude, "ab12"),
+            mk("fresh", Backend::Bg, Kind::Claude, ""),
+            mk("cx", Backend::Bg, Kind::Codex, "77"),
+        ];
+        let agents = r#"[{"id":"ab12","sessionId":"s-1","name":"bg"},
+            {"id":"cd34","sessionId":"s-2","name":"fresh"},
+            {"sessionId":"s-3","name":"mine"}]"#;
+        let who = |c: Caller| {
+            caller_of(
+                &all,
+                &c,
+                || Some(agents.into()),
+                |w| (w.name == "cx").then(|| "th-9".to_string()),
+            )
+            .map(|w| w.name.clone())
+        };
+        let pane = |p: &str| Caller {
+            pane: Some(p.into()),
+            ..Caller::default()
+        };
+        let session = |s: &str| Caller {
+            claude_session: Some(s.into()),
+            ..Caller::default()
+        };
+        assert_eq!(who(pane("w1:p2")).as_deref(), Some("pane"));
+        assert_eq!(who(pane("w1:p9")), None);
+        assert_eq!(who(session("s-1")).as_deref(), Some("bg"));
+        // Still starting, it has no handle yet, but its session carries its name.
+        assert_eq!(who(session("s-2")).as_deref(), Some("fresh"));
+        assert_eq!(who(session("s-3")), None);
+        let thread = Caller {
+            codex_thread: Some("th-9".into()),
+            ..Caller::default()
+        };
+        assert_eq!(who(thread).as_deref(), Some("cx"));
+        // No background Claude worker: `claude agents` is never asked.
+        let only_pane = [all[0].clone()];
+        let asked = caller_of(&only_pane, &session("s-1"), || panic!("asked"), |_| None);
+        assert!(asked.is_none());
     }
 
     #[test]

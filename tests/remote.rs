@@ -334,8 +334,18 @@ fn a_local_send_goes_straight_to_the_local_inbox_and_inbox_filters_work() {
     let e = Env::new();
     e.add_remote("myserver");
     e.ok(&["remote", "init", "myserver"]);
+    // A local name must be a named worker here; anything else is refused.
+    assert!(!e.run(&["send", "leon", "note to self"]).status.success());
+    let state = e.p("state/reeve");
+    fs::create_dir_all(&state).unwrap();
+    let worker = serde_json::json!([{"name": "leon", "backend": "bg", "cwd": "/", "started": 1,
+        "report": state.join("reports/leon.md"), "handle": "x"}]);
+    fs::write(state.join("workers.json"), worker.to_string()).unwrap();
     let local = e.ok(&["send", "leon", "note to self", "--from", "scout"]);
-    assert!(local.contains("(local)"), "{local}");
+    assert!(
+        local.starts_with("queued ") && local.contains("for leon"),
+        "{local}"
+    );
     let a = message("20261029T170000Z-aaaaaa", "hermes@myserver", "question one");
     let b = message("20261029T170001Z-bbbbbb", "hermes@myserver", "question two");
     outbox_put(&e, "myserver", &a);
