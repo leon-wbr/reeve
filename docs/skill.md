@@ -54,7 +54,7 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs and who waits
 ```
 
-You decide what's heavy; when in doubt, queue it. Quick commands such as one unit test skip it. It limits load, it is not a lock: commands sharing one e2e database or port can still collide.
+You decide what's heavy; when in doubt, queue it. Quick commands such as one unit test skip it. It limits load, not collisions on one database or port. Prefer isolation (a per-run database or port). Only for a resource that can't be split, add `--lock KEY`: one run per key on the machine, freed on exit or kill.
 
 ## Questions for the user
 
@@ -70,4 +70,4 @@ You decide what's heavy; when in doubt, queue it. Quick commands such as one uni
 
 ## When reeve gets in the way
 
-`reeve feedback "what you ran, what happened, what you expected"` saves a note with reeve's version and recent events, and offers to file it. If `reeve` isn't on PATH, carry on without it. `reeve doctor` checks the install.
+`reeve feedback "what you ran, what happened, what you expected"` saves a note with reeve's version and recent events and offers to file it. If `reeve` isn't on PATH, carry on without it. `reeve doctor` checks the install.

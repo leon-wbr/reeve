@@ -323,3 +323,141 @@ fn in_a_terminal_the_command_can_read_from_it() {
         .unwrap();
     assert!(stdout(&finish(c, 10)).contains("read it"));
 }
+
+/// Runs `script` under `--lock key`; the script marks that it is inside with a directory named
+/// after the key and fails (exit 99) if another run on the same key is already inside.
+fn locked(state: &Path, key: &str, script: &str) -> Child {
+    heavy(
+        state,
+        &["--lock", key, "--label", key, "--", "sh", "-c", script],
+    )
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap()
+}
+
+#[test]
+fn runs_on_the_same_lock_key_never_overlap() {
+    let d = tempfile::tempdir().unwrap();
+    let inside = d.path().join("inside");
+    let script = format!(
+        "mkdir {0} || exit 99; sleep 0.2; rmdir {0}",
+        inside.display()
+    );
+    let children: Vec<Child> = (0..5)
+        .map(|_| locked(d.path(), "shared-db", &script))
+        .collect();
+    for c in children {
+        assert_eq!(finish(c, 20).status.code(), Some(0));
+    }
+}
+
+#[test]
+fn runs_on_different_lock_keys_overlap() {
+    let d = tempfile::tempdir().unwrap();
+    // Each run waits for the other's marker, so they only finish if both are inside at once.
+    let script = |mine: &str, theirs: &str| {
+        format!(
+            "touch {0}/{mine}; i=0; while [ ! -e {0}/{theirs} ]; do i=$((i+1)); [ $i -gt 200 ] && exit 99; sleep 0.05; done",
+            d.path().display()
+        )
+    };
+    let a = locked(d.path(), "db-a", &script("a", "b"));
+    let b = locked(d.path(), "db-b", &script("b", "a"));
+    assert_eq!(finish(a, 20).status.code(), Some(0));
+    assert_eq!(finish(b, 20).status.code(), Some(0));
+}
+
+#[test]
+fn a_lock_waiter_names_the_holder_and_ls_shows_holder_and_waiter() {
+    let d = tempfile::tempdir().unwrap();
+    let started = d.path().join("started");
+    let holder = locked(
+        d.path(),
+        "shared-db",
+        &format!("touch {}; sleep 30", started.display()),
+    );
+    wait_for("the holder to start", || started.exists());
+    let waiter = heavy(
+        d.path(),
+        &["--lock", "shared-db", "--label", "second", "--", "true"],
+    )
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    wait_for("the waiter to show in ls", || {
+        stdout(&run(d.path(), &["ls"])).contains("second")
+    });
+    let ls = stdout(&run(d.path(), &["ls"]));
+    assert!(
+        ls.contains("lock shared-db") && ls.contains(&format!("pid {}", holder.id())),
+        "{ls}"
+    );
+    assert!(
+        ls.lines().any(|l| l.starts_with("waiting")
+            && l.contains("second")
+            && l.contains("lock shared-db")),
+        "{ls}"
+    );
+    stop(holder);
+    let out = finish(waiter, 10);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("waiting for lock shared-db") && err.contains("shared-db (pid"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_killed_run_frees_its_lock_once_its_command_is_gone() {
+    let d = tempfile::tempdir().unwrap();
+    let pidfile = d.path().join("cmd.pid");
+    let mut holder = locked(
+        d.path(),
+        "shared-db",
+        &format!(
+            "echo $$ > {0}.tmp; mv {0}.tmp {0}; sleep 30",
+            pidfile.display()
+        ),
+    );
+    wait_for("the holder to start", || pidfile.exists());
+    let group: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SIGKILL gives reeve heavy no chance to clean up.
+    unsafe { libc::kill(holder.id() as i32, libc::SIGKILL) };
+    holder.wait().unwrap();
+    let next = heavy(d.path(), &["--lock", "shared-db", "--", "true"])
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let mut next = next;
+    assert!(
+        next.try_wait().unwrap().is_none(),
+        "took the lock while the command still ran"
+    );
+    unsafe { libc::kill(-group, libc::SIGKILL) };
+    assert!(finish(next, 10).status.success());
+}
+
+#[test]
+fn a_run_that_ends_or_is_terminated_frees_its_lock() {
+    let d = tempfile::tempdir().unwrap();
+    let started = d.path().join("started");
+    let holder = locked(
+        d.path(),
+        "shared-db",
+        &format!("touch {}; sleep 30", started.display()),
+    );
+    wait_for("the holder to start", || started.exists());
+    stop(holder);
+    assert!(
+        run(d.path(), &["--lock", "shared-db", "--", "true"])
+            .status
+            .success()
+    );
+}
