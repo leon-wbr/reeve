@@ -2,7 +2,7 @@
 
 A small local CLI for running several coding agents (Claude Code or Codex) side by side on one machine. Three things work today:
 
-- **A queue for heavy commands.** `reeve heavy -- cargo test` waits for a free slot, so parallel agents take turns on test suites, builds and installs instead of running them all at once ([docs/heavy.md](docs/heavy.md)).
+- **A queue for heavy commands.** `reeve heavy -- cargo test` waits for a free slot, so parallel agents take turns on test suites, builds and installs instead of running them all at once (and `--lock KEY` for the rare resource that can't be shared) ([docs/heavy.md](docs/heavy.md)).
 - **Named workers with reports.** `reeve run --name NAME -- "PROMPT"` starts an agent that outlives your session and writes its report to a known file. `reeve ls`, `reeve watch` and `reeve report` follow it from any session, later ones included.
 - **Handoff before the context runs out.** A hook tells a session when it passes its context threshold, and `reeve handoff` starts a named successor with its notes and the list of running workers.
 

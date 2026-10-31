@@ -32,7 +32,7 @@ Follow every worker you start with `reeve watch NAME...`: in Claude Code the Mon
 
 A **gone** worker stopped without a report. See what it left (`reeve wait NAME` says where), then restart it under the same name saying where to pick up, or report it lost. `reeve rm NAME` drops it.
 
-Workers suit long or parallel work; for short work you need now, a subagent is simpler.
+Workers suit long or parallel work; short work is simpler as a subagent.
 
 ## Handoffs
 
@@ -42,11 +42,11 @@ You don't see your own context usage: the hook `reeve setup claude` (or `codex`)
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It writes the handoff file and starts the successor as a worker told to read it. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` before redoing anything. `ls` closes the old session once idle, or says why. A message the user sends the old session after the handoff goes to the successor's tab instead, and the old session closes; don't relay one by hand.
+It writes the handoff file and starts the successor as a worker told to read it. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. `ls` closes the old session once idle, or says why. A later user message to the old session goes to the successor's tab and the old session closes; don't relay it.
 
 ## Heavy commands on a shared machine
 
-Agents share this machine. Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. Never run it in the foreground: start it in the background (Claude Code: `run_in_background`, set by reeve's hook; Codex: a background terminal) and keep working.
+Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. Never run it in the foreground; start it in the background (Claude Code: `run_in_background`, set by reeve's hook; Codex: a background terminal).
 
 ```sh
 reeve heavy -- cargo test
@@ -54,11 +54,11 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs and who waits
 ```
 
-You decide what's heavy; when in doubt, queue it. Only quick commands such as `git status` or one unit test skip it. It limits load, it is not a lock: commands sharing one e2e database or port can still collide.
+You decide what's heavy; when in doubt, queue it. Quick commands such as `git status` skip it. It limits load, not collisions on one database or port. Prefer isolation (a per-run database or port). Only for a resource that can't be split, add `--lock KEY`: one run per key on the machine, freed on exit or kill.
 
 ## Questions for the user
 
-`reeve ask "QUESTION"` queues a question and blocks until it is answered, then prints the answer; run it in the background. `reeve asks` lists open ones, `reeve answer ID "TEXT"` answers one.
+`reeve ask "QUESTION"` queues a question and blocks until answered, then prints the answer; run it in the background. `reeve asks` lists open ones, `reeve answer ID "TEXT"` answers one.
 
 ## Other machines
 
@@ -70,4 +70,4 @@ You decide what's heavy; when in doubt, queue it. Only quick commands such as `g
 
 ## When reeve gets in the way
 
-`reeve feedback "what you ran, what happened, what you expected"` saves a note with reeve's version and recent events, and offers to file it. If `reeve` isn't on PATH, carry on without it. `reeve doctor` checks the install.
+`reeve feedback "what you ran, what happened, what you expected"` saves a note with reeve's version and recent events and offers to file it. If `reeve` isn't on PATH, carry on without it. `reeve doctor` checks the install.
