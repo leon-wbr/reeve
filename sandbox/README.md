@@ -54,4 +54,4 @@ curl -s https://static.rust-lang.org/dist/channel-rust-stable.toml | grep -m1 -A
 cargo update --dry-run                                                                     # crates
 ```
 
-Then edit the pins, run `cargo update`, `cargo test`, `cargo clippy --all-targets -- -D warnings`, rebuild reeve and run `reeve sandbox build`. `--claude-version` tries another Claude Code version without changing the pin.
+Then edit the pins, run `cargo update`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, rebuild reeve and run `reeve sandbox build`. `--claude-version` tries another Claude Code version without changing the pin.

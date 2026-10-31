@@ -57,7 +57,10 @@ For Codex, `reeve setup codex` does the same with Codex's hooks, skills and rule
 - `reeve update [--dry-run]`: upgrade reeve itself and Claude Code and Codex. Each agent CLI is upgraded with whatever installed it (a Homebrew cask or formula, global npm, or `claude update` for Claude's own installer), through `reeve heavy`, and print the versions before and after. It tells the install from where the executable on PATH really lives, leaves one it doesn't know alone, and skips an agent while a worker of it is still starting. reeve records the checkout it was built in: `update` fetches it and, if the installed commit lacks commits of `origin/<default branch>`, builds that commit from a detached worktree at `<checkout>/.claude/worktrees/install-main` (never touching the checkout's own working tree), installs it with `cargo install --path` through `reeve heavy`, and prints the version before and after; a build without a git checkout (crates.io, tarball) is skipped with a message. To run it on a schedule, use cron or launchd with a PATH that finds reeve, the CLIs and their installer, e.g. the crontab line `0 9 * * * PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin reeve update`.
 - `reeve doctor`: check PATH, the setup's version, the state dir, the agent CLIs and gone workers, and warn when the installed build is behind `origin` (as last fetched).
 - `reeve --version`: the package version with the build's commit and date, `-dirty` after the commit if the tree had changes, e.g. `reeve 0.1.0 (271c42c 2026-10-31)`; a build outside a git checkout prints just `reeve 0.1.0`.
-- `reeve bench entry`: run fresh sessions on four cases and report whether each chose well, which can mean not using reeve.
+
+## The benchmark
+
+The benchmark is a separate binary, `reeve-bench`, in [crates/reeve-bench](crates/reeve-bench), so `cargo install --path .` installs only reeve. Build both with `cargo build --workspace`, or install it with `cargo install --path crates/reeve-bench`; it looks for `reeve` beside itself. `reeve-bench entry` runs fresh sessions on four cases and reports whether each chose well, which can mean not using reeve. `reeve-bench --help` lists the rest; the scenarios and results are in [bench/](bench/).
 
 ## Where it's going
 
