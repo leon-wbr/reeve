@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::io::Read;
 
 /// Whether a shell command starts with `reeve heavy`, after any `VAR=value` assignments and with
-/// reeve named by any path. `reeve heavy ls` is quick and stays in the foreground.
+/// reeve named by any path. `reeve heavy ls` and `stop` are quick and stay in the foreground.
 pub fn starts_heavy(command: &str) -> bool {
     let mut words = command
         .split_whitespace()
@@ -14,7 +14,9 @@ pub fn starts_heavy(command: &str) -> bool {
     let reeve = words
         .next()
         .is_some_and(|w| w.rsplit('/').next() == Some("reeve"));
-    reeve && words.next() == Some("heavy") && !matches!(words.next(), Some("ls" | "--help" | "-h"))
+    reeve
+        && words.next() == Some("heavy")
+        && !matches!(words.next(), Some("ls" | "stop" | "--help" | "-h"))
 }
 
 fn is_name(k: &str) -> bool {
@@ -71,6 +73,7 @@ mod tests {
         }
         for c in [
             "reeve heavy ls",
+            "reeve heavy stop 123",
             "reeve heavy --help",
             "reeve ls",
             "reeve",
