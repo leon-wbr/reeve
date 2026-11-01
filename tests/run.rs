@@ -1396,6 +1396,42 @@ fn ls_leaves_out_old_finished_workers_whose_pane_is_gone_but_never_a_live_one() 
 }
 
 #[test]
+fn the_users_sessions_start_with_what_waits_on_them_and_plain_workers_dont() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["a", "b"]);
+    let b = root.join("state/reeve/reports/b.md");
+    std::fs::write(&b, "partial\n\nThe PR needs opening.\n").unwrap();
+
+    let brief = |pane: &str| {
+        let o = reeve_with(
+            &root,
+            &project,
+            &["ls", "--brief"],
+            &[("HERDR_PANE_ID", pane)],
+        );
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let user = brief("p-user");
+    assert!(user.contains("Waiting on you (1):"), "{user}");
+    assert!(user.contains("- b partial, "), "{user}");
+    assert!(user.contains("s: The PR needs opening."), "{user}");
+    assert!(!brief("p-a").contains("Waiting on you"));
+    std::fs::create_dir_all(root.join("state/reeve/handoffs")).unwrap();
+    std::fs::write(root.join("state/reeve/handoffs/a.md"), "notes").unwrap();
+    assert!(brief("p-a").contains("Waiting on you (1):"));
+
+    let o = reeve(&root, &project, &["waiting"]);
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(out.starts_with("Waiting on you (1):"), "{out}");
+    std::fs::write(&b, "done\n\nOpened the PR.\n").unwrap();
+    let out = String::from_utf8_lossy(&reeve(&root, &project, &["waiting"]).stdout).into_owned();
+    assert!(!out.contains("Waiting on you"), "{out}");
+    assert!(out.contains("Done in the last 2 days (1): b."), "{out}");
+}
+
+#[test]
 fn a_prompt_in_a_session_that_has_not_handed_off_is_left_alone() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();

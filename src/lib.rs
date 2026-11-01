@@ -16,6 +16,7 @@ pub mod setup;
 mod ssh;
 mod stats;
 mod update;
+mod waiting;
 mod watch;
 pub mod workers;
 
@@ -178,6 +179,10 @@ enum Top {
         #[arg(long)]
         dry_run: bool,
     },
+    /// What waits on the user (blocked workers, partial, failed or lost work from the last 2
+    /// days), then what runs and what finished lately. Worked out from reeve's records each
+    /// time; nothing is stored
+    Waiting,
     /// Machines reachable over ssh, each with a plain message box (see docs/remotes.md)
     #[command(subcommand)]
     Remote(RemoteCmd),
@@ -640,12 +645,21 @@ pub fn main() -> ExitCode {
             workers()
                 .and_then(|r| {
                     tidy_predecessors(&r);
-                    let hint = workers::caller(&r, &workers::Caller::from_env())
-                        .map(|w| inbox::start_hint(&w.name, w.agent));
-                    Ok((workers::ls_brief(&r)?, hint))
+                    let me = workers::caller(&r, &workers::Caller::from_env());
+                    let hint = me.as_ref().map(|w| inbox::start_hint(&w.name, w.agent));
+                    // The user's own sessions, and successors they hand off to, start with
+                    // what waits on the user; other workers have their own task.
+                    let user_facing = me
+                        .as_ref()
+                        .is_none_or(|w| r.handoff_path(&w.name).is_file());
+                    let waiting = user_facing
+                        .then(|| waiting::collect(&r).ok())
+                        .flatten()
+                        .map(|seen| waiting::waiting_section(&seen));
+                    Ok((workers::ls_brief(&r)?, waiting, hint))
                 })
-                .map(|(out, hint)| {
-                    for l in [Some(out), hint].into_iter().flatten() {
+                .map(|(out, waiting, hint)| {
+                    for l in [Some(out), waiting, hint].into_iter().flatten() {
                         if !l.is_empty() {
                             println!("{l}");
                         }
@@ -852,6 +866,13 @@ pub fn main() -> ExitCode {
             all,
             ..
         }) => inbox::list(from.as_deref(), to.as_deref(), unanswered, all),
+        Top::Waiting => workers()
+            .and_then(|r| waiting::collect(&r))
+            .map(|seen| match waiting::render(&seen) {
+                s if s.is_empty() => println!("Nothing waits on you, and no worker runs."),
+                s => println!("{s}"),
+            })
+            .map(|_| 0),
     };
     ev.finish(*result.as_ref().unwrap_or(&1), result.as_ref().err());
     if !ev.skip {
@@ -990,6 +1011,7 @@ mod tests {
             "--permission-mode auto` after `--`",
             "blocked",
             "Context check",
+            "reeve waiting",
             "Inside Herdr each worker gets its own tab",
             "not Herdr's agent commands",
             "(`--bg`, for that case only)",
