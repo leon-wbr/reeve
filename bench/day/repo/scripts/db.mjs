@@ -14,7 +14,7 @@ const alive = (pid) => {
 function log(entry) {
   mkdirSync(config.path, { recursive: true });
   appendFileSync(join(config.path, 'runs.jsonl'), JSON.stringify({
-    ...entry, heavy: process.env.REEVE_HEAVY_JOB === '1', cwd: process.cwd(),
+    ...entry, heavy: process.env.REEVE_HEAVY === '1', cwd: process.cwd(),
   }) + '\n');
 }
 

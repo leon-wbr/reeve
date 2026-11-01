@@ -16,6 +16,14 @@ fn scripted_rules_answer_only_questions_and_once_rules_once() {
     assert!(scripted(&u, "Do you want fries with that?", &[]).is_none());
     assert!(claimed("Everything is merged.\nALL DONE"));
     assert!(!claimed("all done soon"));
+    assert!(claimed("Merged.\n\n**ALL DONE**"));
+    assert!(claimed("ALL DONE."));
+    assert!(!claimed(
+        "ALL DONE isn't true yet because of item 3, so I've left that line off."
+    ));
+    // The question that ended the first real b0 run gets the rename answer.
+    let q = "- **Item 3, the `lowStock` rename:** I haven't touched it. What name do you want?";
+    assert_eq!(scripted(&u, q, &[]).unwrap().id, "rename");
 }
 
 #[test]
@@ -181,6 +189,18 @@ while IFS= read -r line; do
     commit "fixtures"
     say "Four are merged. What should the new name for lowStock be?"; result; continue
   fi
+  if [[ "$line" == *"Context check"* ]]; then
+    notes=$(printf '%s' "$line" | sed -E 's/.* questions\) to ([^,]*), and stop.*/\1/')
+    printf 'Renamed lowStock to reorderLevel. Left: the cart discount. End with ALL DONE.\n' > "$notes"
+    say "Notes written."; result; continue
+  fi
+  if [[ "$line" == *"take over"* ]]; then
+    cp "$sol/src/cart.js" src/ && commit "discount"
+    say "Everything is merged.\nALL DONE"; result; continue
+  fi
+  if [[ "$line" == *discount* && -n "$FAKE_DEFER" ]]; then
+    say "Noted."; result; continue
+  fi
   if [[ "$line" == *reorderLevel* ]]; then
     cp "$sol/src/config.js" "$sol/src/inventory.js" src/ && cp "$sol/README.md" . && commit "rename"; renamed=1
   fi
@@ -197,7 +217,7 @@ const FAKE_REEVE: &str = r#"#!/bin/bash
 ev="$XDG_STATE_HOME/reeve/events.jsonl"; mkdir -p "${ev%/*}"
 case "$1" in
   heavy) shift; [ "$1" = "--" ] && shift
-    REEVE_HEAVY_JOB=1 "$@"; c=$?
+    REEVE_HEAVY=1 "$@"; c=$?
     printf '{"command":"heavy","exit":%s,"heavy_wait_ms":1500}\n' "$c" >> "$ev"; exit $c ;;
   run) printf '{"command":"run","exit":0,"worker":"w"}\n' >> "$ev" ;;
   --skill) printf '{"command":"skill","exit":0}\n' >> "$ev"; echo manual ;;
@@ -206,6 +226,15 @@ esac
 "#;
 
 fn fake_run(arm: &str, mode: &str) -> (tempfile::TempDir, Value, String) {
+    fake_run_with(arm, mode, None, &[])
+}
+
+fn fake_run_with(
+    arm: &str,
+    mode: &str,
+    arm_json: Option<&str>,
+    env: &[(&str, &str)],
+) -> (tempfile::TempDir, Value, String) {
     let t = tempfile::tempdir().unwrap();
     let bin = t.path().join("fakes");
     fs::create_dir_all(&bin).unwrap();
@@ -236,7 +265,11 @@ fn fake_run(arm: &str, mode: &str) -> (tempfile::TempDir, Value, String) {
             ("FAKE_SOLUTION".into(), root.join("day/solution").into()),
             ("FAKE_MODE".into(), mode.into()),
             ("FAKE_LOG".into(), log.clone().into()),
-        ],
+        ]
+        .into_iter()
+        .chain(env.iter().map(|(k, v)| (k.into(), v.into())))
+        .collect(),
+        arm_json: arm_json.map(String::from),
     };
     assert_eq!(run(&o).unwrap(), 0);
     let logs = o.trials.join("logs").join(format!("rd-{arm}-1"));
@@ -278,6 +311,26 @@ fn a_fake_reeve_session_shows_up_in_reeves_metrics() {
     assert_eq!(r["reeve"]["skillReads"], 1);
     assert_eq!(r["reeve"]["heavyWaitS"], json!(1.5));
     assert_eq!(r["db"]["rebuildsHeavy"], 1);
-    assert_eq!(r["params"]["handoffTokens"], 350_000);
+    assert_eq!(r["params"]["contextBudget"], 350_000);
     assert!(args.contains("bench/arms/reeve/settings.json"), "{args}");
+}
+
+#[test]
+fn a_vanilla_session_past_the_budget_hands_off_through_notes_and_its_successor_finishes() {
+    let arm = r#"{ "settingSources": "project,local", "contextBudget": 2500, "handoff": "notes" }"#;
+    let (_t, r, _) = fake_run_with("b0n", "b0", Some(arm), &[("FAKE_DEFER", "1")]);
+    assert_eq!(r["final"]["done"], true, "{r:#}");
+    assert!(r["contextCheckAt"].is_number(), "{r:#}");
+    assert!(r["handoffAt"].as_i64() >= r["contextCheckAt"].as_i64());
+    assert_eq!(r["successor"], "next");
+    assert_eq!(r["sessionCount"], 2, "predecessor and successor: {r:#}");
+    assert_eq!(r["interventions"].as_array().unwrap().len(), 1);
+    assert_eq!(r["params"]["handoff"], "notes");
+}
+
+#[test]
+fn the_notes_check_reads_like_reeves_and_names_the_file() {
+    let t = notes_check(41_234, 40_000, Path::new("/l/HANDOFF.md"));
+    assert!(t.starts_with("Context check: this session has used 41K tokens, past the 40K"), "{t}");
+    assert!(t.contains("questions) to /l/HANDOFF.md, and stop"), "{t}");
 }
