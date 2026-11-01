@@ -191,12 +191,12 @@ To run the full grid: `reeve-bench block --n 3 --jobs 4`, then `reeve-bench bloc
 
 ### Verdict: A1 (slim block) over A6 (skill stub only), with one open risk
 
-**Decision (Leon): the A1 block ships.** The block stays as `reeve setup claude --claude-md` writes it, PR 3 (drop the block for the skill stub, A6) is not built, and main's `setup::block()` is the A1 text the bench measured. Open risk below stays open.
+**Decision (Leon): the A1 block ships.** The block stays as `reeve setup claude --claude-md` writes it, PR 3 (drop the block for the skill stub, A6) is not built, and main's `setup::block()` is the A1 text the bench measured. The open risk below was closed on 1 Nov (see [November round](#november-round-1-nov)).
 
 - **Outcomes tie on Sonnet,** the model with n=3 (orchestrators identical, workers identical).
 - **A1 is cheaper and quicker:** 1.4 fewer turns on Sonnet orchestrators and 2.4 on workers, and 23–47% less cost on Opus. A6 spends the extra turns on reading the skill.
 - **A1 never produced a refused `--bg` call or a false positive** in its 50 runs across both models; A6 did once in its 50, on Opus.
-- **Open risk:** on Opus, A1 workers missed parallel (0/2) and handoff (1/2) where A6 did not. If a worker should split its own task or hand off on a Context check, run Opus workers on parallel and handoff at n≥5 per arm before relying on the block alone. If that holds, the fix to try is a line in the block on those two cases, not the skill stub.
+- **Open risk (closed 1 Nov: A1 workers fit 10/10 at n=5):** on Opus, A1 workers missed parallel (0/2) and handoff (1/2) where A6 did not. If a worker should split its own task or hand off on a Context check, run Opus workers on parallel and handoff at n≥5 per arm before relying on the block alone. If that holds, the fix to try is a line in the block on those two cases, not the skill stub.
 - **Limits:** Opus is n=2 per cell, so it can't rank the arms. The bench runs in acceptEdits mode, not auto, the worker brief omits the `reeve heavy` sentence real workers get, and the CLAUDE.md block is a project file, not the user-level one.
 
 ### Align runs, Sonnet, orchestrator unless noted
@@ -214,3 +214,95 @@ To run the full grid: `reeve-bench block --n 3 --jobs 4`, then `reeve-bench bloc
 - **A3's rows in the away runs** ran on a prototype whose manual also taught a `reeve run --goal` flag, which was parked and isn't in reeve. A rerun of A3 measures a different manual. A5's rows are the manual-line answer.
 - [align-away-smoke-contaminated](results/align-away-smoke-contaminated.tsv) is kept for the record: there the shim answered `reeve --skill` with the current manual in every arm, so A3 and A5 saw the same text. The bench now answers with the arm's own manual.
 - **A1 against A6** changes no outcome on heavy or short, at a few more turns for A6. Not measured: A6 on parallel or handoff at n > 1, and any model besides Sonnet.
+
+## November round (1 Nov)
+
+Three batches after #37–#41, on `reeve-bench` at dedf9ad plus an arm `args` file (below). Each batch was measured against the plan's weekly limit; see [Cost against the weekly limit](#cost-against-the-weekly-limit).
+
+### Batch N1: block smoke after the manual changes, Sonnet, n=1 ([results/block-smoke-nov.tsv](results/block-smoke-nov.tsv))
+
+`docs/skill.md` changed in #37, #38 and #40. A1 is the slim block; A3 is A1 with the current manual pasted in. 20 runs, $0.90.
+
+| Arm | Role | heavy | parallel | handoff | short | away | skill first | false pos. | turns | cost $ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A1 | orch | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 4/5 | 0/5 | 4.6 | 0.04 |
+| A1 | worker | 1/1 | 1/1 | 1/1 | 1/1 | 0/1 | 4/5 | 0/5 | 4.6 | 0.04 |
+| A3 | orch | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 4/5 | 0/5 | 4.8 | 0.04 |
+| A3 | worker | 1/1 | 1/1 | 1/1 | 1/1 | 0/1 | 4/5 | 0/5 | 5.0 | 0.05 |
+
+- **Verdict: no regression.** Both arms match the n=3 grid. The one miss per arm is the known worker away case: the worker ran the suite 20 times through heavy but did both "multi-hour" jobs itself, because the repo is two small files.
+
+### Batch N2: Opus workers on parallel and handoff, n=5 ([results/block-opus-workers-n5.tsv](results/block-opus-workers-n5.tsv))
+
+The open risk from the Opus pass. 20 runs, $2.46.
+
+| Arm | Role | parallel | handoff | skill first | --bg refused | false pos. | turns | cost $ |
+|---|---|---|---|---|---|---|---|---|
+| A1 | worker | 5/5 | 5/5 | 10/10 | 0 | 0/10 | 5.0 | 0.11 |
+| A6 | worker | 5/5 | 5/5 | 10/10 | 0 | 0/10 | 7.2 | 0.14 |
+
+- **Verdict: the risk is closed.** A1 workers started two named workers in every parallel run and ran `reeve handoff` in every handoff run. The 0/2 and 1/2 of the Opus pass were noise. No extra block line is needed.
+- **A1 stays cheaper:** 2.2 fewer turns and about 20% less cost than A6, as before.
+
+### Batch N3: scenario, B0 isolated against reeve's current setup, n=3 ([results/scenario-reeve-nov.tsv](results/scenario-reeve-nov.tsv))
+
+- **Why a new B0:** `reeve-bench run` starts sessions with the owner's user settings. Those now carry reeve: the global CLAUDE.md block, the skill, and the SessionStart and context hooks. A probe confirmed a plain `claude -p` there sees all three. So "B0" was no longer vanilla.
+- **Arms:**
+  - **b0-iso:** `--setting-sources project,local` through the arm's new `args` file, so no user settings, CLAUDE.md, skills, hooks or plugins, and auto mode from the arm's `settings.json`.
+  - **reeve:** b0-iso plus what `reeve setup claude --claude-md` installs, as project files: the hooks and allow rules in `settings.json`, and the skill stub and the A1 block under `repo/.claude/`.
+  - The init events confirmed both ran in auto mode, and that the reeve skill was the only difference in their skill lists.
+- **Isolation:** the trials dir and base repo were under `$TMPDIR` (`REEVE_BENCH_DIR`, `REEVE_BENCH_BASE`), with no ancestor CLAUDE.md.
+- **Harness:** the current one, so the 4-minute reply latency of v5 on scenario v3. Pairs ran one b0-iso and one reeve run at a time.
+- **Outage:** an internet drop at about 18:50–19:20 Tbilisi killed pair 3. The simulated user exited and rv-reeve-3 logged API errors. Both runs were set aside unscored (they are in the TSV, marked invalid) and rerun as pair 4.
+
+| Arm | Interventions | Done | Min to done | Cost $ | Rename landed |
+|---|---|---|---|---|---|
+| b0-iso | 1, 1, 1 | 3/3 | 14.3 [13.8–15.5] | 0.41 [0.39–0.46] | last in all 3 |
+| reeve | 1, 1, 1 | 3/3 | 14.4 [11.9–18.0] | 0.54 [0.46–0.68] | last in all 3 |
+
+- **Verdict: no difference, at about 30% more cost.** Both arms hit the 1-intervention floor and the same median time. Neither had a false done.
+- **reeve's new pieces were never exercised.** The reeve sessions read `reeve --skill` first and then worked like vanilla:
+  - they ran the sub-second suite directly;
+  - they started no workers;
+  - they never sent a message or handed off.
+
+  So this scenario can't show whether inbox `reeve send` or handoff auto-close change anything. The extra cost is the manual and the hooks in context.
+- **`neverClaimed` is a harness artifact.** It fired in one run per arm, though both claimed done. With the 4-minute reply delay and the 5-minute claim grace, a claim counts only if it comes within about a minute of the check passing. Time to done comes from the check, so the table stands.
+- **b0-iso cost less than batch 4's B0** ($0.41 against $1.05). That B0 ran with the owner's whole user setup, under v3 latency, so the two aren't compared further.
+- **Next:** reeve's worker and handoff features need a scenario that uses them: the backlog bench in [PLAN.md](PLAN.md), or a long task that crosses the handoff threshold.
+
+### Cost against the weekly limit
+
+Readings of `usage --plan` (whole percents of the weekly limit, reset 2026-11-05 06:00 UTC):
+
+| Time (UTC) | Weekly | Point |
+|---|---|---|
+| 13:35 | 25% | task start, before the merge train finished |
+| 14:04 | 26% | before N1 |
+| 14:08 | 26% | after N1, before N2 |
+| 14:12 | 26% | after N2, before N3 |
+| 15:53:32 | 26% | after N3's last run |
+| 15:53:51 | 27% | the same, 20 s later |
+
+| Batch | Runs | $ (bench-reported) | Weekly Δ |
+|---|---|---|---|
+| N1 | 20 | 0.90 | 0 |
+| N2 | 20 | 2.46 | 0 |
+| N3 | 8 (6 scored, 2 lost to the outage) | 3.45 (2.94 scored, 0.51 lost) | +1 |
+| **All** | 48 | **6.81** | **+1 (26→27)** |
+
+- **Ratio: about $7 of bench-reported cost per 1% of the weekly limit.** The readings are whole percents, so the true change across the three batches is between 0 and 2 points. That means the ratio is at least $3.4 per 1%, with no useful upper bound.
+- **The $ undercount the real spend:**
+  - The block bench reports `total_cost_usd` from `claude -p`.
+  - The scenario bench prices transcripts at Sonnet list prices and leaves out the simulated user's calls.
+  - This orchestrating session (Opus) is outside both.
+- **Noise:** other sessions shared the plan:
+  - this session;
+  - `reeve-merge-train` (until 14:02);
+  - `reeve-prompt-pipeline`;
+  - `tr-3479-onto-main`;
+  - `weekend-session-3`;
+  - the owner's own work on a Trustroots PR during N3.
+
+  `reeve ls` and `herdr agent list` showed no others. The outage (18:50–19:20 Tbilisi) cost a pair and about 20 minutes.
+- **What it buys:** at about $7 per point, the plan's backlog calibration (about $10) is about 1.5% of a week, and a 30-minute parallel arm at n=2 ($20–60) is 3–9%.

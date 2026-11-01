@@ -475,6 +475,9 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
             args.extend([flag.into(), arm_dir.join(file).into()]);
         }
     }
+    if let Ok(extra) = fs::read_to_string(arm_dir.join("args")) {
+        args.extend(arm_args(&extra).into_iter().map(OsString::from));
+    }
     let mut comm = b
         .claude()
         .args(&args)
@@ -744,6 +747,14 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
     Ok(0)
 }
 
+/// An arm's `args` file: extra `claude` flags, one per line; blank lines and `#` lines skipped.
+fn arm_args(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
 fn push(arr: &mut Value, v: Value) {
     if let Some(a) = arr.as_array_mut() {
         a.push(v);
@@ -768,6 +779,12 @@ mod tests {
         for s in ["rv-b1-10", "rv-b1-12-x", "xrv-b1-1", "rv-b1-1x", ""] {
             assert!(!mine(r, s), "{s}");
         }
+    }
+
+    #[test]
+    fn arm_args_are_one_flag_per_line() {
+        let text = "# isolate\n--setting-sources\n project,local \n\n";
+        assert_eq!(arm_args(text), ["--setting-sources", "project,local"]);
     }
 
     #[test]

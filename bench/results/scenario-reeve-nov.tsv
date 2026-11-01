@@ -1,0 +1,9 @@
+arm	run	valid	interventions	done	false_done	never_claimed	min_to_done	rename_at_min	workers	unchecked_landings	cost_usd	error
+b0-iso	rv-b0-iso-1	yes	1	yes	no	no	13.8	13.8	0	1	0.392	
+b0-iso	rv-b0-iso-2	yes	1	yes	no	no	14.3	14.3	0	0	0.457	
+b0-iso	rv-b0-iso-4	yes	1	yes	-	yes	15.5	15.5	0	0	0.415	
+reeve	rv-reeve-1	yes	1	yes	-	yes	18.0	18.0	0	0	0.679	
+reeve	rv-reeve-2	yes	1	yes	no	no	14.4	14.4	0	1	0.536	
+reeve	rv-reeve-4	yes	1	yes	no	no	11.9	11.9	0	0	0.463	
+b0-iso	rv-b0-iso-3	no (outage)	0	no	-	no	-	-	0	0	0.326	sim exited exit status: 1
+reeve	rv-reeve-3	no (outage)	0	no	-	no	-	-	0	0	0.179	sim exited exit status: 1
