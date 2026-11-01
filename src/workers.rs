@@ -1303,7 +1303,11 @@ const POLL: Duration = Duration::from_secs(2);
 
 fn answer_where(w: &Worker) -> String {
     match (w.backend, w.agent) {
-        (Backend::Pane, _) => "in its tab".to_string(),
+        (Backend::Pane, _) => format!(
+            "in its tab (read it with `herdr pane read {0}`, answer with \
+             `herdr pane send-keys {0} enter` or a number key)",
+            w.handle
+        ),
         // Still starting: its session id isn't known yet.
         (Backend::Bg, Kind::Claude) if w.handle.is_empty() => {
             format!("from `claude agents`, where it is named {}", w.name)
@@ -1331,7 +1335,7 @@ fn left_where(w: &Worker) -> String {
 
 fn look_where(w: &Worker) -> String {
     match (w.backend, w.agent) {
-        (Backend::Pane, _) => "its tab".to_string(),
+        (Backend::Pane, _) => format!("its tab (`herdr pane read {}`)", w.handle),
         (Backend::Bg, Kind::Claude) => format!("`claude logs {}`", w.name),
         (Backend::Bg, Kind::Codex) => crate::setup::tilde(&exec_log(w)),
     }
@@ -2334,6 +2338,20 @@ mod tests {
         let r = Registry::at(temp("blocked"));
         let pane = worker(&r, "fix-a", "w1:p2");
         assert!(blocked_hint(&pane).contains("in its tab"));
+        // A coordinator reads and answers a pane by its id, which `reeve ls` doesn't show.
+        assert!(
+            blocked_hint(&pane).contains(
+                "(read it with `herdr pane read w1:p2`, answer with \
+                 `herdr pane send-keys w1:p2 enter` or a number key)"
+            ),
+            "{}",
+            blocked_hint(&pane)
+        );
+        assert!(
+            look_where(&pane).contains("`herdr pane read w1:p2`"),
+            "{}",
+            look_where(&pane)
+        );
         let bg = Worker {
             backend: Backend::Bg,
             handle: "ab12".into(),

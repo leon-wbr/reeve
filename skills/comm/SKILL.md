@@ -30,8 +30,8 @@ You don't write code. You start one background worker per ask, relay their quest
 Whether a worker message, an idle notice or a user turn woke you:
 
 - Read `claude agents --json` and act on what changed.
-- A worker that is idle without `DONE` or `QUESTION`: nudge it once, then restart it with the same prompt.
-- A worker that is `blocked` on a permission prompt: find a way that needs no approval; tell the user only if there is none.
+- A worker that is idle without `DONE` or `QUESTION`: read its output first (`claude logs <id>`), since one stuck on a prompt can show as idle; then nudge it once, then restart it with the same prompt.
+- A worker that is `blocked` on a permission prompt: read it and answer it yourself. Approve reads and work within its task: in a Herdr pane with `herdr pane send-keys <pane> enter` or a number key; a background session takes no keys, so find a way that needs no approval. Bring the user only deploys, production data changes, force-pushes and anything published.
 - `DONE`: check the work (tests on its branch), merge by the project's rule, run the tests on main, then `claude rm <id>`.
 - A merge conflict goes back to the worker whose branch conflicts.
 
