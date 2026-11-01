@@ -195,9 +195,9 @@ pub fn add_hook(settings: &mut Value, k: Kind) -> Result<bool, String> {
 /// `heavy`: it runs any command, so its rule would let any command past the classifier. Not
 /// `answer`: answers to the user's questions come from the user. `run` and `handoff` refuse
 /// agent flags that skip permission checks on the host (`run::unchecked_flag`).
-const ALLOWED: [&str; 13] = [
+const ALLOWED: [&str; 14] = [
     "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "feedback", "doctor",
-    "wait", "rm", "--skill",
+    "wait", "rm", "inbox", "--skill",
 ];
 
 /// Rules an earlier setup wrote that this one takes out again.
@@ -331,7 +331,7 @@ pub fn rules() -> String {
         "{RULES_START} reeve's bookkeeping writes ~/.local/state/reeve, which Codex's sandbox\n\
          # doesn't allow. `reeve heavy` isn't here: it runs any command, so Codex asks as usual.\n\
          prefix_rule(\n    pattern = [\"reeve\", [\"ls\", \"wait\", \"watch\", \"report\", \"rm\", \"run\", \
-         \"close\", \"handoff\", \"ask\", \"asks\", \"feedback\", \"doctor\"]],\n    decision = \"allow\",\n    \
+         \"close\", \"handoff\", \"ask\", \"asks\", \"feedback\", \"doctor\", \"inbox\"]],\n    decision = \"allow\",\n    \
          match = [\"reeve ls\", \"reeve run --name x -- go\"],\n    \
          not_match = [\"reeve heavy -- cargo test\"],\n)\n"
     )

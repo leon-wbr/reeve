@@ -27,13 +27,17 @@ Everything after `--` goes to codex, the prompt last, as with claude. The worker
 - **Hooks** in `~/.codex/hooks.json` (under `CODEX_HOME` when set), the same format as Claude Code's: `reeve ls --brief` at session start, and `reeve hook context` on prompts and tool calls. Codex runs a new or changed hook only after the user trusts it in `/hooks`, and reeve doesn't write that trust for them; setup says so.
 - **Skill stub** at `~/.agents/skills/reeve/SKILL.md`, where Codex looks for user skills. Same text as Claude's, pointing at `reeve --skill`.
 - **`--agents-md`** adds the marked reeve block to `~/.codex/AGENTS.md`. When that file links to `~/.claude/CLAUDE.md` and the block is already there, nothing changes.
-- **Rules** in `~/.codex/rules/reeve.rules` let reeve's own bookkeeping commands (`ls`, `wait`, `watch`, `report`, `rm`, `run`, `handoff`, `ask`, `asks`) run outside the sandbox, which can't write `~/.local/state/reeve`. `reeve heavy` isn't among them, since it runs any command, nor `reeve answer`, whose answers come from the user; Codex asks for those as for any other command that needs more than the sandbox.
+- **Rules** in `~/.codex/rules/reeve.rules` let reeve's own bookkeeping commands (`ls`, `wait`, `watch`, `report`, `rm`, `run`, `handoff`, `ask`, `asks`, `inbox`) run outside the sandbox, which can't write `~/.local/state/reeve`. `reeve heavy` isn't among them, since it runs any command, nor `reeve answer`, whose answers come from the user; Codex asks for those as for any other command that needs more than the sandbox.
 
 `reeve doctor` reports the Codex setup next to Claude's when codex is installed.
 
 ### Context check
 
 Codex hooks get no token count, but their `transcript_path` is the session's rollout file, whose `token_count` events carry `last_token_usage.input_tokens` (cached input included) and `model_context_window`. `reeve hook context` reads either transcript format. Codex's window (258K for gpt-6-astra) is below Claude's 350K default threshold, so for a transcript that names its window the threshold is at most 35% of it, the same share as Claude's 350K of a 1M window.
+
+### Messages
+
+Codex has no Monitor tool, so a Codex worker gets a message sent to it with `reeve send NAME` from `reeve hook context`, at its next prompt or tool call; the session-start line tells it so. A background `codex exec` worker exits after its turn and sees one only once resumed.
 
 ### Heavy commands
 

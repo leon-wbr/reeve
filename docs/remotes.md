@@ -24,10 +24,22 @@ ssh must already work without a prompt (a key in your agent, and the host known)
 | `remote init NAME` | Makes the box |
 | `remote sync [NAME] [--watch [--every SECS]]` | Pushes the queue, oldest first, then pulls the outbox. `--watch` keeps doing it |
 | `remote rm NAME [--force]` | Forgets the remote; refuses while messages are queued unless `--force` |
-| `send TO TEXT [--reply-to ID] [--ttl 24h] [--from NAME]` | TO is `name` (here) or `name@remote`. `-` as TEXT reads stdin |
-| `inbox [--from X] [--unanswered] [--all]`, `inbox show ID`, `inbox done ID` | Reads local files only |
+| `send TO TEXT [--reply-to ID] [--ttl 24h] [--from NAME]` | TO is a named worker here (see [Workers here](#workers-here)) or `name@remote`. `-` as TEXT reads stdin |
+| `inbox [--from X] [--to NAME] [--unanswered] [--all]`, `inbox show ID`, `inbox done ID` | Reads local files only |
+| `inbox --follow [--to NAME]` | A line per new message for a worker here, see below |
 
 `reeve doctor` has a line for remotes and for messages stuck in the queue. It contacts no one. `reeve ls` adds a row per remote, from the last contact, and opens no connection either.
+
+## Workers here
+
+`reeve send NAME "TEXT"` without a remote is for a named worker on this machine. It refuses a name `reeve ls` doesn't know, writes the message to the local inbox with `to` set to NAME, and returns. reeve never types into a worker's tab; the worker picks the message up itself, one of two ways:
+
+- **`reeve inbox --follow`**, which the worker keeps in Claude Code's Monitor tool from session start, re-armed when it expires (the expiry notice wakes it to do so). It finds the calling worker by its Herdr pane, else its Claude Code session in `claude agents`, else its Codex thread (`--to NAME` names one), and prints a line per new message, newlines shown as ` ⏎ `. An idle worker wakes on the line.
+- **`reeve hook context`**, on each prompt and tool call, adds the worker's new messages in full to its context: a busy worker, or Codex, which has no Monitor, sees them at its next tool call.
+
+Either one claims a message by moving it to `inbox/.read/` before showing it, so it is shown once, whichever comes first and however often the Monitor is re-armed. `reeve ls` adds an UNREAD column while a worker has messages it hasn't been shown. Expired messages stay in the inbox, unshown. The session-start hook (`reeve ls --brief`) tells a worker its name and to start the Monitor. A message the user sends a session after it handed off goes the same way, to its successor's inbox.
+
+Native option checked: Claude Code's Monitor tool does the waking, and its hooks the delivery to a busy session; reeve adds only the addressed queue that both read. reeve no longer types into a worker's Herdr tab, which Herdr refuses while the agent waits at a question and which no background session has.
 
 ## The box
 
@@ -97,7 +109,7 @@ Seen markers, delivered copies and read messages are kept 30 days on both sides.
 
 ## Safety
 
-- **A message never starts anything here.** No field is a command, a path, a hook or a skill, and nothing answers or runs because one arrived. An agent sees one only when it chooses to read the inbox.
+- **A message never starts anything here.** No field is a command, a path, a hook or a skill, and nothing answers or runs because one arrived. A message from a remote reaches an agent only when it chooses to read the inbox; it never goes to a worker on its own, whatever its `to` says.
 - **Identity is the box.** reeve stamps each pulled message with the remote it came through (`via`) and replaces any `via` the sender wrote. A `from` that doesn't match is shown as `via myserver, claims x@elsewhere`. Treat all remote text as untrusted data.
 - **No message text in a shell.** Every remote command is one fixed script. Its arguments are ids, a length and the box path, each checked and quoted, and message text goes only through stdin. Terminal escape characters in remote text are replaced when printed.
 - **Limits.** 64 KiB per body, 100 messages per pull, 5000 files in the local inbox; the rest waits on the remote.

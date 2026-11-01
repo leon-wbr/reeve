@@ -125,16 +125,55 @@ fn tail_of(path: &Path) -> io::Result<String> {
 /// get in the session's way, so every failure means no output. A session that handed off
 /// passes its prompts on instead (see `handoff::on_prompt`).
 pub fn hook(stdin: impl Read) -> Option<String> {
+    hook_with(stdin, messages)
+}
+
+/// `hook`, with where the session's messages come from.
+fn hook_with(stdin: impl Read, messages: impl FnOnce(&Value) -> Option<String>) -> Option<String> {
     let payload: Value = serde_json::from_reader(stdin).ok()?;
     if let Some(out) = crate::handoff::on_prompt(&payload) {
         return Some(out.to_string());
     }
-    let tail = tail_of(Path::new(payload["transcript_path"].as_str()?)).ok()?;
-    let env = std::env::var(ENV).ok();
-    let config = config_path().and_then(|p| fs::read_to_string(p).ok());
-    let limit = threshold(env.as_deref(), config.as_deref());
-    let n = notice(&payload, &tail, limit)?;
-    Some(output(payload["hook_event_name"].as_str()?, &n).to_string())
+    let event = payload["hook_event_name"].as_str()?;
+    if event != "UserPromptSubmit" && event != "PostToolUse" {
+        return None;
+    }
+    let check = || {
+        let tail = tail_of(Path::new(payload["transcript_path"].as_str()?)).ok()?;
+        let env = std::env::var(ENV).ok();
+        let config = config_path().and_then(|p| fs::read_to_string(p).ok());
+        notice(
+            &payload,
+            &tail,
+            threshold(env.as_deref(), config.as_deref()),
+        )
+    };
+    let parts: Vec<String> = [messages(&payload), check()]
+        .into_iter()
+        .flatten()
+        .collect();
+    (!parts.is_empty()).then(|| output(event, &parts.join("\n\n")).to_string())
+}
+
+/// The messages sent to this session's worker that it hasn't been shown yet, claimed so no
+/// other hook or follow shows them again. Who the session is gets looked up only when some
+/// worker has a message, so a quiet inbox costs one directory read.
+fn messages(payload: &Value) -> Option<String> {
+    use crate::{inbox, msg, workers};
+    let store = msg::Store::open().ok()?;
+    let now = msg::now_secs();
+    if inbox::unread_counts(&store, now).is_empty() {
+        return None;
+    }
+    let mut c = workers::Caller::from_env();
+    let unset = c.claude_session.is_none() && c.codex_thread.is_none();
+    if let Some(sid) = payload["session_id"].as_str().filter(|_| unset) {
+        c.claude_session = Some(sid.to_string());
+    }
+    let r = workers::Registry::at(workers::Registry::default_dir().ok()?);
+    let me = workers::caller(&r, &c)?;
+    let got = inbox::claim(&store, &me.name, now);
+    (!got.is_empty()).then(|| inbox::context(&got))
 }
 
 #[cfg(test)]
@@ -285,6 +324,10 @@ mod tests {
         assert_eq!(o["hookSpecificOutput"]["additionalContext"], n);
     }
 
+    fn missing_msg() -> String {
+        json!({ "hook_event_name": "PostToolUse", "transcript_path": "/nope" }).to_string()
+    }
+
     #[test]
     fn the_hook_reads_only_the_transcripts_tail_and_stays_quiet_on_bad_input() {
         let dir = tempfile::tempdir().unwrap();
@@ -292,12 +335,30 @@ mod tests {
         let filler = r#"{"type":"user","message":{"content":"x"}}"#.repeat(10_000);
         fs::write(&file, [filler, transcript(&[900_000])].join("\n")).unwrap();
         let p = json!({ "hook_event_name": "UserPromptSubmit", "transcript_path": file });
+        let hook = |b: &[u8]| hook_with(b, |_| None);
         let out: Value = serde_json::from_str(&hook(p.to_string().as_bytes()).unwrap()).unwrap();
         assert_eq!(
             out["hookSpecificOutput"]["hookEventName"],
             "UserPromptSubmit"
         );
         assert_eq!(hook(&b"not json"[..]), None);
+        // Messages show without a transcript, and beside the context check.
+        let mail = |b: &[u8]| hook_with(b, |_| Some("reeve: a message for you".into()));
+        let m: Value = serde_json::from_str(&mail(missing_msg().as_bytes()).unwrap()).unwrap();
+        assert_eq!(
+            m["hookSpecificOutput"]["additionalContext"],
+            "reeve: a message for you"
+        );
+        let both: Value = serde_json::from_str(&mail(p.to_string().as_bytes()).unwrap()).unwrap();
+        let ctx = both["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(
+            ctx.starts_with("reeve: a message") && ctx.contains("Context check"),
+            "{ctx}"
+        );
+        let start = json!({ "hook_event_name": "SessionStart" }).to_string();
+        assert_eq!(mail(start.as_bytes()), None);
         let missing = json!({ "hook_event_name": "UserPromptSubmit", "transcript_path": "/nope" });
         assert_eq!(hook(missing.to_string().as_bytes()), None);
     }
