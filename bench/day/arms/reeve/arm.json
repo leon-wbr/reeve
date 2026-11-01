@@ -1,6 +1,7 @@
 {
-  "note": "b0 plus what `reeve setup claude --claude-md` installs: hooks, allow rules, skill stub and block.",
+  "note": "b0 plus what `reeve setup claude --claude-md` installs: hooks, allow rules, skill stub and block. reeve's own hook asks for the handoff past 40K of context.",
   "model": "sonnet",
   "settingSources": "project,local",
-  "setup": "arms/reeve"
+  "setup": "arms/reeve",
+  "contextBudget": 40000
 }

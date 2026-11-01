@@ -131,6 +131,7 @@ fn day_opts(
         rebuild_s,
         sim_model,
         extra_env: vec![],
+        arm_json: None,
     })
 }
 
