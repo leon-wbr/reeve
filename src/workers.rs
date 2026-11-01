@@ -1094,7 +1094,7 @@ const BRIEF_NAMES: usize = 8;
 pub const BRIEF_MAX: usize = 1000;
 
 /// The brief shows only when other workers share the machine, which is when the queue matters.
-const HEAVY_REMINDER: &str = " Heavy commands go through `reeve heavy`, in the background.";
+const HEAVY_REMINDER: &str = " Heavy commands go through `reeve heavy`.";
 
 /// One line for a session-start hook, e.g. `reeve: 2 workers: a running, b done (report
 /// ready).`, or nothing when there is nothing worth telling.
@@ -2296,12 +2296,12 @@ mod tests {
         assert_eq!(
             brief(&[("fix-x", State::Running, 60)]),
             "reeve: 1 worker: fix-x running. `reeve ls` shows details. Heavy commands go \
-             through `reeve heavy`, in the background."
+             through `reeve heavy`."
         );
         assert_eq!(
             brief(&[("a", State::Running, 60), ("b", State::Done, 60)]),
             "reeve: 2 workers: a running, b done (report ready). `reeve ls` shows details; \
-             `reeve report NAME` prints a report, then `reeve close NAME` tidies up. Heavy commands go through `reeve heavy`, in the background."
+             `reeve report NAME` prints a report, then `reeve close NAME` tidies up. Heavy commands go through `reeve heavy`."
         );
         let idle = brief(&[("c", State::Idle, 60)]);
         assert!(

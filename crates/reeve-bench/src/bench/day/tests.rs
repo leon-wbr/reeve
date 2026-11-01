@@ -311,7 +311,7 @@ fn a_fake_reeve_session_shows_up_in_reeves_metrics() {
     assert_eq!(r["reeve"]["skillReads"], 1);
     assert_eq!(r["reeve"]["heavyWaitS"], json!(1.5));
     assert_eq!(r["db"]["rebuildsHeavy"], 1);
-    assert_eq!(r["params"]["contextBudget"], 350_000);
+    assert_eq!(r["params"]["contextBudget"], 30_000);
     assert!(args.contains("bench/arms/reeve/settings.json"), "{args}");
 }
 
@@ -326,6 +326,14 @@ fn a_vanilla_session_past_the_budget_hands_off_through_notes_and_its_successor_f
     assert_eq!(r["sessionCount"], 2, "predecessor and successor: {r:#}");
     assert_eq!(r["interventions"].as_array().unwrap().len(), 1);
     assert_eq!(r["params"]["handoff"], "notes");
+}
+
+#[test]
+fn network_errors_are_found_in_transcripts_stderr_and_the_drivers_log() {
+    assert_eq!(network_errors(r#"{"text":"API Error: Connection error."}"#), 2);
+    assert_eq!(network_errors("TypeError: fetch failed\nECONNRESET"), 2);
+    assert_eq!(network_errors(r#"{"t":5,"event":"sim-error","error":"x"}"#), 1);
+    assert_eq!(network_errors(r#"{"api_error_status":null} all fine"#), 0);
 }
 
 #[test]
