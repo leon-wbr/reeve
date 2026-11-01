@@ -84,6 +84,10 @@ enum Cmd {
         #[arg(long)]
         with_invalid: bool,
     },
+    /// One run of the pressure scenario (bench/pressure/arms/<ARM>), named rp-<ARM>-<N>
+    Pressure { arm: String, n: String },
+    /// Per arm, median [min–max] of the pressure runs, tab-separated
+    PressureScore { arms: Vec<String> },
     /// Done-check a branch of a repo and print it as JSON
     Check { repo: PathBuf, branch: String },
     /// One run of the handoff scenario (bench/handoff/arms/<ARM>), named rh-<ARM>-<N>
@@ -130,6 +134,28 @@ fn day_opts(
         hold_s,
         rebuild_s,
         sim_model,
+        extra_env: vec![],
+        arm_json: None,
+    })
+}
+
+fn pressure_opts(arm: String, n: String) -> std::io::Result<bench::pressure::Opts> {
+    let claude = std::env::var_os("REEVE_BENCH_CLAUDE")
+        .map(PathBuf::from)
+        .or_else(|| bench::day::which("claude", None))
+        .ok_or_else(|| std::io::Error::other("no claude on PATH"))?;
+    Ok(bench::pressure::Opts {
+        arm,
+        n,
+        root: bench::root(),
+        trials: bench::trials(),
+        claude,
+        reeve: bench::reeve_bin()?,
+        home: bench::home(),
+        tick_ms: 2_000,
+        quiet_ms: 3 * 60_000,
+        total_ms: 30 * 60_000,
+        sample_ms: 1_000,
         extra_env: vec![],
         arm_json: None,
     })
@@ -195,6 +221,10 @@ fn main() -> ExitCode {
                 .map(|t| println!("{t}"))
                 .map(|_| 0)
         }
+        Cmd::Pressure { arm, n } => pressure_opts(arm, n).and_then(|o| bench::pressure::run(&o)),
+        Cmd::PressureScore { arms } => bench::pressure::score(&bench::trials(), &arms)
+            .map(|t| println!("{t}"))
+            .map(|_| 0),
         Cmd::Handoff { arm, n, real } => bench::handoff::run(&arm, &n, real),
         Cmd::HandoffScore { arms } => bench::handoff::score(&arms)
             .map(|out| println!("{out}"))

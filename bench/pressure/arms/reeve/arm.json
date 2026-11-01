@@ -1,0 +1,12 @@
+{
+  "note": "reeve's setup as `reeve setup claude --claude-md` installs it; six workers each run two 600 MB jobs through `reeve heavy` with three slots, on a machine with 1500 MB for jobs.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "workers": 6,
+  "jobs": 2,
+  "jobMb": 600,
+  "jobSeconds": 60,
+  "budgetMb": 1500,
+  "env": { "REEVE_HEAVY_SLOTS": "3" }
+}

@@ -212,7 +212,36 @@ pub fn reeve_wrapper(real: &Path, manual: &Path) -> String {
     )
 }
 
-fn write_exe(path: &Path, text: &str) -> io::Result<()> {
+/// The variables every session of a run needs, its own or its reeve's.
+const RUN_ENV: [&str; 6] = [
+    "HOME",
+    "PATH",
+    "XDG_STATE_HOME",
+    "REEVE_HOME",
+    "REEVE_HANDOFF_TOKENS",
+    "ORCH_HOME",
+];
+
+/// The arm's settings plus the run's environment under `env`. `claude --bg` sessions, reeve's
+/// workers and successors, are started by Claude Code's daemon with the daemon's environment,
+/// not the caller's, so without this their reeve keeps its state wherever the daemon's does:
+/// another run's, or the owner's.
+pub fn run_settings(arm: &str, env: &[(OsString, OsString)]) -> io::Result<String> {
+    let mut s: Value = serde_json::from_str(arm).map_err(io::Error::other)?;
+    let vars: Map<String, Value> = env
+        .iter()
+        .filter(|(k, _)| RUN_ENV.iter().any(|v| k == v) || k.to_string_lossy().starts_with("REEVE_BENCH_"))
+        .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned().into()))
+        .collect();
+    let obj = s.as_object_mut().ok_or_else(|| io::Error::other("settings aren't an object"))?;
+    let e = obj.entry("env").or_insert_with(|| json!({}));
+    if let Some(e) = e.as_object_mut() {
+        e.extend(vars);
+    }
+    Ok(serde_json::to_string_pretty(&s)? + "\n")
+}
+
+pub(super) fn write_exe(path: &Path, text: &str) -> io::Result<()> {
     fs::write(path, text)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
 }
@@ -409,7 +438,7 @@ fn check_in(
     Ok(json!({ "tests": tests, "tampered": tampered, "rebuilt": rebuilt, "items": items, "done": done }))
 }
 
-fn git(args: &[&OsStr]) -> io::Result<String> {
+pub(super) fn git(args: &[&OsStr]) -> io::Result<String> {
     let o = Command::new("git")
         .args(args)
         .stdin(Stdio::null())
@@ -428,7 +457,7 @@ macro_rules! git {
     ($($a:expr),* $(,)?) => { git(&[$(AsRef::<OsStr>::as_ref(&$a)),*]) };
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
+pub(super) fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;
     for e in fs::read_dir(src)? {
         let e = e?;
@@ -464,7 +493,7 @@ fn bg_sessions(claude: &Path, env: &[(OsString, OsString)], run: &str, dir: &Pat
         .collect()
 }
 
-fn stop_bg(claude: &Path, env: &[(OsString, OsString)], run: &str, dir: &Path) {
+pub(super) fn stop_bg(claude: &Path, env: &[(OsString, OsString)], run: &str, dir: &Path) {
     for a in bg_sessions(claude, env, run, dir) {
         for cmd in ["stop", "rm"] {
             let _ = Command::new(claude)
@@ -480,7 +509,7 @@ fn stop_bg(claude: &Path, env: &[(OsString, OsString)], run: &str, dir: &Path) {
     }
 }
 
-fn cleanup(base: &Path, run: &str, dir: &Path) -> io::Result<()> {
+pub(super) fn cleanup(base: &Path, run: &str, dir: &Path) -> io::Result<()> {
     if base.join(".git").exists() {
         let list = git!("-C", base, "worktree", "list", "--porcelain")?;
         for w in list.lines().filter_map(|l| l.strip_prefix("worktree ")) {
@@ -501,7 +530,7 @@ fn cleanup(base: &Path, run: &str, dir: &Path) -> io::Result<()> {
 }
 
 /// The run's transcripts: every `.jsonl` written since `since` in a project dir of the run.
-fn transcripts(home: &Path, run: &str, since: SystemTime) -> Vec<PathBuf> {
+pub(super) fn transcripts(home: &Path, run: &str, since: SystemTime) -> Vec<PathBuf> {
     let projects = home.join(".claude/projects");
     let mut out = vec![];
     let Ok(dirs) = fs::read_dir(&projects) else {
@@ -541,6 +570,124 @@ fn successor_name(state: &Path) -> Option<String> {
         .find(|p| p.extension().is_some_and(|x| x == "from"))
         .map(|p| p.file_stem().unwrap_or_default().to_string_lossy().into_owned())
 }
+
+/// The line `reeve handoff` starts a successor on; see reeve's `handoff::successor_prompt`.
+const TAKE_OVER: &str = "You take over from a previous session that handed off.";
+
+/// The text of a transcript's first user prompt.
+fn first_prompt(text: &str) -> Option<String> {
+    let m = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|m| m["type"] == "user" && m["isMeta"] != true)?;
+    let c = &m["message"]["content"];
+    Some(match c.as_array() {
+        Some(parts) => parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => c.as_str()?.to_string(),
+    })
+}
+
+/// The successor's transcript among `paths`: the first one created since the handoff whose
+/// first prompt is the handoff's. The predecessor writes on after the handoff, names the
+/// successor and says "handoff", so neither its mtime nor its text tells them apart.
+pub fn successor_transcript(paths: &[PathBuf], since: SystemTime) -> Option<PathBuf> {
+    let born = |p: &Path| fs::metadata(p).and_then(|m| m.created()).ok();
+    paths
+        .iter()
+        .filter(|p| !p.to_string_lossy().contains("/subagents/"))
+        .filter(|p| born(p).is_none_or(|t| t >= since))
+        .filter(|p| {
+            fs::read_to_string(p)
+                .ok()
+                .and_then(|t| first_prompt(&t))
+                .is_some_and(|f| f.contains(TAKE_OVER))
+        })
+        .min_by_key(|p| born(p))
+        .cloned()
+}
+
+/// Whether a shell command runs `reeve handoff`, not just mentions it.
+fn runs_handoff(cmd: &str) -> bool {
+    cmd.split(['\n', ';', '|', '&'])
+        .any(|seg| seg.trim_start().starts_with("reeve handoff"))
+}
+
+/// The `reeve handoff` calls in a transcript that succeeded, each tool call once across `seen`.
+/// Counted from the sessions' own transcripts, so every session's handoff counts, wherever its
+/// reeve kept its state.
+pub fn handoff_calls(text: &str, seen: &mut HashSet<String>) -> usize {
+    let msgs: Vec<Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let parts = |kind: &'static str| {
+        msgs.iter()
+            .flat_map(|m| m["message"]["content"].as_array().cloned().unwrap_or_default())
+            .filter(move |c| c["type"] == kind)
+    };
+    let ok: HashSet<String> = parts("tool_result")
+        .filter(|r| r["is_error"] != true)
+        .map(|r| js_str(r.get("tool_use_id")))
+        .collect();
+    parts("tool_use")
+        .filter(|c| c["name"] == "Bash" && runs_handoff(c["input"]["command"].as_str().unwrap_or("")))
+        .map(|c| js_str(c.get("id")))
+        .filter(|id| ok.contains(id) && seen.insert(id.clone()))
+        .count()
+}
+
+/// At most `max` bytes from the end of `text`, starting on a char boundary and, past the start,
+/// after the first line break, so the window holds whole lines.
+pub fn tail_window(text: &str, max: usize) -> &str {
+    let mut start = text.len().saturating_sub(max);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = &text[start..];
+    match tail.find('\n') {
+        Some(i) if start > 0 => &tail[i + 1..],
+        _ => tail,
+    }
+}
+
+/// Check errors in a row: fewer than `k` skip a tick each, `k` in a row end the run.
+pub struct Strikes {
+    k: usize,
+    row: usize,
+    pub errors: usize,
+}
+
+impl Strikes {
+    pub fn new(k: usize) -> Strikes {
+        Strikes { k, row: 0, errors: 0 }
+    }
+
+    /// The check's result; `None` to skip this tick; `Err` once `k` failed in a row.
+    pub fn note(&mut self, r: io::Result<Value>) -> Result<Option<Value>, String> {
+        match r {
+            Ok(v) => {
+                self.row = 0;
+                Ok(Some(v))
+            }
+            Err(e) => {
+                self.row += 1;
+                self.errors += 1;
+                if self.row >= self.k {
+                    Err(format!("{} checks in a row failed, the last: {e}", self.k))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+/// Check errors in a row that end a run.
+const STRIKES: usize = 3;
 
 /// New assistant text in a transcript since `offset`.
 fn tail_text(path: &Path, offset: &mut u64) -> Vec<String> {
@@ -661,15 +808,11 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         "scenario"
     )?;
 
-    let settings = match setup.as_ref().map(|s| s.join("settings.json")) {
-        Some(s) if s.is_file() => s,
-        _ => {
-            let s = logs.join("settings.json");
-            fs::write(&s, r#"{ "permissions": { "defaultMode": "auto" } }"#)?;
-            s
-        }
+    let settings = logs.join("settings.json");
+    let base_settings = match setup.as_ref().map(|s| s.join("settings.json")) {
+        Some(s) if s.is_file() => fs::read_to_string(s)?,
+        _ => r#"{ "permissions": { "defaultMode": "auto" } }"#.into(),
     };
-    write_exe(&bin.join("claude"), &claude_wrapper(&o.claude, &arm.flags(&settings)))?;
     if let (Some(m), Some(reeve)) = (&arm.manual, &o.reeve) {
         write_exe(&bin.join("reeve"), &reeve_wrapper(reeve, &arm_dir.join(m)))?;
     }
@@ -700,6 +843,8 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         ("ORCH_HOME".into(), o.trials.join(".orch-sink").into()),
     ]);
     env.extend(o.extra_env.iter().cloned());
+    fs::write(&settings, run_settings(&base_settings, &env)?)?;
+    write_exe(&bin.join("claude"), &claude_wrapper(&o.claude, &arm.flags(&settings)))?;
     let since = SystemTime::now();
     let r = Run {
         o,
@@ -729,7 +874,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     });
     let t = &o.timing;
     let notes_mode = arm.handoff.as_deref() == Some("notes");
-    let notes = logs.join("HANDOFF.md");
+    let mut notes = logs.join("HANDOFF.md");
+    // The vanilla handoffs so far, and whether the current session was told to hand off.
+    let (mut notes_handoffs, mut notes_told) = (0usize, false);
+    let mut strikes = Strikes::new(STRIKES);
     let mut used: Vec<String> = vec![];
     let (mut last_check, mut last_poll) = (i64::MIN / 2, clock());
     let mut bg_successor: Option<Successor> = None;
@@ -739,9 +887,13 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         let now = clock();
         if now - last_check >= t.check_ms {
             last_check = now;
-            let c = match check(&o.root, &dir, &run, &db, &db_text) {
-                Ok(c) => c,
-                Err(e) => break Some(e.to_string()),
+            let c = match strikes.note(check(&o.root, &dir, &run, &db, &db_text)) {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    r.log("check-error", json!({ "errors": strikes.errors }));
+                    continue;
+                }
+                Err(e) => break Some(e),
             };
             for k in ITEMS {
                 if c["items"][k] == true && result["itemsAt"][k].is_null() {
@@ -764,28 +916,41 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         }
         // The vanilla handoff: the harness tells the session what reeve's hook would, then
         // starts a fresh session on the notes once the old one has stopped.
-        if notes_mode && result["handoffAt"].is_null() {
-            if result["contextCheckAt"].is_null() {
+        // Every session past the budget hands off, successors too, as with reeve's hook.
+        if notes_mode {
+            if !notes_told {
                 let used_now = arm.context_budget.zip(front.context(&o.home, &run));
                 if let Some((budget, used_now)) = used_now.filter(|(b, u)| u >= b) {
                     let text = notes_check(used_now, budget, &notes);
                     r.log("context-check", json!({ "used": used_now }));
-                    result["contextCheckAt"] = json!(now - t0);
+                    if result["contextCheckAt"].is_null() {
+                        result["contextCheckAt"] = json!(now - t0);
+                    }
+                    notes_told = true;
                     front.say(&mut history, &text);
                 }
             } else if !front.busy() && fs::metadata(&notes).is_ok_and(|m| m.len() > 0) {
+                notes_handoffs += 1;
+                let role = match notes_handoffs {
+                    1 => "next".to_string(),
+                    n => format!("next-{n}"),
+                };
                 let first = format!(
-                    "You take over from a previous session that handed off. Read {} and continue the work from there.",
+                    "{TAKE_OVER} Read {} and continue the work from there.",
                     notes.display()
                 );
-                let mut next = Front::start(&r, &bin, "next", system.as_deref(), &dir, &first, &mut history)?;
+                let mut next = Front::start(&r, &bin, &role, system.as_deref(), &dir, &first, &mut history)?;
                 std::mem::swap(&mut front, &mut next);
                 let leftover = std::mem::take(&mut next.state.lock().unwrap().unread);
                 front.state.lock().unwrap().unread.extend(leftover);
                 next.stop();
-                r.log("handoff", json!({ "successor": "next" }));
-                result["handoffAt"] = json!(now - t0);
-                result["successor"] = json!("next");
+                r.log("handoff", json!({ "successor": role }));
+                if result["handoffAt"].is_null() {
+                    result["handoffAt"] = json!(now - t0);
+                    result["successor"] = json!(role);
+                }
+                notes_told = false;
+                notes = logs.join(format!("HANDOFF-{}.md", notes_handoffs + 1));
             }
         }
         if !notes_mode
@@ -805,15 +970,8 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         let mut succ_last = None;
         if let Some(s) = bg_successor.as_mut() {
             if s.transcript.is_none() {
-                // The newest transcript started after the handoff that names it: the successor
-                // runs where its predecessor did.
-                s.transcript = transcripts(&o.home, &run, s.since)
-                    .into_iter()
-                    .filter(|p| !p.to_string_lossy().contains("/subagents/"))
-                    .filter(|p| {
-                        fs::read_to_string(p).is_ok_and(|t| t.contains(&s.name) || t.contains("handoff"))
-                    })
-                    .max_by_key(|p| mtime_ms(p));
+                // The successor runs where its predecessor did.
+                s.transcript = successor_transcript(&transcripts(&o.home, &run, s.since), s.since);
             }
             if let Some(tp) = s.transcript.clone() {
                 let text = tail_text(&tp, &mut s.offset);
@@ -852,9 +1010,16 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         if !said.is_empty() {
             history.push(("communicator", said.clone()));
             if claimed(&said) {
-                let c = match check(&o.root, &dir, &run, &db, &db_text) {
-                    Ok(c) => c,
-                    Err(e) => break Some(e.to_string()),
+                let c = match strikes.note(check(&o.root, &dir, &run, &db, &db_text)) {
+                    Ok(Some(c)) => c,
+                    Ok(None) => {
+                        // Try the claim again next tick.
+                        r.log("check-error", json!({ "errors": strikes.errors }));
+                        history.pop();
+                        front.state.lock().unwrap().unread.insert(0, said);
+                        continue;
+                    }
+                    Err(e) => break Some(e),
                 };
                 result["claimedAt"] = json!(now - t0);
                 result["falseDone"] = (c["done"] != true).into();
@@ -909,26 +1074,45 @@ pub fn run(o: &Opts) -> io::Result<i32> {
             }
         }
     };
-    if let Some(e) = error {
-        result["error"] = e.into();
-    }
+    // From here on an error is recorded, not returned: the sessions are stopped, the result is
+    // written and the run is cleaned up whatever happens.
+    let mut errors: Vec<String> = error.into_iter().collect();
     if result["final"].is_null() {
-        result["final"] = check(&o.root, &dir, &run, &db, &db_text)?;
+        let mut s = Strikes::new(STRIKES);
+        result["final"] = loop {
+            match s.note(check(&o.root, &dir, &run, &db, &db_text)) {
+                Ok(Some(c)) => break c,
+                Ok(None) => thread::sleep(Duration::from_millis(t.tick_ms)),
+                Err(e) => {
+                    errors.push(format!("final check: {e}"));
+                    break json!({ "done": false, "error": e });
+                }
+            }
+        };
+        strikes.errors += s.errors;
     }
+    result["checkErrors"] = json!(strikes.errors);
     result["endedAt"] = json!(clock() - t0);
     front.stop();
     stop_bg(&o.claude, &r.env, &run, &dir);
-    finish(&r, &mut result, since, sim_cost, &db, &state)?;
+    if let Err(e) = finish(&r, &mut result, since, sim_cost, &db, &state, notes_handoffs) {
+        errors.push(format!("finish: {e}"));
+    }
     let bundle = logs.join("repo.bundle");
     let _ = git!("-C", dir, "bundle", "create", bundle, run);
     if let Ok(g) = git!("-C", dir, "log", "--oneline", "--graph", "--all", "-n", "60") {
-        fs::write(logs.join("git-log.txt"), g)?;
+        let _ = fs::write(logs.join("git-log.txt"), g);
     }
-    let _ = fs::copy(&notes, logs.join("HANDOFF.copy.md"));
-    fs::write(logs.join("result.json"), serde_json::to_string_pretty(&result)?)?;
+    if !errors.is_empty() {
+        result["error"] = errors.join("; ").into();
+        // The harness failed, not the agent: such a run says nothing about the arm.
+        result["invalid"] = true.into();
+    }
+    let written = fs::write(logs.join("result.json"), serde_json::to_string_pretty(&result)?);
     println!("{}", summary(&result));
     cleanup(&base, &run, &dir)?;
-    Ok(0)
+    written?;
+    Ok(if errors.is_empty() { 0 } else { 1 })
 }
 
 /// What the harness tells a session without reeve once it passes the budget: reeve's own
@@ -1025,9 +1209,7 @@ impl Front {
             .into_iter()
             .find(|p| p.file_name().is_some_and(|f| f == name.as_str()))?;
         let text = fs::read_to_string(file).ok()?;
-        let tail = &text[text.len().saturating_sub(256 * 1024)..];
-        let tail = tail.get(tail.find('\n').unwrap_or(0)..).unwrap_or(tail);
-        reeve::context::tokens(tail, 0)
+        reeve::context::tokens(tail_window(&text, 256 * 1024), 0)
     }
 
     fn stop(&mut self) {
@@ -1083,15 +1265,18 @@ fn finish(
     sim_cost: f64,
     db: &Path,
     state: &Path,
+    notes_handoffs: usize,
 ) -> io::Result<()> {
     let files = transcripts(&r.o.home, &r.run, since);
     let mut total = Usage::default();
     let mut seen = HashSet::new();
+    let (mut calls, mut handoffs) = (HashSet::new(), notes_handoffs);
     let mut sessions = vec![];
     let mut api_errors = 0;
     for f in &files {
         let text = fs::read_to_string(f).unwrap_or_default();
         api_errors += network_errors(&text);
+        handoffs += handoff_calls(&text, &mut calls);
         let mut u = Usage::default();
         u.add(&text, &mut seen);
         total.cost += u.cost;
@@ -1107,8 +1292,13 @@ fn finish(
             sessions.push(s);
         }
     }
-    for f in ["front.jsonl", "next.jsonl", "front.stderr", "next.stderr", "events.jsonl"] {
-        api_errors += network_errors(&fs::read_to_string(r.logs.join(f)).unwrap_or_default());
+    for e in fs::read_dir(&r.logs)?.flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        let session = (f.starts_with("front") || f.starts_with("next"))
+            && (f.ends_with(".jsonl") || f.ends_with(".stderr"));
+        if session || f == "events.jsonl" {
+            api_errors += network_errors(&fs::read_to_string(e.path()).unwrap_or_default());
+        }
     }
     let events = fs::read_to_string(state.join("reeve/events.jsonl")).unwrap_or_default();
     let dbm = db_metrics(&fs::read_to_string(db.join("runs.jsonl")).unwrap_or_default());
@@ -1118,6 +1308,7 @@ fn finish(
     result["sessions"] = json!(sessions);
     result["sessionCount"] = json!(sessions.len());
     result["reeve"] = reeve_metrics(&events);
+    result["handoffs"] = json!(handoffs);
     result["db"] = dbm;
     result["apiErrors"] = json!(api_errors);
     result["invalid"] = json!(api_errors > 0);
@@ -1158,8 +1349,18 @@ fn summary(r: &Value) -> Value {
         "doneMin": min(&r["doneAt"]), "interventions": r["interventions"].as_array().map_or(0, Vec::len),
         "falseDone": r["falseDone"], "neverClaimed": r["neverClaimed"], "cost": r["costUsd"],
         "workers": r["reeve"]["workersStarted"], "heavy": r["reeve"]["heavyRuns"],
-        "handoffs": r["reeve"]["handoffs"], "busy": r["db"]["busy"], "invalid": r["invalid"],
+        "handoffs": handoffs(r), "busy": r["db"]["busy"], "invalid": r["invalid"],
     })
+}
+
+/// Handoffs across all of a run's sessions. Results from before they were counted so have only
+/// reeve's own record, which holds one reeve state's.
+fn handoffs(r: &Value) -> &Value {
+    if r["handoffs"].is_null() {
+        &r["reeve"]["handoffs"]
+    } else {
+        &r["handoffs"]
+    }
 }
 
 fn items_done(r: &Value) -> usize {
@@ -1210,7 +1411,7 @@ pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<S
             col(&|r| r["reeve"]["heavyRuns"].as_f64(), 0),
             col(&|r| r["reeve"]["heavyWaitS"].as_f64(), 0),
             col(&|r| r["db"]["busy"].as_f64(), 0),
-            col(&|r| r["reeve"]["handoffs"].as_f64(), 0),
+            col(&|r| handoffs(r).as_f64(), 0),
         ]);
     }
     let widths: Vec<usize> = (0..header.len())
