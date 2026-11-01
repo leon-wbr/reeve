@@ -37,7 +37,21 @@ fn a_sample_sums_the_processes_in_the_run_and_their_children() {
     let pids: Vec<u32> = run.iter().map(|p| p.pid).collect();
     assert_eq!(pids, [100, 101, 102, 103, 110, 111, 300]);
     let s = sample(&run);
-    assert_eq!(s, Sample { rss_kb: 603_140, jobs_rss_kb: 600_000, sessions: 2, jobs: 1, procs: 7 });
+    assert_eq!(s, Sample { mem_kb: 603_140, jobs_mem_kb: 600_000, sessions: 2, jobs: 1, procs: 7 });
+}
+
+#[test]
+fn memory_is_tops_footprint_where_top_has_one() {
+    let top = "Processes: 9 total\nPID    MEM\n103    614M\n100    1.5G+\n101    12K-\n102    900B\n";
+    let fp = parse_top(top);
+    assert_eq!(fp.get(&103), Some(&628_736));
+    assert_eq!(fp.get(&100), Some(&1_572_864));
+    assert_eq!(fp.get(&101), Some(&12));
+    assert_eq!(fp.get(&102), Some(&0));
+    let mut all = parse_ps(PS);
+    footprints(&mut all, &fp);
+    let mem: Vec<u64> = all.iter().filter(|p| [103, 110].contains(&p.pid)).map(|p| p.mem_kb).collect();
+    assert_eq!(mem, [628_736, 50], "the job's footprint; RSS where top has none");
 }
 
 #[test]
@@ -137,7 +151,7 @@ fn a_fake_run_starts_the_workers_measures_the_jobs_and_is_scored() {
     assert_eq!(r["end"], "all done", "{r:#}");
     assert_eq!((r["jobs"].as_u64(), r["completed"].as_u64(), r["lost"].as_u64()), (Some(4), Some(4), Some(0)));
     assert!(r["doneAt"].as_i64().unwrap() > 0, "{r:#}");
-    assert!(r["peakRssMb"].as_f64().unwrap() >= 20.0, "a job's memory shows: {r:#}");
+    assert!(r["peakMemMb"].as_f64().unwrap() >= 20.0, "a job's memory shows: {r:#}");
     assert_eq!(r["reeve"]["heavyRuns"], 4, "{r:#}");
     assert_eq!(r["reeve"]["workersStarted"], 2, "{r:#}");
     assert_eq!(r["sessionCount"], 2, "{r:#}");
@@ -145,6 +159,7 @@ fn a_fake_run_starts_the_workers_measures_the_jobs_and_is_scored() {
     assert!(args.contains("--model sonnet --setting-sources project,local --settings "), "{args}");
     let s: Value = serde_json::from_str(&fs::read_to_string(logs.join("settings.json")).unwrap()).unwrap();
     assert_eq!(s["env"]["REEVE_HEAVY_SLOTS"], "3", "{s:#}");
+    assert_eq!(s["env"]["REEVE_HANDOFF_TOKENS"], "350000", "not the daemon's: {s:#}");
     assert!(s["hooks"].is_object(), "{s:#}");
     assert!(!o.trials.join("rp-fake-1").exists(), "the run's worktree is cleaned up");
     let table = score(&o.trials, &[]).unwrap();
