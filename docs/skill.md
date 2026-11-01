@@ -46,15 +46,16 @@ It starts the successor as a worker told to read the file. Stop once it returns.
 
 ## Heavy commands on a shared machine
 
-Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. Start it in the background (Claude Code: `run_in_background`; Codex: a background terminal).
+Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, typecheck or lint, builds and installs. It waits for a slot and free memory, and exits with the command's code. Start it in the background (Claude Code: `run_in_background`; Codex: a background terminal).
 
 ```sh
 reeve heavy -- cargo test
 reeve heavy --label e2e -- pnpm test:e2e
-reeve heavy ls           # who runs and who waits
+reeve heavy ls           # who runs, waits and why
+reeve heavy stop PID     # shell dying doesn't end a job; this does
 ```
 
-You decide what's heavy; when in doubt, queue it. Quick commands such as one unit test skip it. It limits load, not collisions on a shared database or port. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
+You decide what's heavy; when in doubt, queue it. One unit test can skip it. It limits load, not collisions on a shared database or port. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
 
 Runs time out after 30 minutes with a slot (exit 124): start visual/e2e runs narrow, and raise `--timeout 45m` only for a known full run.
 
