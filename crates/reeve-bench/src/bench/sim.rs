@@ -1,7 +1,7 @@
 //! The simulated user: reads what the communicator said and replies only from the answer key.
 
 use serde_json::{Value, json};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -15,6 +15,9 @@ pub struct Sim<'a> {
     pub silent_minutes: i64,
     pub env: &'a [(OsString, OsString)],
     pub cwd: &'a Path,
+    /// The `claude` to run and the model it plays the user with.
+    pub bin: &'a OsStr,
+    pub model: &'a str,
 }
 
 fn schema() -> String {
@@ -69,9 +72,10 @@ Decide what to do now:
     )
 }
 
+/// The user's decision, with what the call cost as `costUsd`.
 pub fn simulate(s: &Sim) -> io::Result<Value> {
-    let mut p = Command::new("claude")
-        .args(["-p", "--model", "sonnet", "--safe-mode", "--tools", ""])
+    let mut p = Command::new(s.bin)
+        .args(["-p", "--model", s.model, "--safe-mode", "--tools", ""])
         .args(["--output-format", "json", "--json-schema", &schema()])
         .env_clear()
         .envs(s.env.iter().map(|(k, v)| (k, v)))
@@ -88,10 +92,10 @@ pub fn simulate(s: &Sim) -> io::Result<Value> {
         return Err(io::Error::other(format!("sim exited {}", out.status)));
     }
     let r: Value = serde_json::from_slice(&out.stdout)?;
-    match r.get("structured_output") {
-        Some(v) if !v.is_null() => Ok(v.clone()),
-        _ => Ok(serde_json::from_str(
-            r["result"].as_str().unwrap_or_default(),
-        )?),
-    }
+    let mut v: Value = match r.get("structured_output") {
+        Some(v) if !v.is_null() => v.clone(),
+        _ => serde_json::from_str(r["result"].as_str().unwrap_or_default())?,
+    };
+    v["costUsd"] = r["total_cost_usd"].clone();
+    Ok(v)
 }
