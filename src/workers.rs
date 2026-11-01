@@ -1094,8 +1094,25 @@ pub fn started(w: &Worker) -> String {
     )
 }
 
-/// Workers older than this show in the brief listing only while they still have an agent.
-const BRIEF_DAYS: u64 = 7;
+/// How long a finished worker whose agent is gone stays in `reeve ls` and the brief.
+pub const RECENT_SECS: u64 = 12 * 3600;
+
+/// A worker is finished history once it is done or gone, its agent is absent and it finished
+/// over [`RECENT_SECS`] ago. Only `reeve ls --all` lists it; a live pane or session never is.
+pub fn history(s: State, a: Agent, finished_ago: u64) -> bool {
+    matches!(s, State::Done | State::Gone) && a == Agent::Absent && finished_ago > RECENT_SECS
+}
+
+/// Seconds since the worker wrote its report, or since it started when it wrote none.
+pub fn finished_ago(w: &Worker, now: u64) -> u64 {
+    let wrote = fs::metadata(&w.report)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    now.saturating_sub(w.started.max(wrote))
+}
+
 const BRIEF_NAMES: usize = 8;
 /// Far below the 10,000 characters Claude Code takes from a hook.
 pub const BRIEF_MAX: usize = 1000;
@@ -1104,24 +1121,16 @@ pub const BRIEF_MAX: usize = 1000;
 const HEAVY_REMINDER: &str = " Heavy commands go through `reeve heavy`, in the background.";
 
 /// One line for a session-start hook, e.g. `reeve: 2 workers: a running, b done (report
-/// ready).`, or nothing when there is nothing worth telling.
-pub fn brief(workers: &[(&str, State, u64)]) -> String {
-    let shown: Vec<_> = workers
-        .iter()
-        .filter(|(_, s, age)| {
-            matches!(
-                s,
-                State::Starting | State::Running | State::Idle | State::Blocked | State::Unknown
-            ) || *age < BRIEF_DAYS * 86400
-        })
-        .collect();
+/// ready).`, or nothing when there is nothing worth telling. `older` counts the finished history
+/// left out of `shown`.
+pub fn brief(shown: &[(&str, State)], older: usize) -> String {
     if shown.is_empty() {
         return String::new();
     }
     let mut parts: Vec<String> = shown
         .iter()
         .take(BRIEF_NAMES)
-        .map(|(name, s, _)| {
+        .map(|(name, s)| {
             let what = match s {
                 State::Starting => "starting",
                 State::Running => "running",
@@ -1138,15 +1147,19 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
         parts.push(format!("{} more", shown.len() - BRIEF_NAMES));
     }
     let n = shown.len();
+    let older = match older {
+        0 => String::new(),
+        k => format!(" ({k} older finished: `reeve ls --all`)"),
+    };
     let mut out = format!(
-        "reeve: {n} worker{}: {}. `reeve ls` shows details",
+        "reeve: {n} worker{}: {}{older}. `reeve ls` shows details",
         if n == 1 { "" } else { "s" },
         parts.join(", ")
     );
-    if shown.iter().any(|(_, s, _)| *s == State::Done) {
+    if shown.iter().any(|(_, s)| *s == State::Done) {
         out += "; `reeve report NAME` prints a report, then `reeve close NAME` tidies up";
     }
-    if shown.iter().any(|(_, s, _)| *s == State::Idle) {
+    if shown.iter().any(|(_, s)| *s == State::Idle) {
         out += "; look at an idle one and nudge it";
     }
     out.push('.');
@@ -1159,19 +1172,26 @@ pub fn brief(workers: &[(&str, State, u64)]) -> String {
     out + HEAVY_REMINDER
 }
 
-/// States for many workers, asking `claude agents` only once.
-fn states(all: &[Worker]) -> Vec<State> {
+/// States for many workers, asking `claude agents` only once, each with whether it is
+/// finished [`history`]. A worker whose agent was never asked about (it failed to start, or is
+/// still starting) counts as having none.
+fn states(all: &[Worker]) -> Vec<(State, bool)> {
     let mut bg: Option<Result<String, String>> = None;
     let now = now();
     all.iter()
         .map(|w| {
-            state_of(w, now, || match (w.backend, w.agent) {
-                (Backend::Pane, _) | (Backend::Bg, Kind::Codex) => agent(w),
-                (Backend::Bg, Kind::Claude) => {
-                    let p = bg.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
-                    bg_agent(p.as_deref().map_err(|e| e.as_str()), &w.handle)
-                }
-            })
+            let mut a = Agent::Absent;
+            let s = state_of(w, now, || {
+                a = match (w.backend, w.agent) {
+                    (Backend::Pane, _) | (Backend::Bg, Kind::Codex) => agent(w),
+                    (Backend::Bg, Kind::Claude) => {
+                        let p = bg.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
+                        bg_agent(p.as_deref().map_err(|e| e.as_str()), &w.handle)
+                    }
+                };
+                a
+            });
+            (s, history(s, a, finished_ago(w, now)))
         })
         .collect()
 }
@@ -1179,13 +1199,28 @@ fn states(all: &[Worker]) -> Vec<State> {
 pub fn ls_brief(r: &Registry) -> io::Result<String> {
     let all = r.all()?;
     let states = states(&all);
-    let now = now();
-    let rows: Vec<_> = all
+    let older = states.iter().filter(|(_, h)| *h).count();
+    let mut rows: Vec<_> = all
         .iter()
         .zip(states)
-        .map(|(w, s)| (w.name.as_str(), s, now.saturating_sub(w.started)))
+        .filter(|(_, (_, h))| !h)
+        .map(|(w, (s, _))| (w.name.as_str(), s, w.started))
         .collect();
-    Ok(brief(&rows))
+    brief_order(&mut rows);
+    let rows: Vec<_> = rows.into_iter().map(|(n, s, _)| (n, s)).collect();
+    Ok(brief(&rows, older))
+}
+
+/// The brief names only a few workers, so those waiting on someone come first (blocked, then
+/// idle), then the rest of the live ones, then finished ones; the newest first within each.
+pub fn brief_order(rows: &mut [(&str, State, u64)]) {
+    let rank = |s: &State| match s {
+        State::Blocked => 0,
+        State::Idle => 1,
+        State::Running | State::Starting | State::Unknown => 2,
+        State::Done | State::Gone => 3,
+    };
+    rows.sort_by_key(|(_, s, started)| (rank(s), std::cmp::Reverse(*started)));
 }
 
 /// Named workers that are gone without having written a report.
@@ -1194,7 +1229,7 @@ pub fn gone(r: &Registry) -> io::Result<Vec<String>> {
     Ok(all
         .iter()
         .zip(states(&all))
-        .filter(|(_, s)| *s == State::Gone)
+        .filter(|(_, (s, _))| *s == State::Gone)
         .map(|(w, _)| w.name.clone())
         .collect())
 }
@@ -1209,14 +1244,28 @@ pub struct Row {
     pub detail: String,
 }
 
-/// The table `reeve ls` prints. An UNREAD column, the messages each worker hasn't been shown,
+/// The table `reeve ls` prints: every worker with `all`, else all but finished [`history`],
+/// which a last line counts. An UNREAD column, the messages each worker hasn't been shown,
 /// appears only while some worker has one.
 pub fn ls(
     r: &Registry,
     extra: &[Row],
     unread: &std::collections::HashMap<String, usize>,
+    all: bool,
 ) -> io::Result<String> {
-    let all = r.all()?;
+    let everyone = r.all()?;
+    let states = states(&everyone);
+    let older = if all {
+        0
+    } else {
+        states.iter().filter(|(_, h)| *h).count()
+    };
+    let (all, states): (Vec<Worker>, Vec<State>) = everyone
+        .into_iter()
+        .zip(states)
+        .filter(|(_, (_, h))| all || !h)
+        .map(|(w, (s, _))| (w, s))
+        .unzip();
     let count = |name: &str| unread.get(name).copied().unwrap_or(0);
     let any = all.iter().any(|w| count(&w.name) > 0);
     let col = |n: usize| match (any, n) {
@@ -1243,7 +1292,7 @@ pub fn ls(
         "STATE",
         if any { "UNREAD  " } else { "" }
     );
-    for (w, state) in all.iter().zip(states(&all)) {
+    for (w, state) in all.iter().zip(states) {
         let backend = match w.backend {
             Backend::Pane => "pane",
             Backend::Bg => "bg",
@@ -1268,6 +1317,13 @@ pub fn ls(
             x.age,
             col(0),
             x.detail
+        );
+    }
+    if older > 0 {
+        out += &format!(
+            "\n{older} older finished worker{} (agent gone, finished over {}h ago): `reeve ls --all`",
+            if older == 1 { "" } else { "s" },
+            RECENT_SECS / 3600
         );
     }
     Ok(out)
@@ -1439,7 +1495,11 @@ pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
             .into_iter()
             .filter(|w| names.is_empty() || names.contains(&w.name))
             .collect();
-        let polled: Vec<_> = all.iter().cloned().zip(states(&all)).collect();
+        let polled: Vec<_> = all
+            .iter()
+            .cloned()
+            .zip(states(&all).into_iter().map(|(s, _)| s))
+            .collect();
         for line in w.step(&polled) {
             println!("{line}");
         }
@@ -2299,18 +2359,18 @@ mod tests {
 
     #[test]
     fn brief_names_each_worker_with_what_it_is_doing() {
-        assert_eq!(brief(&[]), "");
+        assert_eq!(brief(&[], 0), "");
         assert_eq!(
-            brief(&[("fix-x", State::Running, 60)]),
+            brief(&[("fix-x", State::Running)], 0),
             "reeve: 1 worker: fix-x running. `reeve ls` shows details. Heavy commands go \
              through `reeve heavy`, in the background."
         );
         assert_eq!(
-            brief(&[("a", State::Running, 60), ("b", State::Done, 60)]),
+            brief(&[("a", State::Running), ("b", State::Done)], 0),
             "reeve: 2 workers: a running, b done (report ready). `reeve ls` shows details; \
              `reeve report NAME` prints a report, then `reeve close NAME` tidies up. Heavy commands go through `reeve heavy`, in the background."
         );
-        let idle = brief(&[("c", State::Idle, 60)]);
+        let idle = brief(&[("c", State::Idle)], 0);
         assert!(
             idle.contains("; look at an idle one and nudge it."),
             "{idle}"
@@ -2318,15 +2378,88 @@ mod tests {
     }
 
     #[test]
-    fn brief_leaves_out_old_finished_workers_but_never_live_ones() {
-        let old = 8 * 86400;
-        assert_eq!(
-            brief(&[("a", State::Done, old), ("b", State::Gone, old)]),
-            ""
+    fn brief_counts_finished_history_in_a_few_words_and_is_empty_with_nothing_else() {
+        assert_eq!(brief(&[], 241), "");
+        let b = brief(&[("a", State::Running)], 241);
+        assert!(
+            b.starts_with("reeve: 1 worker: a running (241 older finished: `reeve ls --all`)."),
+            "{b}"
         );
-        let live = brief(&[("a", State::Idle, old), ("b", State::Gone, 3600)]);
-        assert!(live.starts_with("reeve: 2 workers: a idle"), "{live}");
-        assert!(live.contains("b gone without a report"), "{live}");
+    }
+
+    #[test]
+    fn the_brief_names_workers_waiting_on_someone_first_then_the_newest() {
+        let mut rows = vec![
+            ("old-done", State::Done, 1),
+            ("old-run", State::Running, 2),
+            ("new-done", State::Done, 9),
+            ("stuck", State::Blocked, 3),
+            ("gone", State::Gone, 5),
+            ("idle", State::Idle, 4),
+            ("new-run", State::Running, 8),
+        ];
+        brief_order(&mut rows);
+        let names: Vec<_> = rows.iter().map(|(n, ..)| *n).collect();
+        assert_eq!(
+            names,
+            [
+                "stuck", "idle", "new-run", "old-run", "new-done", "gone", "old-done"
+            ]
+        );
+    }
+
+    const H: u64 = 3600;
+    const AGENTS: [Agent; 5] = [
+        Agent::Working,
+        Agent::Idle,
+        Agent::Blocked,
+        Agent::Absent,
+        Agent::Unknown,
+    ];
+    const STATES: [State; 7] = [
+        State::Starting,
+        State::Running,
+        State::Idle,
+        State::Blocked,
+        State::Done,
+        State::Gone,
+        State::Unknown,
+    ];
+
+    #[test]
+    fn a_worker_with_a_live_pane_or_session_is_never_hidden() {
+        for a in AGENTS.into_iter().filter(|a| *a != Agent::Absent) {
+            for s in STATES {
+                for ago in [0, H, 13 * H, 30 * 24 * H, u64::MAX] {
+                    assert!(!history(s, a, ago), "{s} {a:?} {ago}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_finished_worker_whose_agent_is_gone_is_history_after_twelve_hours() {
+        for s in [State::Done, State::Gone] {
+            assert!(!history(s, Agent::Absent, 11 * H), "{s}");
+            assert!(history(s, Agent::Absent, 13 * H), "{s}");
+        }
+        for s in STATES
+            .into_iter()
+            .filter(|s| !matches!(s, State::Done | State::Gone))
+        {
+            assert!(!history(s, Agent::Absent, 30 * 24 * H), "{s}");
+        }
+    }
+
+    #[test]
+    fn a_worker_finished_when_it_wrote_its_report_or_else_when_it_started() {
+        let r = Registry::at(temp("finished"));
+        let w = worker(&r, "a", "w1:p1");
+        let now = w.started + 20 * H;
+        assert_eq!(finished_ago(&w, now), 20 * H);
+        fs::create_dir_all(w.report.parent().unwrap()).unwrap();
+        fs::write(&w.report, "done").unwrap();
+        assert!(finished_ago(&w, now) < 20 * H);
     }
 
     #[test]
@@ -2340,7 +2473,7 @@ mod tests {
             ..pane
         };
         assert!(blocked_hint(&bg).contains("`claude attach ab12`"));
-        let b = brief(&[("fix-a", State::Blocked, 1)]);
+        let b = brief(&[("fix-a", State::Blocked)], 0);
         assert!(b.contains("fix-a blocked (waiting for the user)"), "{b}");
     }
 
@@ -2866,11 +2999,8 @@ mod tests {
     #[test]
     fn brief_is_capped_however_many_workers_there_are() {
         let names: Vec<String> = (0..500).map(|i| format!("{i:0>32}")).collect();
-        let rows: Vec<_> = names
-            .iter()
-            .map(|n| (n.as_str(), State::Running, 1))
-            .collect();
-        let b = brief(&rows);
+        let rows: Vec<_> = names.iter().map(|n| (n.as_str(), State::Running)).collect();
+        let b = brief(&rows, 0);
         assert!(b.len() <= BRIEF_MAX + 3, "{}", b.len());
         assert!(b.contains("492 more"), "{b}");
         assert!(b.ends_with(HEAVY_REMINDER), "{b}");
