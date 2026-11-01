@@ -306,3 +306,74 @@ Readings of `usage --plan` (whole percents of the weekly limit, reset 2026-11-05
 
   `reeve ls` and `herdr agent list` showed no others. The outage (18:50–19:20 Tbilisi) cost a pair and about 20 minutes.
 - **What it buys:** at about $7 per point, the plan's backlog calibration (about $10) is about 1.5% of a week, and a 30-minute parallel arm at n=2 ($20–60) is 3–9%.
+
+## Day scenario
+
+The six-ask scenario never needed reeve's workers, heavy queue or handoffs, so [day/](day/README.md) is a working day in one repo: five backlog tasks, an urgent sixth at minute 5, a 60 s suite and a 6-minute fixture rebuild on one shared test database, a scripted user, and a context budget that forces handoffs. All runs: Sonnet, `--setting-sources project,local`, auto mode, budget 30K, n=3 per arm. Per-run rows are in [results/day-sonnet-30k.tsv](results/day-sonnet-30k.tsv). No run showed an API or network error, so none is invalid on that count.
+
+### Batch D1: b0 against reeve, with the handoff broken
+
+- **Arms:**
+  - **b0:** vanilla; past 30K the harness asks for notes and starts a fresh session on them.
+  - **reeve:** b0 plus `reeve setup claude --claude-md`, with reeve's own hook at 30K.
+- **Broken:** the trials dir wasn't a trusted workspace, so `claude --bg` refused every `reeve handoff` successor. The reeve sessions carried on past the budget in one session (peak 51–61K). One of them (rd-reeve-2) obeyed the manual's "stop once it returns", waited for the user, and lost 20 minutes to two status polls.
+- **Outage:** the owner's network dropped at 17:15–17:24 UTC, during D1. A scan of every transcript, stderr and driver log found no error sign, and rd-reeve-2's stall follows its failed handoff by the timestamps, so no D1 run was set aside.
+
+| Arm | Done | Min to done | Interventions | Cost $ | Turns | Heavy runs |
+|---|---|---|---|---|---|---|
+| b0 | 2/3 | 20.9 [18.3–23.4] | 1 [1–3] | 0.43 [0.39–0.77] | 22 [19–41] | 0 |
+| reeve | 3/3 | 25.4 [15.8–40.1] | 2 [1–3] | 1.03 [0.64–1.18] | 47 [28–55] | 8 |
+
+- **b0's miss is real:** rd-b0-2's successor never did the rename and timed out at 50 minutes, through three status polls.
+- **reeve costs about 2.4x b0, from turns.** b0 ran the 60 s suite in the foreground. reeve's sessions put every `reeve heavy` in the background, as the manual says, and each result came back as a notification and a new turn.
+
+### Batch D1t: reeve with working handoffs
+
+The trials dir became a git repo trusted once in Claude Code, with every run a worktree inside it (worktrees inherit their main repo's trust). Five runs started; t1 and t2 were started as background tasks of the session that ran the batch and died with it when that session handed off. They are lost, unscored, and t4 and t5 replace them.
+
+| Arm | Done | Min to done | Interventions | Cost $ | Turns | Sessions |
+|---|---|---|---|---|---|---|
+| reeve | 3/3 | 29.4 [27.0–40.3] | 3 [2–4] | 1.13 [0.90–3.82] | 55 [43–150] | 2 [2–13] |
+
+- **Handoffs work, and then they storm.** Each run's first handoff succeeded and its successor finished the day. But a fresh Sonnet session with reeve's setup starts at about 30–37K, so a successor is past a 30K budget on its first turns and hands off again. rd-reeve-t5 went through 13 sessions and 150 turns for $3.82; the lost rd-reeve-t1 had run `reeve handoff` 13 times, twice 1.4 s apart, and the lost rd-reeve-t2 ended with two successors of the same name working side by side.
+- **So 30K is miscalibrated.** It sits below a session's working floor; reeve's default is 350K. A budget for this scenario needs to be the floor plus room for a task or two, about 60–80K. D1 and D1t are kept as measured, with the arms at 30K, so the numbers stay reproducible.
+- **`day-score`'s `handoffs` undercounts:** it reads one reeve state, so it shows 1 for t5. The `sessions` column is the signal.
+
+### Candidate R1: background a heavy run only when it would wait. Dropped.
+
+From D1's turn count: the PreToolUse hook set `run_in_background` on every `reeve heavy`. R1 set it only when the run would wait (someone in line, every slot taken, or its `--lock` key held), and the manual and skill stub stopped saying "in the background". Arm `reeve-r1`, the same as reeve otherwise; the code and arm are on branch `bench-r1-heavy-bg`.
+
+| Arm | Done | Min to done | Interventions | Cost $ | Turns | Sessions |
+|---|---|---|---|---|---|---|
+| reeve (D1t) | 3/3 | 29.4 [27.0–40.3] | 3 [2–4] | 1.13 [0.90–3.82] | 55 [43–150] | 2 [2–13] |
+| reeve-r1 | 1/3 | 23.1 (one run) | 3 [2–4] | 1.14 [0.74–1.17] | 48 [33–50] | 4 [3–4] |
+
+- **Verdict: no gain, dropped.** R1 cut task notifications (13–17 per run against about 36 in t3, by a rough transcript count), but turns and cost didn't move, because the handoff churn above dominates both. Two of three R1 runs timed out without the rename, b0-2's miss. Whether R1 helps in a scenario with a working budget is open.
+- **Not run:** the block-smoke regression check, since R1 was dropped.
+
+### Cost against the weekly limit
+
+| Time (UTC) | Weekly | Point |
+|---|---|---|
+| 16:04 | 27% | task start |
+| 16:51 | 29% | reading during setup |
+| 18:02 | 31% | after D1, before D1t |
+| 19:06 | 33% | D1t running, R1 started at 18:39 |
+| 19:29 | 33% | after R1 |
+| 19:48 | 34% | after D1t's reruns; stop |
+
+| Batch | Runs | $ (bench-reported, valid runs) | Verdict |
+|---|---|---|---|
+| D1 | 6 | 4.45 | b0 2/3, reeve 3/3 at 2.4x cost; handoffs broken |
+| D1t | 5 (3 scored) | 5.85, plus t1 and t2 unpriced | handoffs work, then storm at 30K |
+| R1 | 3 | 3.05 | dropped |
+
+- **7 points (27→34%) for about $13 of scored runs** plus the pilot, smoke and lost runs, the simulated user and this orchestrating session. That is far worse than the November round's $7 per point: the lost and storming runs, many parallel sessions and other sessions sharing the plan (the owner's weekend coordinator and its workers) all count. The readings are whole percents.
+
+### What's next
+
+- **Recalibrate the budget** to 60–80K and rerun b0 and reeve at n=3 before testing any reeve change on this scenario.
+- **reeve fixes the day showed:**
+  - two handoffs seconds apart start two successors; a second handoff from the same session should be refused;
+  - when `reeve handoff` can't start the successor, its message should say to carry on and tell the user, not leave the manual's "stop once it returns" in force;
+  - a successor that starts past the threshold hands off at once; the hook could measure from the session's starting context.
