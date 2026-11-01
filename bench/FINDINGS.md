@@ -393,3 +393,34 @@ From D1's turn count: the PreToolUse hook set `run_in_background` on every `reev
   - two handoffs seconds apart start two successors; a second handoff from the same session should be refused;
   - when `reeve handoff` can't start the successor, its message should say to carry on and tell the user, not leave the manual's "stop once it returns" in force;
   - a successor that starts past the threshold hands off at once; the hook could measure from the session's starting context.
+
+### Driver fixes after D1 (2 Nov)
+
+Each fix has a test that failed before it:
+
+- **Check errors.** A check error skips its tick, and only three in a row end the run. Before, one transient error ended the trial.
+- **The final check.** An error there is now recorded in `result.json` and marks the run invalid. Before, it skipped stopping the sessions, scoring and cleanup.
+- **The successor.** It's the transcript created after the handoff whose first prompt is reeve's take-over line. Before, the driver could pick the predecessor, which also says "handoff", and copy its whole history into what the user read.
+- **The context window.** The 256K window on a transcript now starts on a char boundary. A multi-byte char at the mark panicked.
+- **Handoffs.** They are counted from every session's transcript: the `reeve handoff` calls that succeeded, plus the harness's notes handoffs. Before, they came from one reeve state, so rd-reeve-t5's 13 sessions scored 1.
+- **Notes handoffs.** Every b0 session past the budget hands off, successors too, as with reeve's hook. Before, b0 handed off once.
+- **Background sessions' environment.** Workers and successors run under `claude --bg`, which Claude Code's daemon starts with the daemon's environment, not the caller's. A D1t successor had kept its reeve state in another run's dir. The driver now passes the run's variables through the run's settings `env`. One variable left unset there is still the daemon's: the first pressure run's workers got a day run's `REEVE_HANDOFF_TOKENS=30000` and handed off 9 times.
+
+### The budget: 60K
+
+A fresh one-turn Sonnet session in the day repo, given the take-over prompt, reads 18.4K with b0's setup and 22.9K with reeve's. The D1t successors were at 36–40K once they had read their notes and the manual. Taking the larger start plus about 35K gives 58K. Both arms now hand off at 60K; D1 and D1t ran at 30K.
+
+## Pressure scenario
+
+[pressure/](pressure/README.md) checks the loss of 1 Nov. Six workers, started with `reeve run`, each run two 600 MB, 60 s jobs through `reeve heavy`, with 3 slots. The bench's memory budget is 1500 MB, so two jobs fit and a third at once doesn't. Past the budget, a stand-in for Claude Code's low-memory reaper kills the newest `reeve heavy` caller's background shell under a session, at most once every 5 s. Memory is `top`'s physical footprint. On this Mac, which was swapping 8 GB that evening, RSS read a 600 MB job as 40 MB. Sonnet, `--setting-sources project,local`, reeve's setup.
+
+### Batch P1: baseline, main + #50, n=3 ([results/pressure-reeve-n3.tsv](results/pressure-reeve-n3.tsv))
+
+| Arm | Jobs | Completed | Lost | Reaper kills | Peak memory MB | Sessions at peak | Cost $ |
+|---|---|---|---|---|---|---|---|
+| reeve | 12 | 4 [2–5] | 8 [7–10] | 8 [6–8] | 3284 [3223–3299] | 6 | 1.08 [0.91–1.25] |
+
+- **Most of the work is lost, as on 1 Nov.** reeve admitted three jobs (1.8 GB) into a 1.5 GB budget. The reaper then took the newest callers, which were mostly queued waiters holding no memory, so the jobs' memory stayed at 1.8 GB through every kill. 6–7 jobs started per run, and 2 of them died with their caller.
+- **No run finished every job**, so there is no time to done. Each run ended once no job had started or finished for three minutes.
+- **A first run was set aside**, kept as `logs-invalid/rp-reeve-1-rss`. It measured RSS, its jobs were one repeated byte that macOS compresses, and its workers took the daemon's 30K handoff threshold and handed off 9 times, which cost $2.46.
+- **This is the baseline** for memory-aware heavy changes (reeve-heavy-mem, reeve-worker-cap). An arm's `reeve` field picks the binary and its `env` field sets reeve's knobs.

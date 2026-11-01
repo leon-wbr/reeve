@@ -1,0 +1,4 @@
+batch	run	arm	jobs	started	completed	lost	killed	peakMemMb	peakJobsMemMb	sessionsAtPeak	jobsAtPeak	doneAt	end	endedAt	costUsd	sessionCount	heavy_runs	heavy_wait_s	handoffs
+P1	rp-reeve-1	reeve	12	6	4	8	8	3299	1842	6	3		quiet	318722	1.25	6	4	0	0
+P1	rp-reeve-2	reeve	12	7	2	10	8	3284	1842	6	3		quiet	294374	0.914	6	2	0	0
+P1	rp-reeve-3	reeve	12	7	5	7	6	3223	1841	6	3		quiet	567371	1.084	6	5	0	0
