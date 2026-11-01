@@ -624,7 +624,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     let dir = o.trials.join(&run);
     let logs = o.trials.join("logs").join(&run);
     let (db, state, bin) = (logs.join("db"), logs.join("state"), logs.join("bin"));
-    let base = o.trials.join("day-base");
+    // The trials dir is the base repo and every run a worktree inside it. `claude --bg`, which
+    // starts reeve's workers and successors, refuses a workspace that isn't trusted, and Claude
+    // Code trusts a worktree by its main repo: trusting the trials dir once covers every run.
+    let base = o.trials.clone();
 
     cleanup(&base, &run, &dir)?;
     let _ = fs::remove_dir_all(&logs);
@@ -1088,7 +1091,7 @@ fn finish(
     let mut api_errors = 0;
     for f in &files {
         let text = fs::read_to_string(f).unwrap_or_default();
-        api_errors += text.matches("API Error").count();
+        api_errors += network_errors(&text);
         let mut u = Usage::default();
         u.add(&text, &mut seen);
         total.cost += u.cost;
@@ -1104,9 +1107,8 @@ fn finish(
             sessions.push(s);
         }
     }
-    for role in ["front", "next"] {
-        let text = fs::read_to_string(r.logs.join(format!("{role}.jsonl"))).unwrap_or_default();
-        api_errors += text.matches("API Error").count();
+    for f in ["front.jsonl", "next.jsonl", "front.stderr", "next.stderr", "events.jsonl"] {
+        api_errors += network_errors(&fs::read_to_string(r.logs.join(f)).unwrap_or_default());
     }
     let events = fs::read_to_string(state.join("reeve/events.jsonl")).unwrap_or_default();
     let dbm = db_metrics(&fs::read_to_string(db.join("runs.jsonl")).unwrap_or_default());
@@ -1120,6 +1122,27 @@ fn finish(
     result["apiErrors"] = json!(api_errors);
     result["invalid"] = json!(api_errors > 0);
     Ok(())
+}
+
+/// Signs that a run met an API or network error: in a transcript, a session's stderr, or the
+/// driver's log (a failed call to the user model).
+pub fn network_errors(text: &str) -> usize {
+    [
+        "API Error",
+        "\"api_error_status\":4",
+        "\"api_error_status\":5",
+        "Connection error",
+        "ECONNRESET",
+        "ECONNREFUSED",
+        "ENOTFOUND",
+        "ETIMEDOUT",
+        "fetch failed",
+        "socket hang up",
+        "\"event\":\"sim-error\"",
+    ]
+    .iter()
+    .map(|p| text.matches(p).count())
+    .sum()
 }
 
 fn push(arr: &mut Value, v: Value) {
