@@ -6,7 +6,7 @@
 
 - **Workers.** The driver starts `workers` sessions with `reeve run`. Each is asked to run its `jobs` jobs, one after another, through `reeve heavy`, and not to rerun a failed one.
 - **Jobs.** `node scripts/job.mjs --id ID` ([repo/scripts/job.mjs](repo/scripts/job.mjs)) holds `jobMb` of RAM for `jobSeconds`. It logs its start and finish to a ledger.
-- **A reaper.** Once a second the driver samples the run's processes: the processes whose working directory is in the run, and their descendants. While the jobs hold more than `budgetMb`, it kills the background task of the newest `reeve heavy` caller, that is the shell the caller runs in and everything under it. It kills at most once every 5 s. A job that runs as the caller's child dies with it; one that runs elsewhere doesn't.
+- **A reaper.** Once a second the driver samples the run's processes: the processes whose working directory is in the run, and their descendants. While the jobs' memory is more than `budgetMb`, it kills the background task of the newest `reeve heavy` caller, that is the shell the caller runs in and everything under it. It kills at most once every 5 s. A job that runs as the caller's child dies with it; one that runs elsewhere doesn't.
 - **A budget, not the real machine.** `budgetMb` is the bench's own limit, so the real machine stays clear of trouble: the baseline arm peaks at about 1.8 GB of jobs.
 
 The run ends when every job has finished, or when no job has started or finished for three minutes, or after 30 minutes.
@@ -28,11 +28,11 @@ The baseline arm, `reeve`, runs 6 workers × 2 jobs of 600 MB for 60 s each, wit
 
 - jobs, completed and lost (never finished);
 - reaper kills;
-- peak RSS of the run's processes, and sessions alive at that peak;
+- peak memory of the run's processes, as `top` counts it (physical footprint, compressed pages included; RSS leaves those out and reads a fraction on a Mac that swaps), and sessions alive at that peak;
 - minutes until the last job finished, when all finished;
 - cost.
 
-Each run's `samples.tsv` holds every sample: time in ms, RSS of the run's processes, RSS of its jobs (both in KB), sessions, jobs and processes.
+Each run's `samples.tsv` holds every sample: time in ms, memory of the run's processes and of its jobs (both in KB), sessions, jobs and processes.
 
 ## Running it
 
