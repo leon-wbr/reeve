@@ -37,8 +37,14 @@ fn the_wrapper_puts_the_arms_flags_first_and_leaves_subcommands_alone() {
     assert_eq!(
         flags,
         [
-            "--model", "sonnet", "--effort", "low", "--setting-sources", "project,local",
-            "--settings", "/s/settings.json"
+            "--model",
+            "sonnet",
+            "--effort",
+            "low",
+            "--setting-sources",
+            "project,local",
+            "--settings",
+            "/s/settings.json"
         ]
     );
     let w = claude_wrapper(Path::new("/bin/claude it's"), &flags);
@@ -48,7 +54,10 @@ fn the_wrapper_puts_the_arms_flags_first_and_leaves_subcommands_alone() {
         "{w}"
     );
     let r = reeve_wrapper(Path::new("/r/reeve"), Path::new("/m.md"));
-    assert!(r.contains("exec cat '/m.md'") && r.contains("exec '/r/reeve' \"$@\""), "{r}");
+    assert!(
+        r.contains("exec cat '/m.md'") && r.contains("exec '/r/reeve' \"$@\""),
+        "{r}"
+    );
 }
 
 #[test]
@@ -129,7 +138,18 @@ fn scenario(solved: bool) -> (tempfile::TempDir, PathBuf, String) {
     fs::write(repo.join("test/db.json"), &text).unwrap();
     git!("-C", repo, "init", "-q", "-b", "main").unwrap();
     git!("-C", repo, "add", "-A").unwrap();
-    git!("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x").unwrap();
+    git!(
+        "-C",
+        repo,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-qm",
+        "x"
+    )
+    .unwrap();
     (t, db, text)
 }
 
@@ -146,9 +166,16 @@ fn the_check_fails_the_scenario_and_passes_the_reference_solution() {
     let c = check(&root, &repo, "main", &db, &text).unwrap();
     assert_eq!(c["tests"], true, "{c}");
     assert_eq!(c["rebuilt"], false, "{c}");
-    assert_eq!(c["items"]["fixtures"], false, "a copied fixture without a rebuild: {c}");
+    assert_eq!(
+        c["items"]["fixtures"], false,
+        "a copied fixture without a rebuild: {c}"
+    );
     fs::create_dir_all(&db).unwrap();
-    fs::write(db.join("runs.jsonl"), r#"{"what":"rebuild","ok":true,"busy":false}"#).unwrap();
+    fs::write(
+        db.join("runs.jsonl"),
+        r#"{"what":"rebuild","ok":true,"busy":false}"#,
+    )
+    .unwrap();
     let c = check(&root, &repo, "main", &db, &text).unwrap();
     assert_eq!(c["done"], true, "{c}");
     let c = check(&root, &repo, "main", &db, &db_json(&db, 60, 360)).unwrap();
@@ -298,9 +325,13 @@ fn fake_run_code(
     };
     let code = run(&o).unwrap();
     let logs = o.trials.join("logs").join(format!("rd-{arm}-1"));
-    let r: Value = serde_json::from_str(&fs::read_to_string(logs.join("result.json")).unwrap()).unwrap();
+    let r: Value =
+        serde_json::from_str(&fs::read_to_string(logs.join("result.json")).unwrap()).unwrap();
     let args = fs::read_to_string(&log).unwrap();
-    assert!(!o.trials.join(format!("rd-{arm}-1")).exists(), "the run's worktree is cleaned up");
+    assert!(
+        !o.trials.join(format!("rd-{arm}-1")).exists(),
+        "the run's worktree is cleaned up"
+    );
     (t, r, args, code)
 }
 
@@ -323,7 +354,10 @@ fn a_check_that_keeps_failing_ends_the_run_but_still_writes_the_result_and_clean
     let err = r["error"].as_str().unwrap_or("");
     assert!(err.contains("checks in a row"), "{r:#}");
     assert_eq!(r["final"]["done"], false, "{r:#}");
-    assert_eq!(r["invalid"], true, "a harness error isn't the agent's: {r:#}");
+    assert_eq!(
+        r["invalid"], true,
+        "a harness error isn't the agent's: {r:#}"
+    );
     assert!(r["usage"].is_object(), "finish ran: {r:#}");
 }
 
@@ -332,7 +366,10 @@ fn one_check_error_skips_a_tick_and_doesnt_end_the_run() {
     let (_t, r, _) = fake_run_with("flaky", "flaky", Some(PLAIN), &[]);
     assert!(r["error"].is_null(), "{r:#}");
     assert_eq!(r["final"]["done"], true, "{r:#}");
-    assert!(r["checkErrors"].as_u64().unwrap_or(0) >= 1, "the branch was gone: {r:#}");
+    assert!(
+        r["checkErrors"].as_u64().unwrap_or(0) >= 1,
+        "the branch was gone: {r:#}"
+    );
 }
 
 #[test]
@@ -373,9 +410,15 @@ fn the_successor_is_the_session_started_on_the_handoff_prompt_after_the_handoff(
     // The predecessor writes on after the handoff, and its handoff names the successor.
     append(&p, b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ran reeve handoff --name rd-x-2\"}]}}\n").unwrap();
     append(&older, b"{\"type\":\"assistant\"}\n").unwrap();
-    assert_eq!(successor_transcript(&[p.clone(), older.clone()], since), None);
+    assert_eq!(
+        successor_transcript(&[p.clone(), older.clone()], since),
+        None
+    );
     fs::write(&s, transcript(take)).unwrap();
-    assert_eq!(successor_transcript(&[p.clone(), older, s.clone()], since), Some(s));
+    assert_eq!(
+        successor_transcript(&[p.clone(), older, s.clone()], since),
+        Some(s)
+    );
 }
 
 #[test]
@@ -393,7 +436,10 @@ fn handoffs_are_the_reeve_handoff_calls_that_succeeded_in_any_transcript() {
         .to_string()
     };
     let text = [
-        call("a", "cat > /tmp/h.md <<'EOF'\nnotes\nEOF\nreeve handoff --name rd-x-2 --notes /tmp/h.md"),
+        call(
+            "a",
+            "cat > /tmp/h.md <<'EOF'\nnotes\nEOF\nreeve handoff --name rd-x-2 --notes /tmp/h.md",
+        ),
         res("a", false),
         call("b", "reeve handoff --name rd-x-3 --notes /tmp/h.md"),
         res("b", true),
@@ -442,9 +488,15 @@ fn a_fake_b0_session_runs_end_to_end_and_is_scored() {
     assert!(r["usage"]["peakContext"].as_f64().unwrap() > 0.0);
     assert_eq!(r["invalid"], false);
     assert_eq!(r["params"]["model"], "sonnet");
-    assert!(args.contains("--model sonnet --setting-sources project,local --settings "), "{args}");
+    assert!(
+        args.contains("--model sonnet --setting-sources project,local --settings "),
+        "{args}"
+    );
     let table = score(&t.path().join("trials"), &[], false).unwrap();
-    assert!(table.lines().nth(1).unwrap().starts_with("b0   1  1/1"), "{table}");
+    assert!(
+        table.lines().nth(1).unwrap().starts_with("b0   1  1/1"),
+        "{table}"
+    );
 }
 
 #[test]
@@ -452,10 +504,18 @@ fn a_fake_reeve_session_shows_up_in_reeves_metrics() {
     let (t, r, args) = fake_run("reeve", "reeve");
     assert_eq!(r["final"]["done"], true, "{r:#}");
     let logs = t.path().join("trials/logs/rd-reeve-1");
-    let s: Value = serde_json::from_str(&fs::read_to_string(logs.join("settings.json")).unwrap()).unwrap();
-    assert!(s["hooks"]["PreToolUse"].is_array(), "the arm's settings: {s:#}");
+    let s: Value =
+        serde_json::from_str(&fs::read_to_string(logs.join("settings.json")).unwrap()).unwrap();
+    assert!(
+        s["hooks"]["PreToolUse"].is_array(),
+        "the arm's settings: {s:#}"
+    );
     let state = logs.join("state");
-    assert_eq!(s["env"]["XDG_STATE_HOME"], json!(state.to_str().unwrap()), "{s:#}");
+    assert_eq!(
+        s["env"]["XDG_STATE_HOME"],
+        json!(state.to_str().unwrap()),
+        "{s:#}"
+    );
     assert_eq!(s["env"]["REEVE_HANDOFF_TOKENS"], "60000", "{s:#}");
     assert!(s["env"]["FAKE_MODE"].is_null(), "{s:#}");
     assert_eq!(r["reeve"]["workersStarted"], 1);
@@ -464,7 +524,13 @@ fn a_fake_reeve_session_shows_up_in_reeves_metrics() {
     assert_eq!(r["reeve"]["heavyWaitS"], json!(1.5));
     assert_eq!(r["db"]["rebuildsHeavy"], 1);
     assert_eq!(r["params"]["contextBudget"], 60_000);
-    assert!(args.contains(&format!("--settings {}", logs.join("settings.json").display())), "{args}");
+    assert!(
+        args.contains(&format!(
+            "--settings {}",
+            logs.join("settings.json").display()
+        )),
+        "{args}"
+    );
 }
 
 #[test]
@@ -483,15 +549,24 @@ fn a_vanilla_session_past_the_budget_hands_off_through_notes_and_its_successor_f
 
 #[test]
 fn network_errors_are_found_in_transcripts_stderr_and_the_drivers_log() {
-    assert_eq!(network_errors(r#"{"text":"API Error: Connection error."}"#), 2);
+    assert_eq!(
+        network_errors(r#"{"text":"API Error: Connection error."}"#),
+        2
+    );
     assert_eq!(network_errors("TypeError: fetch failed\nECONNRESET"), 2);
-    assert_eq!(network_errors(r#"{"t":5,"event":"sim-error","error":"x"}"#), 1);
+    assert_eq!(
+        network_errors(r#"{"t":5,"event":"sim-error","error":"x"}"#),
+        1
+    );
     assert_eq!(network_errors(r#"{"api_error_status":null} all fine"#), 0);
 }
 
 #[test]
 fn the_notes_check_reads_like_reeves_and_names_the_file() {
     let t = notes_check(41_234, 40_000, Path::new("/l/HANDOFF.md"));
-    assert!(t.starts_with("Context check: this session has used 41K tokens, past the 40K"), "{t}");
+    assert!(
+        t.starts_with("Context check: this session has used 41K tokens, past the 40K"),
+        "{t}"
+    );
     assert!(t.contains("questions) to /l/HANDOFF.md, and stop"), "{t}");
 }

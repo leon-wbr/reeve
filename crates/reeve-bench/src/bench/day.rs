@@ -174,7 +174,9 @@ pub fn scripted<'a>(user: &'a User, text: &str, used: &[String]) -> Option<&'a R
     let qs = questions(text);
     user.rules.iter().find(|r| {
         !(r.once && used.contains(&r.id))
-            && qs.iter().any(|q| r.any.iter().any(|w| q.contains(w.as_str())))
+            && qs
+                .iter()
+                .any(|q| r.any.iter().any(|w| q.contains(w.as_str())))
     })
 }
 
@@ -230,10 +232,19 @@ pub fn run_settings(arm: &str, env: &[(OsString, OsString)]) -> io::Result<Strin
     let mut s: Value = serde_json::from_str(arm).map_err(io::Error::other)?;
     let vars: Map<String, Value> = env
         .iter()
-        .filter(|(k, _)| RUN_ENV.iter().any(|v| k == v) || k.to_string_lossy().starts_with("REEVE_BENCH_"))
-        .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned().into()))
+        .filter(|(k, _)| {
+            RUN_ENV.iter().any(|v| k == v) || k.to_string_lossy().starts_with("REEVE_BENCH_")
+        })
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.to_string_lossy().into_owned().into(),
+            )
+        })
         .collect();
-    let obj = s.as_object_mut().ok_or_else(|| io::Error::other("settings aren't an object"))?;
+    let obj = s
+        .as_object_mut()
+        .ok_or_else(|| io::Error::other("settings aren't an object"))?;
     let e = obj.entry("env").or_insert_with(|| json!({}));
     if let Some(e) = e.as_object_mut() {
         e.extend(vars);
@@ -380,7 +391,13 @@ pub fn db_json(db: &Path, hold: u64, rebuild: u64) -> String {
 /// Done-check of `branch`: the suite on a snapshot with a private, instant database, then the
 /// hidden checks. Every item fails if the suite does or if `test/db.json` was changed; the
 /// fixture counts only if a rebuild really finished on the shared database.
-pub fn check(root: &Path, repo: &Path, branch: &str, db: &Path, db_text: &str) -> io::Result<Value> {
+pub fn check(
+    root: &Path,
+    repo: &Path,
+    branch: &str,
+    db: &Path,
+    db_text: &str,
+) -> io::Result<Value> {
     let dir = temp_dir("reeve-day-check-")?;
     let r = check_in(root, repo, branch, db, db_text, &dir);
     let _ = fs::remove_dir_all(&dir);
@@ -404,7 +421,11 @@ fn check_in(
             .arg(&tar)
             .arg(branch),
     )?;
-    super::check::must(Command::new("tar").args(["-xf", "snap.tar"]).current_dir(dir))?;
+    super::check::must(
+        Command::new("tar")
+            .args(["-xf", "snap.tar"])
+            .current_dir(dir),
+    )?;
     fs::remove_file(&tar)?;
     let db_file = dir.join("test/db.json");
     let tampered = fs::read_to_string(&db_file).unwrap_or_default().trim() != db_text.trim();
@@ -422,11 +443,11 @@ fn check_in(
         .rfind(|l| !l.trim().is_empty())
         .and_then(|l| serde_json::from_str(l).ok())
         .unwrap_or_default();
-    let rebuilt = db_metrics(&fs::read_to_string(db.join("runs.jsonl")).unwrap_or_default())
-        ["rebuilds"]
-        .as_u64()
-        .unwrap_or(0)
-        > 0;
+    let rebuilt =
+        db_metrics(&fs::read_to_string(db.join("runs.jsonl")).unwrap_or_default())["rebuilds"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0;
     let items: Map<String, Value> = ITEMS
         .iter()
         .map(|k| {
@@ -435,7 +456,9 @@ fn check_in(
         })
         .collect();
     let done = items.values().all(|v| *v == true);
-    Ok(json!({ "tests": tests, "tampered": tampered, "rebuilt": rebuilt, "items": items, "done": done }))
+    Ok(
+        json!({ "tests": tests, "tampered": tampered, "rebuilt": rebuilt, "items": items, "done": done }),
+    )
 }
 
 pub(super) fn git(args: &[&OsStr]) -> io::Result<String> {
@@ -568,7 +591,12 @@ fn successor_name(state: &Path) -> Option<String> {
         .flatten()
         .map(|e| e.path())
         .find(|p| p.extension().is_some_and(|x| x == "from"))
-        .map(|p| p.file_stem().unwrap_or_default().to_string_lossy().into_owned())
+        .map(|p| {
+            p.file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
 }
 
 /// The line `reeve handoff` starts a successor on; see reeve's `handoff::successor_prompt`.
@@ -626,7 +654,12 @@ pub fn handoff_calls(text: &str, seen: &mut HashSet<String>) -> usize {
         .collect();
     let parts = |kind: &'static str| {
         msgs.iter()
-            .flat_map(|m| m["message"]["content"].as_array().cloned().unwrap_or_default())
+            .flat_map(|m| {
+                m["message"]["content"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
             .filter(move |c| c["type"] == kind)
     };
     let ok: HashSet<String> = parts("tool_result")
@@ -634,7 +667,9 @@ pub fn handoff_calls(text: &str, seen: &mut HashSet<String>) -> usize {
         .map(|r| js_str(r.get("tool_use_id")))
         .collect();
     parts("tool_use")
-        .filter(|c| c["name"] == "Bash" && runs_handoff(c["input"]["command"].as_str().unwrap_or("")))
+        .filter(|c| {
+            c["name"] == "Bash" && runs_handoff(c["input"]["command"].as_str().unwrap_or(""))
+        })
         .map(|c| js_str(c.get("id")))
         .filter(|id| ok.contains(id) && seen.insert(id.clone()))
         .count()
@@ -663,7 +698,11 @@ pub struct Strikes {
 
 impl Strikes {
     pub fn new(k: usize) -> Strikes {
-        Strikes { k, row: 0, errors: 0 }
+        Strikes {
+            k,
+            row: 0,
+            errors: 0,
+        }
     }
 
     /// The check's result; `None` to skip this tick; `Err` once `k` failed in a row.
@@ -707,7 +746,12 @@ fn tail_text(path: &Path, offset: &mut u64) -> Vec<String> {
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|m| m["type"] == "assistant")
-        .flat_map(|m| m["message"]["content"].as_array().cloned().unwrap_or_default())
+        .flat_map(|m| {
+            m["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
         .filter(|c| c["type"] == "text")
         .filter_map(|c| c["text"].as_str().map(|t| t.trim().to_string()))
         .filter(|t| !t.is_empty())
@@ -785,14 +829,27 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         fs::create_dir_all(&base)?;
         git!("-C", base, "init", "-q", "-b", "main")?;
         git!(
-            "-C", base, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit",
-            "-q", "--allow-empty", "-m", "base"
+            "-C",
+            base,
+            "-c",
+            "user.name=bench",
+            "-c",
+            "user.email=bench@localhost",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base"
         )?;
     }
     git!("-C", base, "worktree", "add", "-q", "-b", run, dir, "main")?;
     copy_dir(&o.root.join("day/repo"), &dir)?;
     let setup = arm.setup.as_ref().map(|s| o.root.join(s));
-    if let Some(repo) = setup.as_ref().map(|s| s.join("repo")).filter(|r| r.exists()) {
+    if let Some(repo) = setup
+        .as_ref()
+        .map(|s| s.join("repo"))
+        .filter(|r| r.exists())
+    {
         copy_dir(&repo, &dir)?;
     }
     let claude_md = dir.join("CLAUDE.md");
@@ -804,7 +861,14 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     fs::write(dir.join("test/db.json"), &db_text)?;
     git!("-C", dir, "add", "-A")?;
     git!(
-        "-C", dir, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "-qm",
+        "-C",
+        dir,
+        "-c",
+        "user.name=bench",
+        "-c",
+        "user.email=bench@localhost",
+        "commit",
+        "-qm",
         "scenario"
     )?;
 
@@ -821,7 +885,13 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         .filter(|(k, _)| {
             let k = k.to_string_lossy();
             ![
-                "HERDR_", "ORCH_", "CLAUDECODE", "CLAUDE_CODE_", "PATH", "REEVE_", "XDG_STATE_HOME",
+                "HERDR_",
+                "ORCH_",
+                "CLAUDECODE",
+                "CLAUDE_CODE_",
+                "PATH",
+                "REEVE_",
+                "XDG_STATE_HOME",
                 "HOME",
             ]
             .iter()
@@ -830,10 +900,15 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         .collect();
     let mut path = vec![bin.clone()];
     path.extend(o.reeve.as_ref().and_then(|r| r.parent().map(PathBuf::from)));
-    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
     env.extend([
         ("HOME".into(), o.home.clone().into()),
-        ("PATH".into(), std::env::join_paths(path).map_err(io::Error::other)?),
+        (
+            "PATH".into(),
+            std::env::join_paths(path).map_err(io::Error::other)?,
+        ),
         ("XDG_STATE_HOME".into(), state.clone().into()),
         ("REEVE_HOME".into(), logs.join("reeve-home").into()),
         (
@@ -844,7 +919,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     ]);
     env.extend(o.extra_env.iter().cloned());
     fs::write(&settings, run_settings(&base_settings, &env)?)?;
-    write_exe(&bin.join("claude"), &claude_wrapper(&o.claude, &arm.flags(&settings)))?;
+    write_exe(
+        &bin.join("claude"),
+        &claude_wrapper(&o.claude, &arm.flags(&settings)),
+    )?;
     let since = SystemTime::now();
     let r = Run {
         o,
@@ -854,8 +932,9 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         t0: clock(),
     };
 
-
-    let asks = fs::read_to_string(o.root.join("day/asks.md"))?.trim().to_string();
+    let asks = fs::read_to_string(o.root.join("day/asks.md"))?
+        .trim()
+        .to_string();
     let key = fs::read_to_string(o.root.join("day/key.md"))?;
     let mut followups: Vec<Value> =
         serde_json::from_str(&fs::read_to_string(o.root.join("day/followups.json"))?)
@@ -863,8 +942,19 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     let mut history: Vec<(&'static str, String)> = vec![];
     let t0 = r.t0;
     let system = arm.system.as_ref().map(|s| arm_dir.join(s));
-    let mut front = Front::start(&r, &bin, "front", system.as_deref(), &dir, &asks, &mut history)?;
-    r.log("start", json!({ "arm": o.arm, "run": run, "params": arm_json(&arm) }));
+    let mut front = Front::start(
+        &r,
+        &bin,
+        "front",
+        system.as_deref(),
+        &dir,
+        &asks,
+        &mut history,
+    )?;
+    r.log(
+        "start",
+        json!({ "arm": o.arm, "run": run, "params": arm_json(&arm) }),
+    );
 
     let mut result = json!({
         "arm": o.arm, "run": run, "params": arm_json(&arm), "interventions": [], "followups": [],
@@ -905,14 +995,22 @@ pub fn run(o: &Opts) -> io::Result<i32> {
                 r.log("done-check", c.clone());
             }
         }
-        while followups
-            .first()
-            .is_some_and(|f| (now - t0) as f64 >= f["afterS"].as_f64().unwrap_or(0.0) * 1e3 * t.scale)
-        {
+        while followups.first().is_some_and(|f| {
+            (now - t0) as f64 >= f["afterS"].as_f64().unwrap_or(0.0) * 1e3 * t.scale
+        }) {
             let f = followups.remove(0);
             r.log("followup", f.clone());
-            push(&mut result["followups"], json!({ "t": now - t0, "text": f["text"] }));
-            send(&r, &mut front, &mut history, &bg_successor, f["text"].as_str().unwrap_or(""));
+            push(
+                &mut result["followups"],
+                json!({ "t": now - t0, "text": f["text"] }),
+            );
+            send(
+                &r,
+                &mut front,
+                &mut history,
+                &bg_successor,
+                f["text"].as_str().unwrap_or(""),
+            );
         }
         // The vanilla handoff: the harness tells the session what reeve's hook would, then
         // starts a fresh session on the notes once the old one has stopped.
@@ -939,7 +1037,15 @@ pub fn run(o: &Opts) -> io::Result<i32> {
                     "{TAKE_OVER} Read {} and continue the work from there.",
                     notes.display()
                 );
-                let mut next = Front::start(&r, &bin, &role, system.as_deref(), &dir, &first, &mut history)?;
+                let mut next = Front::start(
+                    &r,
+                    &bin,
+                    &role,
+                    system.as_deref(),
+                    &dir,
+                    &first,
+                    &mut history,
+                )?;
                 std::mem::swap(&mut front, &mut next);
                 let leftover = std::mem::take(&mut next.state.lock().unwrap().unread);
                 front.state.lock().unwrap().unread.extend(leftover);
@@ -1095,12 +1201,29 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     result["endedAt"] = json!(clock() - t0);
     front.stop();
     stop_bg(&o.claude, &r.env, &run, &dir);
-    if let Err(e) = finish(&r, &mut result, since, sim_cost, &db, &state, notes_handoffs) {
+    if let Err(e) = finish(
+        &r,
+        &mut result,
+        since,
+        sim_cost,
+        &db,
+        &state,
+        notes_handoffs,
+    ) {
         errors.push(format!("finish: {e}"));
     }
     let bundle = logs.join("repo.bundle");
     let _ = git!("-C", dir, "bundle", "create", bundle, run);
-    if let Ok(g) = git!("-C", dir, "log", "--oneline", "--graph", "--all", "-n", "60") {
+    if let Ok(g) = git!(
+        "-C",
+        dir,
+        "log",
+        "--oneline",
+        "--graph",
+        "--all",
+        "-n",
+        "60"
+    ) {
         let _ = fs::write(logs.join("git-log.txt"), g);
     }
     if !errors.is_empty() {
@@ -1108,7 +1231,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         // The harness failed, not the agent: such a run says nothing about the arm.
         result["invalid"] = true.into();
     }
-    let written = fs::write(logs.join("result.json"), serde_json::to_string_pretty(&result)?);
+    let written = fs::write(
+        logs.join("result.json"),
+        serde_json::to_string_pretty(&result)?,
+    );
     println!("{}", summary(&result));
     cleanup(&base, &run, &dir)?;
     written?;
@@ -1375,7 +1501,9 @@ pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<S
     let mut runs: Vec<Value> = fs::read_dir(&logs)?
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("rd-"))
-        .filter_map(|e| serde_json::from_str(&fs::read_to_string(e.path().join("result.json")).ok()?).ok())
+        .filter_map(|e| {
+            serde_json::from_str(&fs::read_to_string(e.path().join("result.json")).ok()?).ok()
+        })
         .filter(|r: &Value| with_invalid || r["invalid"] != true)
         .collect();
     runs.sort_by_key(|r| js_str(r.get("run")));
@@ -1383,14 +1511,32 @@ pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<S
     arms.sort();
     arms.dedup();
     let header = [
-        "arm", "n", "done", "items", "false done", "never claimed", "min to done", "interv.",
-        "cost $", "sim $", "cache read M", "output k", "peak ctx k", "sessions", "workers",
-        "heavy", "heavy wait s", "db busy", "handoffs",
+        "arm",
+        "n",
+        "done",
+        "items",
+        "false done",
+        "never claimed",
+        "min to done",
+        "interv.",
+        "cost $",
+        "sim $",
+        "cache read M",
+        "output k",
+        "peak ctx k",
+        "sessions",
+        "workers",
+        "heavy",
+        "heavy wait s",
+        "db busy",
+        "handoffs",
     ];
     let mut rows: Vec<Vec<String>> = vec![header.map(String::from).to_vec()];
     for arm in arms.iter().filter(|a| only.is_empty() || only.contains(a)) {
         let rs: Vec<&Value> = runs.iter().filter(|r| r["arm"] == arm.as_str()).collect();
-        let col = |f: &dyn Fn(&Value) -> Option<f64>, d| fmt(&rs.iter().map(|r| f(r)).collect::<Vec<_>>(), d);
+        let col = |f: &dyn Fn(&Value) -> Option<f64>, d| {
+            fmt(&rs.iter().map(|r| f(r)).collect::<Vec<_>>(), d)
+        };
         let count = |f: &dyn Fn(&Value) -> bool| rs.iter().filter(|r| f(r)).count();
         rows.push(vec![
             arm.clone(),
@@ -1400,7 +1546,10 @@ pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<S
             count(&|r| r["falseDone"] == true).to_string(),
             count(&|r| r["neverClaimed"] == true).to_string(),
             col(&|r| r["doneAt"].as_f64().map(|t| t / 60e3), 1),
-            col(&|r| r["interventions"].as_array().map(|a| a.len() as f64), 0),
+            col(
+                &|r| r["interventions"].as_array().map(|a| a.len() as f64),
+                0,
+            ),
             col(&|r| r["costUsd"].as_f64(), 2),
             col(&|r| r["simCostUsd"].as_f64(), 3),
             col(&|r| r["usage"]["cacheRead"].as_f64().map(|x| x / 1e6), 1),

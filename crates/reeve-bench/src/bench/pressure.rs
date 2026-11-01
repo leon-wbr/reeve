@@ -72,7 +72,10 @@ impl Default for Arm {
 impl Arm {
     fn flags(&self, settings: &Path) -> Vec<String> {
         let mut f = vec!["--model".to_string(), self.model.clone()];
-        for (flag, v) in [("--effort", &self.effort), ("--setting-sources", &self.setting_sources)] {
+        for (flag, v) in [
+            ("--effort", &self.effort),
+            ("--setting-sources", &self.setting_sources),
+        ] {
             if let Some(v) = v {
                 f.extend([flag.to_string(), v.clone()]);
             }
@@ -115,7 +118,10 @@ pub fn jobs(ledger: &str, ids: &[String]) -> Jobs {
     let mut j = Jobs::default();
     let mut done = HashSet::new();
     let mut running: HashSet<i64> = HashSet::new();
-    for e in ledger.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+    for e in ledger
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+    {
         let pid = e["pid"].as_i64().unwrap_or(0);
         j.last_t = e["t"].as_i64().max(j.last_t);
         match e["event"].as_str() {
@@ -291,7 +297,9 @@ pub fn reap_target(all: &[Proc], run: &[Proc]) -> Vec<u32> {
     };
     let shell = all
         .iter()
-        .find(|p| p.pid == caller.ppid && matches!(p.name(), "bash" | "zsh" | "sh" | "-zsh" | "-bash"))
+        .find(|p| {
+            p.pid == caller.ppid && matches!(p.name(), "bash" | "zsh" | "sh" | "-zsh" | "-bash")
+        })
         .map_or(caller.pid, |p| p.pid);
     let mut tree = vec![shell];
     let mut i = 0;
@@ -350,8 +358,12 @@ fn sampler(s: Sampler) {
     // lsof reports real paths: /private/var, not /var.
     let dir = fs::canonicalize(&s.dir).unwrap_or_else(|_| s.dir.clone());
     while !s.stop.load(Ordering::Relaxed) {
-        let mut all = parse_ps(&output(Command::new("ps").args(["-axo", "pid=,ppid=,rss=,args="])));
-        let fp = parse_top(&output(Command::new("top").args(["-l", "1", "-stats", "pid,mem"])));
+        let mut all = parse_ps(&output(
+            Command::new("ps").args(["-axo", "pid=,ppid=,rss=,args="]),
+        ));
+        let fp = parse_top(&output(
+            Command::new("top").args(["-l", "1", "-stats", "pid,mem"]),
+        ));
         footprints(&mut all, &fp);
         let lsof = output(Command::new("lsof").args(["-n", "-P", "-d", "cwd", "-Fpn"]));
         let run = in_run(&all, &lsof, &dir, me);
@@ -359,16 +371,25 @@ fn sampler(s: Sampler) {
         let t = clock() - s.t0;
         let _ = append(
             &s.logs.join("samples.tsv"),
-            format!("{t}\t{}\t{}\t{}\t{}\t{}\n", x.mem_kb, x.jobs_mem_kb, x.sessions, x.jobs, x.procs).as_bytes(),
+            format!(
+                "{t}\t{}\t{}\t{}\t{}\t{}\n",
+                x.mem_kb, x.jobs_mem_kb, x.sessions, x.jobs, x.procs
+            )
+            .as_bytes(),
         );
         if s.budget_kb > 0 && x.jobs_mem_kb > s.budget_kb && t - last_kill >= 5_000 {
             let tree = reap_target(&all, &run);
             if !tree.is_empty() {
                 let pids: Vec<String> = tree.iter().map(u32::to_string).collect();
-                let _ = Command::new("kill").arg("-9").args(&pids).stderr(Stdio::null()).status();
+                let _ = Command::new("kill")
+                    .arg("-9")
+                    .args(&pids)
+                    .stderr(Stdio::null())
+                    .status();
                 last_kill = t;
                 *s.kills.lock().unwrap() += 1;
-                let line = json!({ "t": t, "event": "reap", "jobsMemKb": x.jobs_mem_kb, "pids": tree });
+                let line =
+                    json!({ "t": t, "event": "reap", "jobsMemKb": x.jobs_mem_kb, "pids": tree });
                 let _ = append(&s.logs.join("events.jsonl"), format!("{line}\n").as_bytes());
             }
         }
@@ -383,7 +404,10 @@ fn sampler(s: Sampler) {
 
 /// What each worker is asked: its jobs, one after another, through `reeve heavy`.
 pub fn prompt(ids: &[String]) -> String {
-    let cmds: Vec<String> = ids.iter().map(|i| format!("- `node scripts/job.mjs --id {i}`")).collect();
+    let cmds: Vec<String> = ids
+        .iter()
+        .map(|i| format!("- `node scripts/job.mjs --id {i}`"))
+        .collect();
     format!(
         "Run these heavy jobs, one after another, each through `reeve heavy`:\n{}\nWait for each to finish before the next. Don't rerun a job that fails. When all have run, say for each job whether it finished or failed, with its exit code, and stop.",
         cmds.join("\n")
@@ -419,25 +443,48 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     if !base.join(".git").exists() {
         git!("-C", base, "init", "-q", "-b", "main")?;
         git!(
-            "-C", base, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit",
-            "-q", "--allow-empty", "-m", "base"
+            "-C",
+            base,
+            "-c",
+            "user.name=bench",
+            "-c",
+            "user.email=bench@localhost",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base"
         )?;
     }
     git!("-C", base, "worktree", "add", "-q", "-b", run, dir, "main")?;
     copy_dir(&o.root.join("pressure/repo"), &dir)?;
     let setup = arm.setup.as_ref().map(|s| o.root.join(s));
-    if let Some(repo) = setup.as_ref().map(|s| s.join("repo")).filter(|r| r.exists()) {
+    if let Some(repo) = setup
+        .as_ref()
+        .map(|s| s.join("repo"))
+        .filter(|r| r.exists())
+    {
         copy_dir(&repo, &dir)?;
     }
     let claude_md = dir.join("CLAUDE.md");
-    fs::write(&claude_md, fs::read_to_string(&claude_md)?.replace("{{RUN}}", &run))?;
+    fs::write(
+        &claude_md,
+        fs::read_to_string(&claude_md)?.replace("{{RUN}}", &run),
+    )?;
     let cfg = json!({
         "ledger": ledger.display().to_string(), "mb": arm.job_mb, "seconds": arm.job_seconds,
     });
     fs::write(dir.join("job.json"), format!("{cfg:#}\n"))?;
     git!("-C", dir, "add", "-A")?;
     git!(
-        "-C", dir, "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "-qm",
+        "-C",
+        dir,
+        "-c",
+        "user.name=bench",
+        "-c",
+        "user.email=bench@localhost",
+        "commit",
+        "-qm",
         "scenario"
     )?;
 
@@ -445,7 +492,13 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         .filter(|(k, _)| {
             let k = k.to_string_lossy();
             ![
-                "HERDR_", "ORCH_", "CLAUDECODE", "CLAUDE_CODE_", "PATH", "REEVE_", "XDG_STATE_HOME",
+                "HERDR_",
+                "ORCH_",
+                "CLAUDECODE",
+                "CLAUDE_CODE_",
+                "PATH",
+                "REEVE_",
+                "XDG_STATE_HOME",
                 "HOME",
             ]
             .iter()
@@ -462,10 +515,15 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         return Err(io::Error::other(format!("no reeve at {}", reeve.display())));
     }
     path.extend(reeve.parent().map(PathBuf::from));
-    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
     env.extend([
         ("HOME".into(), o.home.clone().into()),
-        ("PATH".into(), std::env::join_paths(path).map_err(io::Error::other)?),
+        (
+            "PATH".into(),
+            std::env::join_paths(path).map_err(io::Error::other)?,
+        ),
         ("XDG_STATE_HOME".into(), state.clone().into()),
         ("REEVE_HOME".into(), logs.join("reeve-home").into()),
         ("ORCH_HOME".into(), o.trials.join(".orch-sink").into()),
@@ -489,7 +547,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         s["env"][k] = json!(v.as_str().map_or_else(|| v.to_string(), String::from));
     }
     fs::write(&settings, format!("{s:#}\n"))?;
-    write_exe(&bin.join("claude"), &claude_wrapper(&o.claude, &arm.flags(&settings)))?;
+    write_exe(
+        &bin.join("claude"),
+        &claude_wrapper(&o.claude, &arm.flags(&settings)),
+    )?;
 
     let since = SystemTime::now();
     let t0 = clock();
@@ -519,7 +580,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         };
         thread::spawn(move || sampler(s))
     };
-    log("start", json!({ "arm": o.arm, "run": run, "params": arm_json(&arm) }));
+    log(
+        "start",
+        json!({ "arm": o.arm, "run": run, "params": arm_json(&arm) }),
+    );
 
     let mut ids = vec![];
     let mut run_failures = 0;
@@ -553,7 +617,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
             break ("all done", false);
         }
         let last = j.last_t.unwrap_or(t0);
-        if live_jobs(&ledger.join("live")) == 0 && now - last >= o.quiet_ms && now - t0 >= o.quiet_ms {
+        if live_jobs(&ledger.join("live")) == 0
+            && now - last >= o.quiet_ms
+            && now - t0 >= o.quiet_ms
+        {
             break ("quiet", false);
         }
         if now - t0 > o.total_ms {
@@ -575,7 +642,9 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         u_add(&mut usage, &f, &mut seen);
         sessions += usize::from(!f.to_string_lossy().contains("/subagents/"));
     }
-    let reeve = super::day::reeve_metrics(&fs::read_to_string(state.join("reeve/events.jsonl")).unwrap_or_default());
+    let reeve = super::day::reeve_metrics(
+        &fs::read_to_string(state.join("reeve/events.jsonl")).unwrap_or_default(),
+    );
     let total = ids.len();
     let result = json!({
         "arm": o.arm, "run": run, "params": arm_json(&arm), "end": end, "timeout": timeout,
@@ -588,12 +657,18 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         "runFailures": run_failures, "usage": usage.json(), "costUsd": round(usage.cost, 3),
         "sessionCount": sessions, "reeve": reeve,
     });
-    fs::write(logs.join("result.json"), serde_json::to_string_pretty(&result)?)?;
-    println!("{}", json!({
-        "run": run, "completed": j.completed, "killed": killed, "lost": total - j.completed,
-        "peakMemMb": result["peakMemMb"], "sessionsAtPeak": p.sessions, "doneAt": result["doneAt"],
-        "cost": result["costUsd"],
-    }));
+    fs::write(
+        logs.join("result.json"),
+        serde_json::to_string_pretty(&result)?,
+    )?;
+    println!(
+        "{}",
+        json!({
+            "run": run, "completed": j.completed, "killed": killed, "lost": total - j.completed,
+            "peakMemMb": result["peakMemMb"], "sessionsAtPeak": p.sessions, "doneAt": result["doneAt"],
+            "cost": result["costUsd"],
+        })
+    );
     cleanup(&base, &run, &dir)?;
     Ok(0)
 }
@@ -617,14 +692,24 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
     let mut runs: Vec<Value> = fs::read_dir(&logs)?
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("rp-"))
-        .filter_map(|e| serde_json::from_str(&fs::read_to_string(e.path().join("result.json")).ok()?).ok())
+        .filter_map(|e| {
+            serde_json::from_str(&fs::read_to_string(e.path().join("result.json")).ok()?).ok()
+        })
         .collect();
     runs.sort_by_key(|r| js_str(r.get("run")));
     let mut arms: Vec<String> = runs.iter().map(|r| js_str(r.get("arm"))).collect();
     arms.dedup();
     let header = [
-        "arm", "n", "jobs", "completed", "lost", "killed", "peak mem MB", "sessions at peak",
-        "min to done", "cost $",
+        "arm",
+        "n",
+        "jobs",
+        "completed",
+        "lost",
+        "killed",
+        "peak mem MB",
+        "sessions at peak",
+        "min to done",
+        "cost $",
     ];
     let mut rows: Vec<Vec<String>> = vec![header.map(String::from).to_vec()];
     for arm in arms.iter().filter(|a| only.is_empty() || only.contains(a)) {
@@ -639,11 +724,20 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
             col("killed", 0),
             col("peakMemMb", 0),
             col("sessionsAtPeak", 0),
-            fmt(&rs.iter().map(|r| r["doneAt"].as_f64().map(|t| t / 60e3)).collect::<Vec<_>>(), 1),
+            fmt(
+                &rs.iter()
+                    .map(|r| r["doneAt"].as_f64().map(|t| t / 60e3))
+                    .collect::<Vec<_>>(),
+                1,
+            ),
             col("costUsd", 2),
         ]);
     }
-    Ok(rows.iter().map(|r| r.join("\t")).collect::<Vec<_>>().join("\n"))
+    Ok(rows
+        .iter()
+        .map(|r| r.join("\t"))
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 #[cfg(test)]
