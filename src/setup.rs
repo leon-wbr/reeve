@@ -18,7 +18,7 @@ pub fn marker(k: Kind) -> String {
 }
 pub const MATCHER: &str = "startup|resume|clear|compact";
 pub const DESCRIPTION: &str = "reeve is installed: test suites, e2e, builds and installs go \
-through `reeve heavy`; named workers outlive this session; `reeve handoff` \
+through `reeve heavy`, in the background; named workers outlive this session; `reeve handoff` \
 starts your successor. Read before heavy, long or parallel work, or a handoff.";
 const STUB_START: &str = "Written by `reeve setup ";
 const STUB_FOR: &str = "` for reeve ";
