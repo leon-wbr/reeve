@@ -3,6 +3,7 @@
 //! the predecessor after that goes to the successor's inbox, like any `reeve send`, and the
 //! predecessor is closed.
 
+use crate::setup;
 use crate::workers::{self, Agent, Backend, Kind, Registry, State, Worker};
 use serde_json::{Value, json};
 use std::fs::{self, File};
@@ -43,16 +44,16 @@ pub fn predecessor<'a>(all: &'a [Worker], pane: Option<&str>) -> Option<&'a Work
         .find(|w| w.backend == Backend::Pane && w.handle == pane)
 }
 
-/// What a predecessor's tab shows: `Err` says why it must stay open. `text` is the pane read;
-/// the handoff shows in it as the `reeve handoff --name NEXT` command the predecessor ran. Once
-/// the hook `forwards` the predecessor's messages to the successor, it caught each one, so only
-/// the input box counts.
-pub fn tab_verdict(text: &str, next: &str, forwards: bool) -> Result<(), String> {
+/// What a predecessor's tab shows. `text` is the pane read; the handoff shows in it as the
+/// `reeve handoff --name NEXT` command the predecessor ran, unless Claude Code folded that into
+/// "Ran 1 shell command". Once the hook `forwards` the predecessor's messages to the successor,
+/// it catches each one, so only the input box counts.
+pub fn tab_verdict(text: &str, next: &str, forwards: bool) -> Verdict {
     let lines: Vec<&str> = text.lines().collect();
     let is_prompt = |l: &&str| l.starts_with('❯') || l.starts_with('›');
     // The input box is the last prompt line, with the indented lines under it.
     let Some(at) = lines.iter().rposition(is_prompt) else {
-        return Err("has a tab reeve cannot read: no input box in it".into());
+        return Verdict::Check("has a tab reeve cannot read: no input box in it".into());
     };
     let handoff = format!("handoff --name {next}");
     let ran = lines[..at].iter().rposition(|l| {
@@ -63,13 +64,13 @@ pub fn tab_verdict(text: &str, next: &str, forwards: bool) -> Result<(), String>
     match ran {
         _ if forwards => {}
         None => {
-            return Err(format!(
+            return Verdict::Check(format!(
                 "has a tab that no longer shows the handoff to {next}, so a new message can't be ruled out"
             ));
         }
         Some(ran) => {
             if let Some(msg) = lines[ran + 1..at].iter().copied().find(is_prompt) {
-                return Err(format!("got a new message: {}", quoted(msg)));
+                return Verdict::Check(format!("got a new message: {}", quoted(msg)));
             }
         }
     }
@@ -82,8 +83,8 @@ pub fn tab_verdict(text: &str, next: &str, forwards: bool) -> Result<(), String>
         .collect::<Vec<_>>()
         .join(" ");
     match input.trim() {
-        "" => Ok(()),
-        typed => Err(format!("has unsent input: {}", quoted(typed))),
+        "" => Verdict::Close,
+        typed => Verdict::Keep(format!("has unsent input: {}", quoted(typed))),
     }
 }
 
@@ -100,8 +101,22 @@ fn quoted(line: &str) -> String {
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
     Close,
-    /// Why it stays, as a continuation of the predecessor's name.
+    /// Why it stays, as a continuation of the predecessor's name; reeve checks again later.
     Keep(String),
+    /// Why it stays, when only reading its tab can tell whether it is done, which is for the
+    /// successor to do.
+    Check(String),
+}
+
+/// The line for a predecessor that stays: why, and what the successor should do about it.
+pub fn stays(from: &str, v: &Verdict) -> Option<String> {
+    match v {
+        Verdict::Close => None,
+        Verdict::Keep(why) => Some(format!("{from} {why}")),
+        Verdict::Check(why) => Some(format!(
+            "{from} {why}; read its tab and `reeve close {from}` if nothing new is there"
+        )),
+    }
 }
 
 /// Whether a predecessor can be closed: its agent is idle (or already gone), it wrote its report,
@@ -116,27 +131,25 @@ pub fn verdict(
     forwards: bool,
 ) -> Verdict {
     let keep = |why: &str| Verdict::Keep(why.to_string());
+    let check = |why: &str| Verdict::Check(why.to_string());
     match (agent, report || forwards, tab) {
         (Agent::Absent, ..) => Verdict::Close,
         (Agent::Working, ..) => keep("is still working"),
         (Agent::Blocked, ..) => keep("is waiting for an answer in its tab"),
-        (Agent::Unknown, ..) => keep("could not be checked"),
-        (Agent::Idle, false, _) => keep("has no report yet"),
+        (Agent::Unknown, ..) => check("could not be checked"),
+        (Agent::Idle, false, _) => check("has no report yet"),
         (Agent::Idle, true, None) => Verdict::Close,
         (Agent::Idle, true, Some(Err(e))) => {
-            Verdict::Keep(format!("has a tab reeve can't read: {e}"))
+            Verdict::Check(format!("has a tab reeve can't read: {e}"))
         }
-        (Agent::Idle, true, Some(Ok(text))) => match tab_verdict(text, next, forwards) {
-            Ok(()) => Verdict::Close,
-            Err(why) => Verdict::Keep(why),
-        },
+        (Agent::Idle, true, Some(Ok(text))) => tab_verdict(text, next, forwards),
     }
 }
 
 /// Checks each predecessor of a handoff that is not yet closed, and closes the ones that
 /// `verdict` allows. Returns a line for what the caller should know: a close, or why not.
 /// Run by `reeve ls`, which the session-start hook runs too, so the successor sees the lines;
-/// a predecessor that stays is checked again by the next `ls`.
+/// `follow`, which the handoff starts, closes a predecessor as soon as it is done.
 pub fn tidy(r: &Registry) -> Vec<String> {
     r.predecessors()
         .into_iter()
@@ -171,7 +184,7 @@ fn tidy_one(r: &Registry, next: &str, from: &str) -> Option<String> {
         (w.backend == Backend::Pane && a == Agent::Idle).then(|| workers::read_tab(&w.handle));
     let tab = tab.as_ref().map(|t| t.as_deref().map_err(String::as_str));
     match verdict(a, w.report.exists(), tab, next, forwards) {
-        Verdict::Keep(why) => Some(format!("{from} {why}")),
+        v @ (Verdict::Keep(_) | Verdict::Check(_)) => stays(from, &v),
         Verdict::Close => match workers::close(r, from, false) {
             Ok(()) => {
                 forget();
@@ -262,8 +275,9 @@ fn spawn_follow(next: &str) -> io::Result<()> {
 const FOLLOW_EVERY: Duration = Duration::from_secs(2);
 const FOLLOW_TRIES: u32 = 300;
 
-/// `reeve tidy NEXT`: tidies the handoff to `next` until its predecessor is closed, giving up
-/// after ten minutes; a later `reeve ls` carries on from there.
+/// `reeve tidy NEXT`, started by the handoff and by the prompt hook: tidies the handoff to
+/// `next` until its predecessor is closed, giving up after ten minutes; a later `reeve ls`
+/// carries on from there.
 pub fn follow(r: &Registry, next: &str) {
     for _ in 0..FOLLOW_TRIES {
         std::thread::sleep(FOLLOW_EVERY);
@@ -307,10 +321,22 @@ pub fn handoff(
     // Before the successor starts: its first `reeve ls` may come at once.
     if let Some(from) = from {
         fs::write(r.predecessor_path(next), from)?;
+        // With reeve's prompt hook, every later prompt to the predecessor goes to the
+        // successor's inbox, so the handoff forwards from the start, whatever its tab still shows.
+        if r.get(from)
+            .is_ok_and(|w| setup::prompt_hook_installed(w.agent))
+        {
+            fs::write(r.forwards_path(next), "")?;
+        }
     }
     if let Err(e) = workers::run(r, next, kind, backend, &args) {
+        let _ = fs::remove_file(r.forwards_path(next));
         let _ = fs::remove_file(r.predecessor_path(next));
         return Err(e);
+    }
+    // Closes the predecessor as soon as it is done, not at some later `reeve ls`.
+    if from.is_some() {
+        let _ = spawn_follow(next);
     }
     println!("{}", file.display());
     eprintln!("reeve: handed off to {next}; stop now and leave the workers running");
@@ -363,29 +389,36 @@ mod tests {
         )
     }
 
+    fn why(v: Verdict) -> String {
+        match v {
+            Verdict::Keep(why) | Verdict::Check(why) => why,
+            Verdict::Close => panic!("closed"),
+        }
+    }
+
     #[test]
     fn a_tab_with_nothing_new_and_an_empty_box_can_be_closed() {
-        assert_eq!(tab_verdict(&tab("", ""), "next", false), Ok(()));
+        assert_eq!(tab_verdict(&tab("", ""), "next", false), Verdict::Close);
     }
 
     #[test]
     fn unsent_input_keeps_the_tab_and_is_quoted() {
-        let why = tab_verdict(
+        let v = tab_verdict(
             &tab("", "start a worker on the reeve close fix"),
             "next",
             false,
         );
         assert_eq!(
-            why,
-            Err("has unsent input: \"start a worker on the reeve close fix\"".into())
+            v,
+            Verdict::Keep("has unsent input: \"start a worker on the reeve close fix\"".into())
         );
         let long = "x".repeat(100);
-        let why = tab_verdict(&tab("", &long), "next", false).unwrap_err();
-        assert!(why.ends_with(&format!("\"{}…\"", "x".repeat(80))), "{why}");
+        let w = why(tab_verdict(&tab("", &long), "next", false));
+        assert!(w.ends_with(&format!("\"{}…\"", "x".repeat(80))), "{w}");
         let multi = tab("", "first line\n  second line");
         assert_eq!(
             tab_verdict(&multi, "next", false),
-            Err("has unsent input: \"first line second line\"".into())
+            Verdict::Keep("has unsent input: \"first line second line\"".into())
         );
     }
 
@@ -394,45 +427,72 @@ mod tests {
         let after = "\n❯ also check the docs\n\n⏺ Sure.\n";
         assert_eq!(
             tab_verdict(&tab(after, ""), "next", false),
-            Err("got a new message: \"also check the docs\"".into())
+            Verdict::Check("got a new message: \"also check the docs\"".into())
         );
         // A message before the handoff is old news.
         let before = format!("❯ hello\n⏺ hi\n{}", tab("", ""));
-        assert_eq!(tab_verdict(&before, "next", false), Ok(()));
+        assert_eq!(tab_verdict(&before, "next", false), Verdict::Close);
     }
 
     #[test]
-    fn a_tab_that_shows_no_handoff_to_this_successor_or_no_box_is_not_closed() {
+    fn a_tab_that_shows_no_handoff_to_this_successor_or_no_box_is_left_to_the_successor() {
         let other = tab("", "").replace("--name next", "--name next-2");
+        let v = tab_verdict(&other, "next", false);
         assert!(
-            tab_verdict(&other, "next", false)
-                .unwrap_err()
-                .contains("handoff to next")
+            matches!(&v, Verdict::Check(w) if w.contains("handoff to next")),
+            "{v:?}"
         );
-        let scrolled = "⏺ Handed off.\n❯ \n";
+        // Claude Code folds the Bash call into "Ran 1 shell command".
+        let folded = "⏺ Ran 1 shell command\n⏺ Handed off.\n❯ \n";
+        let v = tab_verdict(folded, "next", false);
         assert!(
-            tab_verdict(scrolled, "next", false)
-                .unwrap_err()
-                .contains("no longer shows")
+            matches!(&v, Verdict::Check(w) if w.contains("no longer shows")),
+            "{v:?}"
         );
         let no_box = "⏺ Bash(reeve handoff --name next)\n";
+        let v = tab_verdict(no_box, "next", false);
         assert!(
-            tab_verdict(no_box, "next", false)
-                .unwrap_err()
-                .contains("no input box")
+            matches!(&v, Verdict::Check(w) if w.contains("no input box")),
+            "{v:?}"
         );
+    }
+
+    #[test]
+    fn a_predecessor_reeve_cant_judge_says_what_the_successor_should_do() {
+        let check = Verdict::Check("has no report yet".into());
+        assert_eq!(
+            stays("old", &check).as_deref(),
+            Some(
+                "old has no report yet; read its tab and `reeve close old` if nothing new is there"
+            )
+        );
+        let keep = Verdict::Keep("is still working".into());
+        assert_eq!(stays("old", &keep).as_deref(), Some("old is still working"));
+        assert_eq!(stays("old", &Verdict::Close), None);
+        let go = |a, report, t: Option<Result<&str, &str>>| verdict(a, report, t, "next", false);
+        assert!(matches!(go(Agent::Idle, false, None), Verdict::Check(_)));
+        assert!(matches!(go(Agent::Unknown, true, None), Verdict::Check(_)));
+        assert!(matches!(
+            go(Agent::Idle, true, Some(Err("boom"))),
+            Verdict::Check(_)
+        ));
+        assert!(matches!(go(Agent::Working, true, None), Verdict::Keep(_)));
+        assert!(matches!(go(Agent::Blocked, true, None), Verdict::Keep(_)));
     }
 
     #[test]
     fn once_reeve_forwards_the_messages_only_the_input_box_keeps_the_tab() {
         let after = "\n❯ also check the docs\n\n⏺ Sure.\n";
-        assert_eq!(tab_verdict(&tab(after, ""), "next", true), Ok(()));
-        assert_eq!(tab_verdict("⏺ Compacted.\n❯ \n", "next", true), Ok(()));
+        assert_eq!(tab_verdict(&tab(after, ""), "next", true), Verdict::Close);
+        assert_eq!(
+            tab_verdict("⏺ Ran 1 shell command\n❯ \n", "next", true),
+            Verdict::Close
+        );
         assert_eq!(
             tab_verdict(&tab(after, "hi"), "next", true),
-            Err("has unsent input: \"hi\"".into())
+            Verdict::Keep("has unsent input: \"hi\"".into())
         );
-        assert!(tab_verdict("⏺ Compacted.\n", "next", true).is_err());
+        assert_ne!(tab_verdict("⏺ Compacted.\n", "next", true), Verdict::Close);
         // The hook keeps every prompt from it, so it can't write a report any more.
         let quiet = tab("", "");
         let v = verdict(Agent::Idle, false, Some(Ok(&quiet)), "next", true);
@@ -462,19 +522,16 @@ mod tests {
         assert_eq!(go(Agent::Absent, false, None), Verdict::Close);
         assert_eq!(go(Agent::Working, true, None), keep("is still working"));
         assert!(matches!(go(Agent::Blocked, true, None), Verdict::Keep(_)));
-        assert!(matches!(go(Agent::Unknown, true, None), Verdict::Keep(_)));
         assert_eq!(
             go(Agent::Idle, false, Some(Ok(&quiet))),
-            keep("has no report yet")
+            Verdict::Check("has no report yet".into())
         );
         assert_eq!(
             go(Agent::Idle, true, Some(Ok(&typed))),
             keep("has unsent input: \"hi\"")
         );
-        let Verdict::Keep(why) = go(Agent::Idle, true, Some(Err("boom"))) else {
-            panic!("closed a tab it could not read");
-        };
-        assert!(why.contains("boom"), "{why}");
+        let w = why(go(Agent::Idle, true, Some(Err("boom"))));
+        assert!(w.contains("boom"), "{w}");
     }
 
     #[test]

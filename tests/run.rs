@@ -81,6 +81,8 @@ fn reeve_with(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> O
         .env("XDG_STATE_HOME", dir.join("state"))
         .env("REEVE_HOME", dir.join("reeve-home"))
         .env("REEVE_EVENTS", dir.join("events.jsonl"))
+        .env("CLAUDE_CONFIG_DIR", dir.join("claude-config"))
+        .env("CODEX_HOME", dir.join("codex-home"))
         .env_remove("HERDR_ENV")
         .env_remove("HERDR_PANE_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -943,6 +945,8 @@ fn a_handoff_from_a_reeve_pane_remembers_it_as_the_predecessor() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();
     registry(&root, &["old"]);
+    // Still working, so the follow that the handoff starts leaves it open.
+    working_pane(&root);
     std::fs::write(project.join("n.md"), "Goal.").unwrap();
     let args = ["handoff", "--name", "next", "--notes", "n.md", "--bg"];
     let o = reeve_with(&root, &project, &args, &[("HERDR_PANE_ID", "p-old")]);
@@ -969,10 +973,27 @@ fn ls_closes_the_predecessor_once_it_is_quiet_and_says_why_until_then() {
         String::from_utf8_lossy(&o.stdout).to_string()
     };
 
-    // No report yet.
+    // No report yet: the successor is told what to do about it.
     idle_pane(&root, "");
     let out = ls(&["ls"]);
-    assert!(out.contains("reeve: old has no report yet"), "{out}");
+    assert!(
+        out.contains(
+            "reeve: old has no report yet; read its tab and `reeve close old` if nothing new is there"
+        ),
+        "{out}"
+    );
+    assert!(from.exists());
+
+    // Without reeve's prompt hook, a tab where Claude Code folded the handoff into "Ran 1 shell
+    // command" can't rule out a new message.
+    report(&root, "old");
+    std::fs::write(root.join("pane-text"), FOLDED).unwrap();
+    let out = ls(&["ls"]);
+    assert!(
+        out.contains("reeve: old has a tab that no longer shows the handoff to next")
+            && out.contains("`reeve close old` if nothing new is there"),
+        "{out}"
+    );
     assert!(from.exists());
 
     // A report, but something typed in its box.
@@ -997,6 +1018,56 @@ fn ls_closes_the_predecessor_once_it_is_quiet_and_says_why_until_then() {
     assert!(!from.exists());
 }
 
+/// A predecessor's tab after the handoff, as Claude Code shows it with the Bash call folded.
+const FOLDED: &str = "⏺ Ran 1 shell command\n⏺ Handed off.\n──── old ─\n❯ \n────\n  footer\n";
+
+fn working_pane(root: &Path) {
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"claude","agent_status":"working"}}}"#,
+    )
+    .unwrap();
+}
+
+/// `old` hands off to a pane successor `next` from its pane while it is still working.
+fn hand_off_from_pane(root: &Path, project: &Path) {
+    registry(root, &["old"]);
+    working_pane(root);
+    std::fs::write(project.join("n.md"), "Goal.").unwrap();
+    let args = ["handoff", "--name", "next", "--notes", "n.md", "--pane"];
+    let o = reeve_with(root, project, &args, &[("HERDR_PANE_ID", "p-old")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(root, "next");
+}
+
+#[test]
+fn a_handoff_closes_its_predecessor_once_it_is_idle_with_a_report_without_another_ls() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    hand_off_from_pane(&root, &project);
+    // Without reeve's prompt hook, no message is forwarded, so the tab is searched.
+    assert!(!root.join("state/reeve/handoffs/next.forwards").exists());
+    // It finishes its reply, writes its report and goes idle; nobody runs `reeve ls`.
+    report(&root, "old");
+    idle_pane(&root, "");
+    herdr_until(&root, "pane close p-old");
+}
+
+#[test]
+fn with_reeves_prompt_hook_a_predecessor_closes_once_idle_though_its_tab_hides_the_handoff() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve(&root, &project, &["setup", "claude"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    hand_off_from_pane(&root, &project);
+    assert!(root.join("state/reeve/handoffs/next.forwards").exists());
+    // The hook sends every later prompt on, so only the input box counts from the start, and
+    // no report is needed: the hook keeps the predecessor from ever writing one.
+    idle_pane(&root, "");
+    std::fs::write(root.join("pane-text"), FOLDED).unwrap();
+    herdr_until(&root, "pane close p-old");
+}
+
 /// `reeve hook context` in the pane `pane`, for the user's prompt `prompt`.
 fn prompt_hook(dir: &Path, from: &Path, pane: &str, prompt: &str) -> Output {
     let payload = serde_json::json!({
@@ -1017,6 +1088,8 @@ fn hook(dir: &Path, from: &Path, pane: &str, payload: &Value) -> Output {
         .env("XDG_STATE_HOME", dir.join("state"))
         .env("REEVE_HOME", dir.join("reeve-home"))
         .env("REEVE_EVENTS", dir.join("events.jsonl"))
+        .env("CLAUDE_CONFIG_DIR", dir.join("claude-config"))
+        .env("CODEX_HOME", dir.join("codex-home"))
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", pane)
         .env_remove("CLAUDE_CODE_SESSION_ID")
