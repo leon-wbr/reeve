@@ -176,9 +176,19 @@ commit() { git add -A && git -c user.name=fake -c user.email=f@x commit -qm "$1"
 sol="$FAKE_SOLUTION"
 printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
 renamed=0; discounted=0
+branch="refs/heads/${PWD##*/}"
 while IFS= read -r line; do
+  # noref: the run's branch disappears for good, so every check fails; the session goes quiet.
+  if [ "$FAKE_MODE" = noref ]; then
+    [[ "$line" == *backlog* ]] && git update-ref -d "$branch"
+    say "Working."; result; continue
+  fi
   if [[ "$line" == *backlog* ]]; then
     cp "$sol/src/price.js" "$sol/src/tax.js" "$sol/src/slug.js" src/ && commit "price, vat, slug"
+    if [ "$FAKE_MODE" = flaky ]; then
+      # The branch is gone for less than two checks, then back: a transient check error.
+      sha=$(git rev-parse HEAD); git update-ref -d "$branch"; sleep 0.4; git update-ref "$branch" "$sha"
+    fi
     if [ "$FAKE_MODE" = reeve ]; then
       reeve --skill >/dev/null
       reeve heavy -- node scripts/rebuild-fixtures.mjs >/dev/null
@@ -195,6 +205,10 @@ while IFS= read -r line; do
     say "Notes written."; result; continue
   fi
   if [[ "$line" == *"take over"* ]]; then
+    # FAKE_CHAIN: the first successor passes the budget too and hands off again.
+    if [ -n "$FAKE_CHAIN" ] && [ ! -e "$FAKE_CHAIN" ]; then
+      : > "$FAKE_CHAIN"; say "Reading."; say "Reading on."; say "Still reading."; result; continue
+    fi
     cp "$sol/src/cart.js" src/ && commit "discount"
     say "Everything is merged.\nALL DONE"; result; continue
   fi
@@ -235,6 +249,17 @@ fn fake_run_with(
     arm_json: Option<&str>,
     env: &[(&str, &str)],
 ) -> (tempfile::TempDir, Value, String) {
+    let (t, r, args, code) = fake_run_code(arm, mode, arm_json, env);
+    assert_eq!(code, 0, "{r:#}");
+    (t, r, args)
+}
+
+fn fake_run_code(
+    arm: &str,
+    mode: &str,
+    arm_json: Option<&str>,
+    env: &[(&str, &str)],
+) -> (tempfile::TempDir, Value, String, i32) {
     let t = tempfile::tempdir().unwrap();
     let bin = t.path().join("fakes");
     fs::create_dir_all(&bin).unwrap();
@@ -271,12 +296,132 @@ fn fake_run_with(
         .collect(),
         arm_json: arm_json.map(String::from),
     };
-    assert_eq!(run(&o).unwrap(), 0);
+    let code = run(&o).unwrap();
     let logs = o.trials.join("logs").join(format!("rd-{arm}-1"));
     let r: Value = serde_json::from_str(&fs::read_to_string(logs.join("result.json")).unwrap()).unwrap();
     let args = fs::read_to_string(&log).unwrap();
     assert!(!o.trials.join(format!("rd-{arm}-1")).exists(), "the run's worktree is cleaned up");
-    (t, r, args)
+    (t, r, args, code)
+}
+
+const PLAIN: &str = r#"{ "settingSources": "project,local" }"#;
+
+#[test]
+fn a_tail_window_starts_on_a_char_boundary() {
+    // "aé": é takes bytes 1 and 2, so a one-byte window would start inside it.
+    assert_eq!(tail_window("aé", 1), "");
+    assert_eq!(tail_window("aé", 2), "é");
+    assert_eq!(tail_window("abc", 10), "abc");
+    let text = format!("{}\n{{\"x\":1}}\n", "ü".repeat(10));
+    assert_eq!(tail_window(&text, 12), "{\"x\":1}\n");
+}
+
+#[test]
+fn a_check_that_keeps_failing_ends_the_run_but_still_writes_the_result_and_cleans_up() {
+    let (_t, r, _, code) = fake_run_code("noref", "noref", Some(PLAIN), &[]);
+    assert_eq!(code, 1, "{r:#}");
+    let err = r["error"].as_str().unwrap_or("");
+    assert!(err.contains("checks in a row"), "{r:#}");
+    assert_eq!(r["final"]["done"], false, "{r:#}");
+    assert_eq!(r["invalid"], true, "a harness error isn't the agent's: {r:#}");
+    assert!(r["usage"].is_object(), "finish ran: {r:#}");
+}
+
+#[test]
+fn one_check_error_skips_a_tick_and_doesnt_end_the_run() {
+    let (_t, r, _) = fake_run_with("flaky", "flaky", Some(PLAIN), &[]);
+    assert!(r["error"].is_null(), "{r:#}");
+    assert_eq!(r["final"]["done"], true, "{r:#}");
+    assert!(r["checkErrors"].as_u64().unwrap_or(0) >= 1, "the branch was gone: {r:#}");
+}
+
+#[test]
+fn strikes_end_only_after_k_failures_in_a_row() {
+    let mut s = Strikes::new(3);
+    let bad = || Err::<Value, _>(io::Error::other("busy"));
+    assert!(matches!(s.note(bad()), Ok(None)));
+    assert!(matches!(s.note(bad()), Ok(None)));
+    assert!(matches!(s.note(Ok(json!(1))), Ok(Some(_))));
+    assert!(matches!(s.note(bad()), Ok(None)));
+    assert!(matches!(s.note(bad()), Ok(None)));
+    let e = s.note(bad()).unwrap_err();
+    assert!(e.contains("3 checks in a row") && e.contains("busy"), "{e}");
+    assert_eq!(s.errors, 5);
+}
+
+/// A transcript as Claude Code writes it: the first user prompt, then an assistant turn.
+fn transcript(prompt: &str) -> String {
+    format!(
+        "{}\n{}\n",
+        json!({ "type": "user", "message": { "role": "user", "content": prompt } }),
+        json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": "ok" }] } }),
+    )
+}
+
+#[test]
+fn the_successor_is_the_session_started_on_the_handoff_prompt_after_the_handoff() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("p.jsonl");
+    let older = t.path().join("older.jsonl");
+    let s = t.path().join("s.jsonl");
+    fs::write(&p, transcript("Work the backlog in asks.md.")).unwrap();
+    let take = "You take over from a previous session that handed off. Read /x/h.md and continue the work from there.";
+    fs::write(&older, transcript(take)).unwrap();
+    thread::sleep(Duration::from_millis(20));
+    let since = SystemTime::now();
+    thread::sleep(Duration::from_millis(20));
+    // The predecessor writes on after the handoff, and its handoff names the successor.
+    append(&p, b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ran reeve handoff --name rd-x-2\"}]}}\n").unwrap();
+    append(&older, b"{\"type\":\"assistant\"}\n").unwrap();
+    assert_eq!(successor_transcript(&[p.clone(), older.clone()], since), None);
+    fs::write(&s, transcript(take)).unwrap();
+    assert_eq!(successor_transcript(&[p.clone(), older, s.clone()], since), Some(s));
+}
+
+#[test]
+fn handoffs_are_the_reeve_handoff_calls_that_succeeded_in_any_transcript() {
+    let call = |id: &str, cmd: &str| {
+        json!({ "type": "assistant", "message": { "id": format!("m-{id}"), "content": [
+            { "type": "tool_use", "id": id, "name": "Bash", "input": { "command": cmd } }
+        ] } })
+        .to_string()
+    };
+    let res = |id: &str, err: bool| {
+        json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": id, "is_error": err, "content": "x" }
+        ] } })
+        .to_string()
+    };
+    let text = [
+        call("a", "cat > /tmp/h.md <<'EOF'\nnotes\nEOF\nreeve handoff --name rd-x-2 --notes /tmp/h.md"),
+        res("a", false),
+        call("b", "reeve handoff --name rd-x-3 --notes /tmp/h.md"),
+        res("b", true),
+        call("c", "grep -n 'reeve handoff' README.md"),
+        res("c", false),
+        call("d", "reeve ls"),
+        res("d", false),
+        // The same call twice, as a resumed transcript repeats it.
+        call("a", "reeve handoff --name rd-x-2 --notes /tmp/h.md"),
+    ]
+    .join("\n");
+    assert_eq!(handoff_calls(&text, &mut HashSet::new()), 1);
+}
+
+#[test]
+fn a_vanilla_successor_past_the_budget_hands_off_again() {
+    let t = tempfile::tempdir().unwrap();
+    let chain = t.path().join("chain");
+    let arm = r#"{ "settingSources": "project,local", "contextBudget": 2500, "handoff": "notes" }"#;
+    let (_t, r, _) = fake_run_with(
+        "b0c",
+        "b0",
+        Some(arm),
+        &[("FAKE_DEFER", "1"), ("FAKE_CHAIN", chain.to_str().unwrap())],
+    );
+    assert_eq!(r["final"]["done"], true, "{r:#}");
+    assert_eq!(r["sessionCount"], 3, "{r:#}");
+    assert_eq!(r["handoffs"], 2, "{r:#}");
 }
 
 #[test]
@@ -304,15 +449,22 @@ fn a_fake_b0_session_runs_end_to_end_and_is_scored() {
 
 #[test]
 fn a_fake_reeve_session_shows_up_in_reeves_metrics() {
-    let (_t, r, args) = fake_run("reeve", "reeve");
+    let (t, r, args) = fake_run("reeve", "reeve");
     assert_eq!(r["final"]["done"], true, "{r:#}");
+    let logs = t.path().join("trials/logs/rd-reeve-1");
+    let s: Value = serde_json::from_str(&fs::read_to_string(logs.join("settings.json")).unwrap()).unwrap();
+    assert!(s["hooks"]["PreToolUse"].is_array(), "the arm's settings: {s:#}");
+    let state = logs.join("state");
+    assert_eq!(s["env"]["XDG_STATE_HOME"], json!(state.to_str().unwrap()), "{s:#}");
+    assert_eq!(s["env"]["REEVE_HANDOFF_TOKENS"], "60000", "{s:#}");
+    assert!(s["env"]["FAKE_MODE"].is_null(), "{s:#}");
     assert_eq!(r["reeve"]["workersStarted"], 1);
     assert_eq!(r["reeve"]["heavyRuns"], 1);
     assert_eq!(r["reeve"]["skillReads"], 1);
     assert_eq!(r["reeve"]["heavyWaitS"], json!(1.5));
     assert_eq!(r["db"]["rebuildsHeavy"], 1);
-    assert_eq!(r["params"]["contextBudget"], 30_000);
-    assert!(args.contains("bench/arms/reeve/settings.json"), "{args}");
+    assert_eq!(r["params"]["contextBudget"], 60_000);
+    assert!(args.contains(&format!("--settings {}", logs.join("settings.json").display())), "{args}");
 }
 
 #[test]
@@ -323,6 +475,7 @@ fn a_vanilla_session_past_the_budget_hands_off_through_notes_and_its_successor_f
     assert!(r["contextCheckAt"].is_number(), "{r:#}");
     assert!(r["handoffAt"].as_i64() >= r["contextCheckAt"].as_i64());
     assert_eq!(r["successor"], "next");
+    assert_eq!(r["handoffs"], 1, "{r:#}");
     assert_eq!(r["sessionCount"], 2, "predecessor and successor: {r:#}");
     assert_eq!(r["interventions"].as_array().unwrap().len(), 1);
     assert_eq!(r["params"]["handoff"], "notes");
