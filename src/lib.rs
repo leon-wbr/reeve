@@ -7,6 +7,7 @@ mod feedback;
 mod handoff;
 mod heavy;
 mod inbox;
+pub mod mem;
 mod msg;
 mod remote;
 mod run;
@@ -751,7 +752,9 @@ pub fn main() -> ExitCode {
             ev.label = Some(name.clone());
             sandbox::down(&name).map(|_| 0)
         }
-        Top::Heavy(args) => heavy::main(args, &mut ev),
+        Top::Heavy(args) => heavy::main(args, &mut ev, || {
+            workers::caller(&workers().ok()?, &workers::Caller::from_env()).map(|w| w.name)
+        }),
         Top::Stats { days, json } => stats(days, json),
         Top::Feedback {
             text,
@@ -847,7 +850,9 @@ pub fn main() -> ExitCode {
         }) => inbox::list(from.as_deref(), to.as_deref(), unanswered, all),
     };
     ev.finish(*result.as_ref().unwrap_or(&1), result.as_ref().err());
-    events::log(&ev);
+    if !ev.skip {
+        events::log(&ev);
+    }
     match result {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
         Err(e) => {

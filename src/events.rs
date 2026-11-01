@@ -36,6 +36,9 @@ pub struct Event {
     /// Set when a heavy command was stopped for reaching its limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timed_out: Option<bool>,
+    /// Set when a detached heavy job ended with nobody following it (its caller was killed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heavy_unfollowed: Option<bool>,
     /// From `reeve run --name` until the new worker's agent is up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_ms: Option<u64>,
@@ -43,6 +46,9 @@ pub struct Event {
     pub actor: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// Not logged by `main`: the command logs its own event, as a heavy job's runner does.
+    #[serde(skip)]
+    pub skip: bool,
 }
 
 impl Event {
