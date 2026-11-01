@@ -30,6 +30,9 @@ pub struct Entry {
     pub cwd: String,
     /// When it joined the queue (waiting) or started (running), in ms since the epoch.
     pub since: u64,
+    /// The `--lock` key this run holds, or waits for in the lock list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock: Option<String>,
 }
 
 /// A ticket or slot file, locked for as long as its owner lives. An unlocked file belongs to a
@@ -57,6 +60,34 @@ impl PartialEq for Held {
     fn eq(&self, other: &Held) -> bool {
         self.path == other.path
     }
+}
+
+/// An exclusive `--lock` key. Dropping it, or the process ending, releases it.
+pub struct KeyLock {
+    file: File,
+}
+
+impl KeyLock {
+    /// Lets the command (and what it starts) inherit the lock, so that it stays taken while
+    /// any of them lives, even if reeve heavy is killed.
+    fn inherit(&self) {
+        use std::os::fd::AsRawFd;
+        let fd = self.file.as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+        }
+    }
+}
+
+/// A file name for any key: letters, digits, `.`, `_` and `-` as they are, the rest as `%XX`.
+fn encode_key(key: &str) -> String {
+    key.bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_' | b'-' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 pub struct Queue {
@@ -88,6 +119,52 @@ impl Queue {
 
     fn slots_dir(&self) -> PathBuf {
         self.root.join("slots")
+    }
+
+    /// One flock'd file per key, never removed, so there is no inode to race on.
+    fn locks_dir(&self) -> PathBuf {
+        self.root.join("locks")
+    }
+
+    /// Tickets of runs waiting for a lock key, for `ls`.
+    fn lockwait_dir(&self) -> PathBuf {
+        self.root.join("lockwait")
+    }
+
+    /// Joins the list of runs waiting for `e.lock`.
+    pub fn wait_for_lock(&self, e: &Entry) -> io::Result<Held> {
+        let name = format!("{:013}-{:010}.json", e.since, e.pid);
+        put(&self.lockwait_dir().join(name), e)
+    }
+
+    pub fn lock_waiting(&self) -> Vec<Entry> {
+        live(&self.lockwait_dir())
+    }
+
+    /// Takes the exclusive lock on `key` for `me`, or says who holds it. The lock is the OS's
+    /// flock on a file, so it ends with the last process holding the file open, however that
+    /// process ends.
+    pub fn try_lock(&self, key: &str, me: &Entry) -> io::Result<Result<KeyLock, Option<Entry>>> {
+        let dir = self.locks_dir();
+        fs::create_dir_all(&dir)?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(dir.join(format!("{}.lock", encode_key(key))))?;
+        match f.try_lock() {
+            Ok(()) => {
+                f.set_len(0)?;
+                f.write_all(&serde_json::to_vec(me)?)?;
+                Ok(Ok(KeyLock { file: f }))
+            }
+            Err(TryLockError::WouldBlock) => {
+                // The holder writes its entry just after locking; until then it is unknown.
+                Ok(Err(serde_json::from_reader::<_, Entry>(&f).ok()))
+            }
+            Err(TryLockError::Error(e)) => Err(e),
+        }
     }
 
     pub fn enqueue(&self, e: &Entry) -> io::Result<Held> {
@@ -223,8 +300,20 @@ pub struct Args {
     /// How many heavy commands may run at once [default: a quarter of the cores, at least 1]
     #[arg(long, env = "REEVE_HEAVY_SLOTS", value_parser = clap::value_parser!(u32).range(1..))]
     slots: Option<u32>,
+    /// Run only while no other `reeve heavy` holds KEY, on any agent on this machine. For a
+    /// resource that can't be shared; prefer making runs independent (own database or port)
+    #[arg(long, value_name = "KEY", value_parser = non_empty)]
+    lock: Option<String>,
     #[arg(last = true)]
     cmd: Vec<String>,
+}
+
+fn non_empty(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        Err("the key can't be empty".into())
+    } else {
+        Ok(s.into())
+    }
 }
 
 #[derive(clap::Subcommand)]
@@ -236,7 +325,10 @@ enum Sub {
 pub fn main(args: Args, ev: &mut Event) -> io::Result<i32> {
     let q = Queue::at(Queue::default_root());
     if let Some(Sub::Ls) = args.sub {
-        print!("{}", ls(&q.running(), &q.waiting(), now_ms()));
+        print!(
+            "{}",
+            ls(&q.running(), &q.waiting(), &q.lock_waiting(), now_ms())
+        );
         return Ok(0);
     }
     if args.cmd.is_empty() {
@@ -257,7 +349,7 @@ pub fn main(args: Args, ev: &mut Event) -> io::Result<i32> {
     let label = args
         .label
         .unwrap_or_else(|| args.cmd.join(" ").chars().take(40).collect());
-    run(&q, label, &args.cmd, slots, ev)
+    run(&q, label, args.lock, &args.cmd, slots, ev)
 }
 
 static STOP: AtomicI32 = AtomicI32::new(0);
@@ -272,7 +364,14 @@ fn stopped() -> Option<i32> {
     Some(STOP.load(Ordering::SeqCst)).filter(|&s| s != 0)
 }
 
-fn run(q: &Queue, label: String, cmd: &[String], slots: usize, ev: &mut Event) -> io::Result<i32> {
+fn run(
+    q: &Queue,
+    label: String,
+    lock: Option<String>,
+    cmd: &[String],
+    slots: usize,
+    ev: &mut Event,
+) -> io::Result<i32> {
     let command = || {
         let mut c = Command::new(&cmd[0]);
         c.args(&cmd[1..]).env(ENV, "1");
@@ -295,12 +394,25 @@ fn run(q: &Queue, label: String, cmd: &[String], slots: usize, ev: &mut Event) -
         label,
         cwd: std::env::current_dir().map_or_else(|_| String::new(), |d| d.display().to_string()),
         since: now_ms(),
+        lock: lock.clone(),
     };
     // In a terminal's foreground job the command shares our process group, so Ctrl-C, Ctrl-Z and
     // reads from the terminal work as usual. Elsewhere (agents) it gets its own group, which is
     // killed when it ends so no test workers outlive it.
     let interactive = unsafe { libc::isatty(0) == 1 && libc::tcgetpgrp(0) == libc::getpgrp() };
     let queued = Instant::now();
+    // The key comes first, so that runs waiting for it don't hold slots others could use. It is
+    // released when `_key` drops, on every way out of here.
+    let key = match &lock {
+        Some(k) => match take_lock(q, k, &me, interactive)? {
+            Some(held) => Some(held),
+            None => {
+                ev.heavy_wait_ms = Some(queued.elapsed().as_millis() as u64);
+                return Ok(128 + stopped().unwrap_or(0));
+            }
+        },
+        None => None,
+    };
     let mut ticket = q.enqueue(&me)?;
     let mut said = None;
     let mut slot = loop {
@@ -339,6 +451,9 @@ fn run(q: &Queue, label: String, cmd: &[String], slots: usize, ev: &mut Event) -
     let mut c = command();
     if !interactive {
         c.process_group(0);
+        if let Some(key) = &key {
+            key.inherit();
+        }
     }
     let mut child = match c.spawn() {
         Ok(child) => child,
@@ -369,6 +484,51 @@ fn run(q: &Queue, label: String, cmd: &[String], slots: usize, ev: &mut Event) -
     }
     q.drop(slot);
     Ok(stopped().map_or_else(|| code(status), |sig| 128 + sig))
+}
+
+/// Waits for the lock on `key`, saying who holds it. None if a signal came first.
+fn take_lock(q: &Queue, key: &str, me: &Entry, interactive: bool) -> io::Result<Option<KeyLock>> {
+    let mut ticket = None;
+    let mut said: Option<Option<u32>> = None;
+    loop {
+        if stopped().is_some() {
+            ticket.into_iter().for_each(|t| q.drop(t));
+            return Ok(None);
+        }
+        match q.try_lock(key, me)? {
+            Ok(held) => {
+                ticket.into_iter().for_each(|t| q.drop(t));
+                return Ok(Some(held));
+            }
+            Err(holder) => {
+                if ticket.is_none() {
+                    ticket = Some(q.wait_for_lock(me)?);
+                }
+                let who = holder.as_ref().map(|h| h.pid);
+                if said != Some(who) {
+                    let hint = if interactive || said.is_some() {
+                        ""
+                    } else {
+                        BACKGROUND_HINT
+                    };
+                    let by = holder.map_or_else(String::new, |h| {
+                        format!(
+                            ", held by {} (pid {}, {})",
+                            h.label,
+                            h.pid,
+                            age(now_ms().saturating_sub(h.since))
+                        )
+                    });
+                    eprintln!("reeve heavy: waiting for lock {key}{by}{hint}");
+                    said = Some(who);
+                }
+            }
+        }
+        let until = Instant::now() + POLL;
+        while Instant::now() < until && stopped().is_none() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 /// Waits for the command, passing on any signal reeve heavy gets. It is killed if it hasn't
@@ -411,11 +571,12 @@ fn code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
-fn ls(running: &[Entry], waiting: &[Entry], now: u64) -> String {
+fn ls(running: &[Entry], waiting: &[Entry], lock_waiting: &[Entry], now: u64) -> String {
     let rows: Vec<(&str, &Entry)> = running
         .iter()
         .map(|e| ("running", e))
         .chain(waiting.iter().map(|e| ("waiting", e)))
+        .chain(lock_waiting.iter().map(|e| ("waiting", e)))
         .collect();
     if rows.is_empty() {
         return "no heavy commands\n".into();
@@ -427,8 +588,14 @@ fn ls(running: &[Entry], waiting: &[Entry], now: u64) -> String {
         .unwrap_or(0);
     rows.iter()
         .map(|(state, e)| {
+            // A run that is in the lock list waits for its key; any other with a key holds it.
+            let lock = match &e.lock {
+                Some(k) if lock_waiting.contains(e) => format!("  waits for lock {k}"),
+                Some(k) => format!("  holds lock {k}"),
+                None => String::new(),
+            };
             format!(
-                "{state}  {:<width$}  pid {:<6}  {:>5}  {}\n",
+                "{state}  {:<width$}  pid {:<6}  {:>5}  {}{lock}\n",
                 e.label,
                 e.pid,
                 age(now.saturating_sub(e.since)),
@@ -457,6 +624,7 @@ mod tests {
             label: label.into(),
             cwd: "/w".into(),
             since,
+            lock: None,
         }
     }
 
@@ -574,6 +742,25 @@ mod tests {
         let _first = q.enqueue(&entry(1, "first", 0)).unwrap();
         assert_eq!(q.try_claim(&mut t, 1).unwrap(), Claim::Ahead(1));
         assert_eq!(labels(q.waiting()), ["first", "lost"]);
+    }
+
+    #[test]
+    fn a_lock_is_exclusive_per_key_and_free_once_dropped_or_its_owner_is_gone() {
+        let (_d, q) = queue();
+        let me = entry(1, "a", 1);
+        let held = q.try_lock("db", &me).unwrap().ok().unwrap();
+        let other = q.try_lock("db", &entry(2, "b", 2)).unwrap();
+        assert_eq!(other.err().unwrap().map(|h| h.pid), Some(1));
+        assert!(q.try_lock("other", &me).unwrap().is_ok());
+        drop(held);
+        assert!(q.try_lock("db", &entry(2, "b", 2)).unwrap().is_ok());
+    }
+
+    #[test]
+    fn keys_become_safe_distinct_file_names() {
+        assert_eq!(encode_key("trustroots-e2e_db.1"), "trustroots-e2e_db.1");
+        assert_eq!(encode_key("a/b"), "a%2Fb");
+        assert_ne!(encode_key("a/b"), encode_key("a%2Fb"));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 reeve is a small local CLI that runs coding agents beside your session. Two rules aren't optional:
 
 - Run test suites, e2e, builds and installs through `reeve heavy -- <command>`, started in the background.
-- When a "Context check" tells you that you passed the handoff threshold, run `reeve handoff --name NAME --notes FILE` and stop.
+- When a "Context check" says you passed the handoff threshold, run `reeve handoff --name NAME --notes FILE` and stop.
 
 ## Named workers: work that outlives this session
 
@@ -42,11 +42,11 @@ You don't see your own context usage: the hook `reeve setup claude` (or `codex`)
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It starts the successor as a worker told to read the file. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` before redoing anything. `ls` closes the old session once idle, or says why. A message the user sends the old session goes to the successor's inbox; don't relay one by hand.
+It starts the successor as a worker told to read the file. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. `ls` closes the old session once idle, or says why. A message the user sends the old session goes to the successor's inbox; don't relay it.
 
 ## Heavy commands on a shared machine
 
-Agents share this machine. Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot, then exits with the command's code. Start it in the background (Claude Code: `run_in_background`; Codex: a background terminal) and keep working.
+Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. Start it in the background (Claude Code: `run_in_background`; Codex: a background terminal).
 
 ```sh
 reeve heavy -- cargo test
@@ -54,7 +54,7 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs and who waits
 ```
 
-You decide what's heavy; when in doubt, queue it. Quick commands such as one unit test skip it. It limits load, it is not a lock: commands sharing one e2e database or port can still collide.
+You decide what's heavy; when in doubt, queue it. Quick commands such as one unit test skip it. It limits load, not collisions on a shared database or port. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
 
 ## Questions for the user
 
@@ -70,4 +70,4 @@ You decide what's heavy; when in doubt, queue it. Quick commands such as one uni
 
 ## When reeve gets in the way
 
-`reeve feedback "what you ran, what happened, what you expected"` saves a note with reeve's version and recent events, and offers to file it. If `reeve` isn't on PATH, carry on without it. `reeve doctor` checks the install.
+`reeve feedback "what you ran, what happened, what you expected"` saves a note with reeve's version and recent events and offers to file it. If `reeve` isn't on PATH, carry on without it. `reeve doctor` checks the install.
