@@ -76,7 +76,7 @@ fn hidden(dir: &Path) -> Map<String, Value> {
         .collect()
 }
 
-fn must(cmd: &mut Command) -> io::Result<()> {
+pub(super) fn must(cmd: &mut Command) -> io::Result<()> {
     let status = cmd.stdin(Stdio::null()).stdout(Stdio::null()).status()?;
     if !status.success() {
         return Err(io::Error::other(format!("command failed: {cmd:?}")));
@@ -85,7 +85,7 @@ fn must(cmd: &mut Command) -> io::Result<()> {
 }
 
 /// Whether the command succeeds within a minute; it gets SIGTERM after that.
-fn passes(cmd: &mut Command) -> bool {
+pub(super) fn passes(cmd: &mut Command) -> bool {
     let child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -108,7 +108,7 @@ fn passes(cmd: &mut Command) -> bool {
     }
 }
 
-fn temp_dir(prefix: &str) -> io::Result<PathBuf> {
+pub(super) fn temp_dir(prefix: &str) -> io::Result<PathBuf> {
     static N: AtomicUsize = AtomicUsize::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

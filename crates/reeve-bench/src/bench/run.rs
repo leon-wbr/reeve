@@ -404,6 +404,12 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         "REEVE_HOME".into(),
         trials.join("logs").join(&run).join("reeve").into(),
     ));
+    // reeve's registry, events and heavy queue live in XDG_STATE_HOME; without this the
+    // sessions saw (and queued behind) the owner's own workers.
+    env.push((
+        "XDG_STATE_HOME".into(),
+        trials.join("logs").join(&run).join("state").into(),
+    ));
     let mut b = Bench {
         logs: trials.join("logs").join(&run),
         base: base.to_string_lossy().into_owned(),
@@ -591,8 +597,8 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         if busy || now - last_event < REPLY_DELAY_MS {
             continue;
         }
-        let done_at = result["doneAt"].as_i64().unwrap_or(0);
-        if done_at != 0 && now - t0 - done_at > CLAIM_GRACE_MS {
+        let done_at = result["doneAt"].as_i64().filter(|t| *t != 0);
+        if never_claimed(done_at.map(|t| t0 + t), last_event, now, CLAIM_GRACE_MS) {
             result["neverClaimed"] = true.into();
             break None;
         }
@@ -620,6 +626,8 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
             },
             env: &b.env,
             cwd: &trials,
+            bin: OsStr::new("claude"),
+            model: "sonnet",
         };
         let s = match simulate(&sim).or_else(|_| simulate(&sim)) {
             Ok(s) => s,
@@ -747,6 +755,13 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
     Ok(0)
 }
 
+/// Whether a run whose check passed at `done_at` gave up on a claim: the session has said nothing
+/// for `grace` since the later of the pass and its last event. Counting from the pass alone
+/// fired on sessions that claimed done a minute after it, before the user's reply delay ran out.
+pub(super) fn never_claimed(done_at: Option<i64>, last_event: i64, now: i64, grace: i64) -> bool {
+    done_at.is_some_and(|d| now - d.max(last_event) > grace)
+}
+
 /// An arm's `args` file: extra `claude` flags, one per line; blank lines and `#` lines skipped.
 fn arm_args(text: &str) -> Vec<&str> {
     text.lines()
@@ -779,6 +794,19 @@ mod tests {
         for s in ["rv-b1-10", "rv-b1-12-x", "xrv-b1-1", "rv-b1-1x", ""] {
             assert!(!mine(r, s), "{s}");
         }
+    }
+
+    #[test]
+    fn the_claim_grace_runs_from_the_last_event_not_the_pass() {
+        let min = 60_000;
+        // Check passed at 10 min; the session claimed (its last event) at 14; the user would read
+        // it at 18. The old rule (now - pass > 5 min) fired at 15.1, before the user read it.
+        assert!(!never_claimed(Some(10 * min), 14 * min, 18 * min, 5 * min));
+        assert!(never_claimed(Some(10 * min), 14 * min, 19 * min + 1, 5 * min));
+        // A session silent since before the pass gets the grace from the pass.
+        assert!(!never_claimed(Some(10 * min), 2 * min, 15 * min, 5 * min));
+        assert!(never_claimed(Some(10 * min), 2 * min, 15 * min + 1, 5 * min));
+        assert!(!never_claimed(None, 0, 99 * min, 5 * min));
     }
 
     #[test]

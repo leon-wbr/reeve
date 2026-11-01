@@ -1,0 +1,7 @@
+{
+  "rules": [
+    { "id": "rename", "any": ["lowstock", "new name", "rename"], "once": true, "kind": "answer", "reply": "Call it reorderLevel." },
+    { "id": "merge", "any": ["merge", "go ahead", "proceed"], "once": false, "kind": "merge", "reply": "Yes, go ahead and merge." }
+  ],
+  "poll": { "afterS": 600, "kind": "poll", "reply": "Status? Please carry on with whatever is left." }
+}
