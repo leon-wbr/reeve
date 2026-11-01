@@ -155,11 +155,13 @@ fn hook_with(stdin: impl Read, messages: impl FnOnce(&Value) -> Option<String>) 
     (!parts.is_empty()).then(|| output(event, &parts.join("\n\n")).to_string())
 }
 
-/// The messages sent to this session's worker that it hasn't been shown yet, claimed so no
-/// other hook or follow shows them again. Who the session is gets looked up only when some
-/// worker has a message, so a quiet inbox costs one directory read.
+/// The messages sent to this session, as a named worker or by its session id (pushed reports,
+/// see `push`), that it hasn't been shown yet, claimed so no other hook or follow shows them
+/// again. Reports that are due are pushed first. Who the session is gets looked up only when
+/// some message is unread, so a quiet inbox costs a registry read and a directory read.
 fn messages(payload: &Value) -> Option<String> {
-    use crate::{inbox, msg, workers};
+    use crate::{inbox, msg, push, workers};
+    push::quietly();
     let store = msg::Store::open().ok()?;
     let now = msg::now_secs();
     if inbox::unread_counts(&store, now).is_empty() {
@@ -171,8 +173,10 @@ fn messages(payload: &Value) -> Option<String> {
         c.claude_session = Some(sid.to_string());
     }
     let r = workers::Registry::at(workers::Registry::default_dir().ok()?);
-    let me = workers::caller(&r, &c)?;
-    let got = inbox::claim(&store, &me.name, now);
+    let got: Vec<Value> = push::addresses(&r, &c)
+        .iter()
+        .flat_map(|a| inbox::claim(&store, a, now))
+        .collect();
     (!got.is_empty()).then(|| inbox::context(&got))
 }
 

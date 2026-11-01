@@ -95,6 +95,13 @@ pub struct Worker {
     /// Why the agent didn't come up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The inbox address of the session that started it, which its report is pushed to: a
+    /// worker's name, or `session-ID` for a session that is no named worker (see `push`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Its report was pushed to `parent`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pushed: bool,
 }
 
 /// What a worker's pane or session is doing, as far as Herdr or `claude agents` can tell.
@@ -317,7 +324,8 @@ impl Registry {
         })
     }
 
-    fn update(&self, f: impl FnOnce(&mut Vec<Worker>)) -> io::Result<()> {
+    /// Changes the registry under its lock.
+    pub fn update(&self, f: impl FnOnce(&mut Vec<Worker>)) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
         let lock = File::create(self.dir.join("workers.lock"))?;
         lock.lock()?;
@@ -982,6 +990,7 @@ pub fn run(
     kind: Kind,
     backend: Backend,
     args: &[String],
+    parent: Option<String>,
 ) -> io::Result<()> {
     check_name(name).map_err(io::Error::other)?;
     let (flags, prompt) = split_prompt(args).map_err(io::Error::other)?;
@@ -1056,6 +1065,8 @@ pub fn run(
         handle,
         starting: true,
         error: None,
+        parent,
+        pushed: false,
     })?;
     if let Err(e) = spawn_start(name, tab.as_deref(), &argv) {
         if let Some(tab) = &tab {
@@ -1140,9 +1151,15 @@ pub fn start(r: &Registry, name: &str, tab: Option<&str>, argv: &[String]) -> io
 /// starting agent hears about it.
 pub fn started(w: &Worker) -> String {
     let name = &w.name;
+    let push = if w.parent.is_some() {
+        "its report comes to you as one line from `reeve inbox --follow` (keep it in a Monitor) \
+         or at your next prompt or tool call; for idle and blocked, "
+    } else {
+        ""
+    };
     format!(
         "reeve: worker {name} is starting; its report goes to {}\n\
-         reeve: follow it with `reeve watch {name}` (Claude Code: the Monitor tool, timeout_ms \
+         reeve: {push}follow it with `reeve watch {name}` (Claude Code: the Monitor tool, timeout_ms \
          1800000, re-armed when it expires; elsewhere a background shell). A line per change \
          says what to do: done, read the report, then `reeve close {name}`; idle, read {}: \
          nothing if it waits on its own job, else nudge it with `reeve send {name} \"TEXT\"`, \
@@ -1568,6 +1585,7 @@ pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
             .into_iter()
             .filter(|w| names.is_empty() || names.contains(&w.name))
             .collect();
+        crate::push::quietly();
         let polled: Vec<_> = all
             .iter()
             .cloned()
@@ -1895,6 +1913,8 @@ mod tests {
             handle: handle.into(),
             starting: false,
             error: None,
+            parent: None,
+            pushed: false,
         }
     }
 
@@ -2617,6 +2637,18 @@ mod tests {
         assert!(out.contains("`reeve close fix-a`"), "{out}");
         assert!(out.contains("own job"), "{out}");
         assert!(out.contains("in its tab"), "{out}");
+        assert!(!out.contains("inbox"), "no parent, no push: {out}");
+        let kid = Worker {
+            parent: Some("boss".into()),
+            ..pane.clone()
+        };
+        let out = started(&kid);
+        assert_eq!(out.lines().count(), 2, "{out}");
+        assert!(
+            out.contains("its report comes to you as one line from `reeve inbox --follow`"),
+            "{out}"
+        );
+        assert!(out.contains("`reeve watch fix-a`"), "{out}");
         let bg = Worker {
             backend: Backend::Bg,
             handle: "ab12".into(),
@@ -3144,6 +3176,8 @@ mod tests {
             handle: handle.into(),
             starting: false,
             error: None,
+            parent: None,
+            pushed: false,
         };
         let all = [
             mk("pane", Backend::Pane, Kind::Claude, "w1:p2"),
@@ -3200,6 +3234,8 @@ mod tests {
             handle: "wH4:p3".into(),
             starting: false,
             error: None,
+            parent: None,
+            pushed: false,
         };
         // Herdr hands the id of a closed pane to a later one; the old entry stays registered.
         let all = [mk("stale", 100), mk("successor", 200), mk("older", 50)];

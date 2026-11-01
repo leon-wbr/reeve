@@ -258,14 +258,19 @@ pub fn start_hint(name: &str, kind: crate::workers::Kind) -> String {
 /// How often `follow` looks.
 const FOLLOW_EVERY: Duration = Duration::from_secs(1);
 
-/// `reeve inbox --follow`: prints a line per new message for `name` and marks it delivered.
-/// Never exits on its own; `rounds` stops it, for tests.
-pub fn follow(name: &str, rounds: Option<u32>) -> io::Result<i32> {
+/// `reeve inbox --follow`: prints a line per new message for any of `names` and marks it
+/// delivered. Each look first pushes the reports that are due (see `push`), so a worker's report
+/// reaches a following parent even when nothing else runs. Never exits on its own; `rounds`
+/// stops it, for tests.
+pub fn follow(names: &[String], rounds: Option<u32>) -> io::Result<i32> {
     let store = Store::open()?;
     let mut done = 0;
     loop {
-        for m in claim(&store, name, msg::now_secs()) {
-            println!("{}", line(&m));
+        crate::push::quietly();
+        for name in names {
+            for m in claim(&store, name, msg::now_secs()) {
+                println!("{}", line(&m));
+            }
         }
         done += 1;
         if rounds.is_some_and(|r| done >= r) {
