@@ -2,7 +2,7 @@
 
 reeve is a small local CLI that runs coding agents beside your session. Two rules aren't optional:
 
-- Run test suites, e2e, builds and installs through `reeve heavy -- <command>`, started in the background.
+- Run test suites, e2e, builds and installs through `reeve heavy -- <command>`.
 - When a "Context check" says you passed the handoff threshold, run `reeve handoff --name NAME --notes FILE` and stop.
 
 ## Named workers: work that outlives this session
@@ -46,7 +46,7 @@ It starts the successor as a worker told to read the file. Stop once it returns.
 
 ## Heavy commands on a shared machine
 
-Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. Start it in the background (Claude Code: `run_in_background`; Codex: a background terminal).
+Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, workspace typecheck or lint, builds and installs. It waits for a slot and exits with the command's code. In Claude Code, reeve's hook sends it to the background when it has to wait, and you're told when it ends; with a free slot it runs at once. Start a long one in the background yourself when you have other work meanwhile (Claude Code: `run_in_background`; Codex: a background terminal).
 
 ```sh
 reeve heavy -- cargo test
