@@ -1,0 +1,3 @@
+# Like b0-iso: none of the owner's user setup; reeve's comes from settings.json and repo/.
+--setting-sources
+project,local

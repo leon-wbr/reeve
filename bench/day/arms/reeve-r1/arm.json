@@ -1,0 +1,7 @@
+{
+  "note": "reeve with candidate R1: the heavy hook backgrounds a run only when it would wait, and the manual and skill stub no longer say \"always in the background\". Run it with a reeve-bench built from the R1 tree, so the hook and `reeve --skill` are R1's.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve-r1",
+  "contextBudget": 30000
+}
