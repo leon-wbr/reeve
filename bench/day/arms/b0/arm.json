@@ -1,0 +1,6 @@
+{
+  "note": "Vanilla Claude Code: none of the owner's user setup, auto mode.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/b0-iso"
+}

@@ -1,0 +1,6 @@
+{
+  "note": "b0 plus what `reeve setup claude --claude-md` installs: hooks, allow rules, skill stub and block.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve"
+}
