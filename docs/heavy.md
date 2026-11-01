@@ -3,7 +3,7 @@
 `reeve heavy` lets many agents on one machine share it. They wrap their heavy commands (builds, test suites, installs) in it, and it runs only a few at a time, first come first served.
 
 ```sh
-reeve heavy [--label L] [--slots N] [--lock KEY] -- <command...>
+reeve heavy [--label L] [--slots N] [--lock KEY] [--timeout DURATION|none] -- <command...>
 reeve heavy ls
 ```
 
@@ -16,6 +16,7 @@ Agents start it in the background (Claude Code's `run_in_background`, a Codex ba
 - **Signals:** SIGINT, SIGTERM and SIGHUP are passed on to the command. If it hasn't ended 5 s later, or a second signal comes, it is killed.
 - **Cleanup:** the command runs in its own process group, and when it ends the whole group is stopped (SIGTERM, then SIGKILL after 2 s), so no test workers are left behind. If reeve heavy itself is killed, the slot stays taken until that group is gone. In a terminal's foreground job the command instead shares reeve heavy's group, so Ctrl-C, Ctrl-Z and prompts work as usual; leftovers aren't cleaned up then.
 - **Locks:** `--lock KEY` also makes the run exclusive per key across every agent on the machine: it starts only when no other `reeve heavy` holds KEY, then takes a slot as usual. Two e2e runs sharing one database, both started with `--lock trustroots-e2e-db`, run one after the other; runs with different keys, or none, are unaffected. While it waits it prints who holds the key (`waiting for lock KEY, held by LABEL (pid N, 2m)`) and `reeve heavy ls` shows the holder (`holds lock KEY`) and the waiters (`waits for lock KEY`). The lock is an OS file lock (`flock`) under `locks/` in the state dir, so there are no stale locks: it is released when the run ends, crashes or is killed. The command inherits it, so if reeve heavy is killed the key stays taken until the command's group is gone, like its slot. Waiters poll, so the order between them isn't guaranteed. A nested `reeve heavy` takes no lock.
+- **Time limit:** a run that hangs holds its slot for everyone, so each has a limit, 30 minutes by default (longer than any run in the event history that exited 0, which took 22). It starts when the run gets its slot; waiting doesn't count. `--timeout 45m` (units `ms`, `s`, `m`, `h`) sets it for one run, `--timeout none` removes it (discouraged, and left out of the agent manual: give a large explicit value instead), and `REEVE_HEAVY_TIMEOUT` changes the default. At the limit the command's process group gets SIGTERM, and SIGKILL 5 s later; reeve heavy then frees the slot, prints one line saying the limit was hit and to narrow the run or pass `--timeout`, and exits 124. The event log records `timed_out` and `heavy_limit_ms`, and `reeve heavy ls` shows each running job's limit (the age column is its elapsed time). Start visual and e2e runs narrow, and raise the limit only for a known full run. A nested `reeve heavy` has no limit of its own; the outer one covers it.
 - **Nesting:** the command gets `REEVE_HEAVY=1`. A `reeve heavy` that sees it runs its command straight away, so a wrapped script that wraps its own steps doesn't wait for itself.
 
 ## Prefer isolation to `--lock`
