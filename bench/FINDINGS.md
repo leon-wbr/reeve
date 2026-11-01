@@ -77,6 +77,7 @@ The clean minimum is 1 intervention, the rename decision.
   - Cost: $1.33.
 - **Why it lost:** the classifier denials it targets are sporadic (3 in batch 3, 0 in batch 4), so there was nothing to save. Enforcing CI cost time against a vanilla session that cut corners. Unchecked landings could not separate the arms while flaky reruns overwrote passes.
 - **Keep for later:** the gate is a sound local stand-in for required checks, if the bench ever adds unsupervised landings.
+- **Removed** on 1 Nov 2026, with the C1 arm, as unused; the code is in git history.
 
 ### C2: `reeve watch`, an asyncRewake Stop hook that wakes the session when CI finishes, on B0. Dropped before running.
 
@@ -106,6 +107,7 @@ The clean minimum is 1 intervention, the rename decision.
   - **C3 clearly beats B1** on time and cost.
   - **Against B0, n=2 can't separate C3 from noise.** The noise is mostly the sporadic classifier denial C1 was built for.
 - **Next:** run C3 together with C1's narrow allow rules for landing (no gate), so that classifier denials stop adding noise, at n≥5 against B0. Also measure "time from question to answer" separately from total time.
+- **Removed** on 1 Nov 2026, with the C3 arm and the bench's queue reader, as unused; the code is in git history.
 
 ## What we learned so far
 

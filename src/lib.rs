@@ -1,11 +1,9 @@
-mod ask;
 mod background;
 mod build_info;
 pub mod context;
 mod doctor;
 pub mod events;
 mod feedback;
-mod gate;
 mod handoff;
 mod heavy;
 mod inbox;
@@ -175,15 +173,6 @@ enum Top {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Protect a branch so it only moves to commits whose CI passed (a git reference-transaction hook)
-    #[command(subcommand)]
-    Gate(Gate),
-    /// Queue a question for the user and wait for the answer (run it in the background and keep working)
-    Ask { question: String },
-    /// List open questions
-    Asks,
-    /// Answer an open question
-    Answer { id: String, text: String },
     /// Machines reachable over ssh, each with a plain message box (see docs/remotes.md)
     #[command(subcommand)]
     Remote(RemoteCmd),
@@ -332,21 +321,6 @@ enum Hook {
     /// Read a PreToolUse hook's JSON on stdin and send a Bash call that starts with
     /// `reeve heavy` to the background
     Background,
-}
-
-#[derive(Subcommand)]
-enum Gate {
-    /// Install the gate in the current repository
-    Install {
-        /// The branch to protect
-        #[arg(long)]
-        protect: String,
-        /// CI status command; `{rev}` is replaced by the commit. Exit 0 pass, 2 pending, else fail
-        #[arg(long)]
-        ci: String,
-    },
-    /// Run as the reference-transaction hook (installed by `reeve gate install`)
-    Hook { state: String },
 }
 
 #[derive(Subcommand)]
@@ -796,7 +770,6 @@ pub fn main() -> ExitCode {
         }) => setup_agent(workers::Kind::Codex, check, remove, agents_md),
         Top::Doctor => doctor::main(VERSION),
         Top::Update { dry_run } => update::main(dry_run),
-        Top::Gate(Gate::Install { protect, ci }) => gate::install(&protect, &ci).map(|_| 0),
         Top::Remote(cmd) => match cmd {
             RemoteCmd::Add {
                 name,
@@ -872,10 +845,6 @@ pub fn main() -> ExitCode {
             all,
             ..
         }) => inbox::list(from.as_deref(), to.as_deref(), unanswered, all),
-        Top::Ask { question } => ask::ask(&question),
-        Top::Asks => ask::list(),
-        Top::Answer { id, text } => ask::answer(&id, &text),
-        Top::Gate(Gate::Hook { state }) => gate::hook(&state).map(|ok| if ok { 0 } else { 1 }),
     };
     ev.finish(*result.as_ref().unwrap_or(&1), result.as_ref().err());
     events::log(&ev);
@@ -1012,9 +981,6 @@ mod tests {
             "--permission-mode auto` after `--`",
             "blocked",
             "Context check",
-            "reeve ask",
-            "reeve asks",
-            "reeve answer",
             "Inside Herdr each worker gets its own tab",
             "not Herdr's agent commands",
             "(`--bg`, for that case only)",

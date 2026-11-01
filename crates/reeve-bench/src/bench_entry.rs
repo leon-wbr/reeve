@@ -228,7 +228,6 @@ case "$1" in
     shift; REEVE_HEAVY_JOB=1 exec "$@" ;;
   handoff) n=; while [ $# -gt 0 ]; do [ "$1" = --name ] && n=$2; shift; done
     echo "reeve: handed off to $n; stop now and leave the workers running" >&2 ;;
-  ask) echo "your call" ;;
   --skill|--help|-h|help|--version|-V|hook) exec {real} "$@" ;;
   *) echo "reeve: $1 is not run inside the bench" >&2 ;;
 esac
