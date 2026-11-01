@@ -1,0 +1,64 @@
+{
+  "plain": {
+    "about": "one agent does the task: the control the other presets are measured against",
+    "steps": [
+      {
+        "name": "work",
+        "model": { "claude": "sonnet" },
+        "permission": "auto",
+        "prompt": "Do the task below in this repository, and check it the way the project defines done."
+      }
+    ]
+  },
+  "brief": {
+    "about": "a read-only agent writes the brief, a second does the task from it",
+    "steps": [
+      {
+        "name": "brief",
+        "model": { "claude": "sonnet" },
+        "permission": "read-only",
+        "prompt": "Write the brief for a coding agent who will do the task below in this repository. Read what you need, but change nothing. Keep the user's words verbatim on top. Then add only what that agent can't easily see: the files involved, the project rules that apply, a stop point for anything outward, and a line `Done when:` naming a command whose output proves it. At most 150 words of additions. Print only the brief."
+      },
+      {
+        "name": "work",
+        "model": { "claude": "sonnet" },
+        "permission": "auto",
+        "prompt": "Do the task in the brief below. Where the brief and the user's own words differ, the user's words win."
+      }
+    ]
+  },
+  "plan": {
+    "about": "a read-only agent plans, a second implements the plan",
+    "steps": [
+      {
+        "name": "plan",
+        "model": { "claude": "opus" },
+        "permission": "read-only",
+        "prompt": "Plan the task below for an engineer who will implement it in this repository. Read what you need, but change nothing. Name the exact files, the change in each, and for every step a command that verifies it with its expected output. No placeholders. Print only the plan."
+      },
+      {
+        "name": "implement",
+        "model": { "claude": "sonnet" },
+        "permission": "auto",
+        "prompt": "Do the task below, following the plan. Run each verification the plan names and fix what fails. Where the plan and the user's own words differ, the user's words win."
+      }
+    ]
+  },
+  "review": {
+    "about": "one agent does the task, a second reviews its work, fixes what is wrong and reports",
+    "steps": [
+      {
+        "name": "work",
+        "model": { "claude": "sonnet" },
+        "permission": "auto",
+        "prompt": "Do the task below in this repository, and check it the way the project defines done. End with a short account: what you changed, where, and how you checked it."
+      },
+      {
+        "name": "review",
+        "model": { "claude": "opus" },
+        "permission": "auto",
+        "prompt": "Another agent did the task below; its account follows. Review its changes against the user's words and the project's rules: wrong behaviour, missing tests, a check it skipped or misread, anything left undone. Fix what is wrong and run the project's checks yourself."
+      }
+    ]
+  }
+}

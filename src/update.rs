@@ -439,6 +439,7 @@ mod tests {
             error: None,
             parent: None,
             pushed: false,
+            pipeline: None,
         };
         let all = [
             w("new", Kind::Claude, true, 990),

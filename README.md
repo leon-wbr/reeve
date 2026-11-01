@@ -49,6 +49,7 @@ For Codex, `reeve setup codex` does the same with Codex's hooks, skills and rule
 - `reeve send NAME "TEXT"`, `reeve inbox --follow`: send a named worker here a message; the worker follows its inbox in a Monitor, or sees new messages at its next prompt or tool call ([docs/remotes.md](docs/remotes.md#workers-here)).
 - `reeve remote`, `reeve send NAME@REMOTE`, `reeve inbox`: a plain message box on any machine you can ssh to, with a queue for when the connection drops ([docs/remotes.md](docs/remotes.md)).
 - `reeve sandbox`: build, list, use and remove sandboxes.
+- `reeve run --pipeline PRESET`, `reeve pipelines`: run a worker as a few agent steps in a row, such as plan then implement, or work then review, from presets you can add to and benchmark ([docs/pipelines.md](docs/pipelines.md)).
 - `reeve heavy`: queue builds and test suites so agents take turns ([docs/heavy.md](docs/heavy.md)).
 - `reeve stats`: sum up reeve's local event log ([docs/events.md](docs/events.md)).
 - `reeve feedback "text"`: save a note about reeve itself and offer to post it as an issue ([docs/events.md](docs/events.md)).
@@ -125,6 +126,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - [docs/codex.md](docs/codex.md)
 - [docs/remotes.md](docs/remotes.md)
 - [docs/schedule.md](docs/schedule.md)
+- [docs/pipelines.md](docs/pipelines.md)
 
 ## License
 

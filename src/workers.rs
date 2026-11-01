@@ -17,6 +17,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub enum Backend {
     Pane,
     Bg,
+    /// A detached `reeve pipeline-run` that runs a preset's agent steps one after another.
+    Pipeline,
 }
 
 impl Backend {
@@ -102,6 +104,9 @@ pub struct Worker {
     /// Its report was pushed to `parent`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pushed: bool,
+    /// The preset a pipeline worker runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<String>,
 }
 
 /// What a worker's pane or session is doing, as far as Herdr or `claude agents` can tell.
@@ -720,6 +725,14 @@ pub fn exec_agent(probe: Result<&str, &str>) -> Agent {
     }
 }
 
+/// From `ps -o command= -p PID`: a pipeline works while its `reeve pipeline-run` runs.
+pub fn pipeline_agent(probe: Result<&str, &str>) -> Agent {
+    match probe {
+        Ok(cmd) if cmd.contains("pipeline-run") => Agent::Working,
+        _ => Agent::Absent,
+    }
+}
+
 pub fn age(secs: u64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
@@ -966,6 +979,10 @@ pub fn agent(w: &Worker) -> Agent {
             let p = probe("ps", ["-o", "command=", "-p", &w.handle]);
             exec_agent(p.as_deref().map_err(|e| e.as_str()))
         }
+        (Backend::Pipeline, _) => {
+            let p = probe("ps", ["-o", "command=", "-p", &w.handle]);
+            pipeline_agent(p.as_deref().map_err(|e| e.as_str()))
+        }
     }
 }
 
@@ -975,6 +992,7 @@ fn stop_hint(w: &Worker) -> String {
         (Backend::Pane, _) => format!("close pane {}", w.handle),
         (Backend::Bg, Kind::Claude) => format!("`claude rm {}`", w.handle),
         (Backend::Bg, Kind::Codex) => format!("`kill {}`", w.handle),
+        (Backend::Pipeline, _) => format!("`kill -- -{}`", w.handle),
     }
 }
 
@@ -982,6 +1000,113 @@ fn stop_hint(w: &Worker) -> String {
 /// between still counts as done.
 pub fn state(w: &Worker) -> State {
     state_of(w, now(), || agent(w))
+}
+
+/// A name may be reused once its last worker's agent is gone.
+fn name_free(r: &Registry, name: &str) -> io::Result<()> {
+    if let Ok(old) = r.get(name) {
+        let a = agent(&old);
+        if state_of(&old, now(), || a) == State::Starting {
+            return Err(io::Error::other(format!(
+                "worker {name} is still starting; wait for it or use another name"
+            )));
+        }
+        if a != Agent::Absent {
+            return Err(io::Error::other(format!(
+                "worker {name} still has an agent; {} or use another name",
+                stop_hint(&old)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `reeve run --name NAME --pipeline PRESET -- PROMPT`: registers the worker, writes the job
+/// with the preset as it is now, and starts `reeve pipeline-run` in its own process group,
+/// whose pid is the handle. The steps set their own flags, so the prompt comes alone.
+pub fn run_pipeline(
+    r: &Registry,
+    name: &str,
+    kind: Kind,
+    preset: &str,
+    args: &[String],
+    parent: Option<String>,
+) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    check_name(name).map_err(io::Error::other)?;
+    let prompt = match args {
+        [p] if !p.starts_with('-') => p,
+        _ => {
+            return Err(io::Error::other(
+                "a pipeline worker takes only its prompt after `--`; its steps' models and \
+                 permissions come from the preset (see `reeve pipelines`)",
+            ));
+        }
+    };
+    let all = crate::pipeline::load()?;
+    let Some(p) = all.get(preset) else {
+        let names: Vec<&str> = all.keys().map(String::as_str).collect();
+        return Err(io::Error::other(format!(
+            "no pipeline preset {preset:?}; there are {}",
+            names.join(", ")
+        )));
+    };
+    for k in p.steps.iter().map(|s| s.agent.unwrap_or(kind)) {
+        if let Some(why) = crate::run::missing_agent(k) {
+            return Err(io::Error::other(why));
+        }
+    }
+    name_free(r, name)?;
+    let report = r.report_path(name);
+    fs::create_dir_all(report.parent().expect("reports dir"))?;
+    match fs::remove_file(&report) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let started = now();
+    let w = Worker {
+        name: name.into(),
+        backend: Backend::Pipeline,
+        agent: kind,
+        cwd: std::env::current_dir()?,
+        started,
+        report,
+        handle: String::new(),
+        starting: true,
+        error: None,
+        parent,
+        pushed: false,
+        pipeline: Some(preset.into()),
+    };
+    let dir = crate::pipeline::job_dir(&w);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir)?;
+    let job = crate::pipeline::Job {
+        preset: preset.into(),
+        agent: kind,
+        ask: prompt.clone(),
+        steps: p.steps.clone(),
+    };
+    fs::write(
+        dir.join("job.json"),
+        serde_json::to_string_pretty(&job).map_err(io::Error::other)?,
+    )?;
+    r.put(w)?;
+    let spawned = Command::new(std::env::current_exe()?)
+        .args(["pipeline-run", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(File::create(dir.join("driver.stderr"))?)
+        .process_group(0)
+        .spawn();
+    r.set(name, started, |w| {
+        w.starting = false;
+        match &spawned {
+            Ok(c) => w.handle = c.id().to_string(),
+            Err(e) => w.error = Some(format!("could not run `reeve pipeline-run`: {e}")),
+        }
+    })?;
+    spawned.map(|_| ())
 }
 
 pub fn run(
@@ -1004,20 +1129,7 @@ pub fn run(
     {
         return Err(io::Error::other(why));
     }
-    if let Ok(old) = r.get(name) {
-        let a = agent(&old);
-        if state_of(&old, now(), || a) == State::Starting {
-            return Err(io::Error::other(format!(
-                "worker {name} is still starting; wait for it or use another name"
-            )));
-        }
-        if a != Agent::Absent {
-            return Err(io::Error::other(format!(
-                "worker {name} still has an agent; {} or use another name",
-                stop_hint(&old)
-            )));
-        }
-    }
+    name_free(r, name)?;
     let report = r.report_path(name);
     let reports = report.parent().expect("reports dir");
     fs::create_dir_all(reports)?;
@@ -1043,6 +1155,7 @@ pub fn run(
                     Ok((pane, Some(tab), argv))
                 })
         }
+        Backend::Pipeline => Err(io::Error::other("a pipeline worker needs --pipeline")),
         Backend::Bg if kind == Kind::Codex => Ok((String::new(), None, exec_argv(&own, &prompt))),
         Backend::Bg => Ok((String::new(), None, bg_argv(&own, &prompt))),
     };
@@ -1067,6 +1180,7 @@ pub fn run(
         error: None,
         parent,
         pushed: false,
+        pipeline: None,
     })?;
     if let Err(e) = spawn_start(name, tab.as_deref(), &argv) {
         if let Some(tab) = &tab {
@@ -1081,7 +1195,7 @@ pub fn run(
     }
     match backend {
         Backend::Bg => started_bg(r, name, started),
-        Backend::Pane => Ok(()),
+        Backend::Pane | Backend::Pipeline => Ok(()),
     }
 }
 
@@ -1136,6 +1250,7 @@ pub fn start(r: &Registry, name: &str, tab: Option<&str>, argv: &[String]) -> io
         (Backend::Pane, _, None) => Err(io::Error::other("a pane worker needs --tab")),
         (Backend::Bg, Kind::Claude, _) => start_bg(argv),
         (Backend::Bg, Kind::Codex, _) => start_exec(argv, &exec_log(&w)),
+        (Backend::Pipeline, _, _) => Err(io::Error::other("a pipeline starts by itself")),
     };
     r.set(name, w.started, |w| {
         w.starting = false;
@@ -1261,13 +1376,13 @@ pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
         .map(|w| {
             let mut a = Agent::Absent;
             let s = state_of(w, now, || {
-                a = if w.agent != Kind::Claude {
+                a = if w.agent != Kind::Claude || w.backend == Backend::Pipeline {
                     agent(w)
                 } else {
                     let p = claude.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
                     let p = p.as_deref().map_err(|e| e.as_str());
                     let registry = match w.backend {
-                        Backend::Pane => agent(w),
+                        Backend::Pane | Backend::Pipeline => agent(w),
                         Backend::Bg => bg_agent(p, &w.handle),
                     };
                     if let Some(m) = mismatch(registry, named_agent(p, &w.name)) {
@@ -1382,6 +1497,7 @@ pub fn ls(
         let backend = match w.backend {
             Backend::Pane => "pane",
             Backend::Bg => "bg",
+            Backend::Pipeline => "pipe",
         };
         out += &format!(
             "\n{:width$}  {:state_w$}  {:6}  {backend:7}  {:>3}  {}{}",
@@ -1456,12 +1572,21 @@ pub(crate) fn answer_where(w: &Worker) -> String {
         }
         (Backend::Bg, Kind::Claude) => format!("with `claude attach {}`", w.handle),
         (Backend::Bg, Kind::Codex) => format!("with {}", resume_hint(w)),
+        // Never asked: its steps run unattended and leave open decisions in the report.
+        (Backend::Pipeline, _) => format!(
+            "nowhere: it runs unattended, and its report names what it left open ({})",
+            crate::setup::tilde(&w.report)
+        ),
     }
 }
 
 /// Where to see what a gone worker left.
 fn left_where(w: &Worker) -> String {
     match (w.backend, w.agent) {
+        (Backend::Pipeline, _) => format!(
+            "see its steps' output in {}",
+            crate::setup::tilde(&crate::pipeline::job_dir(w))
+        ),
         (_, Kind::Claude) => format!(
             "see `claude logs {}`, or its transcript under ~/.claude/projects/",
             w.name
@@ -1480,6 +1605,7 @@ fn look_where(w: &Worker) -> String {
         (Backend::Pane, _) => format!("its tab (`herdr pane read {}`)", w.handle),
         (Backend::Bg, Kind::Claude) => format!("`claude logs {}`", w.name),
         (Backend::Bg, Kind::Codex) => crate::setup::tilde(&exec_log(w)),
+        (Backend::Pipeline, _) => crate::setup::tilde(&crate::pipeline::job_dir(w)),
     }
 }
 
@@ -1623,6 +1749,8 @@ pub fn close_cmd(w: &Worker) -> (&'static str, Vec<String>) {
         (Backend::Pane, _) => ("herdr", &["pane", "close"]),
         (Backend::Bg, Kind::Claude) => ("claude", &["stop"]),
         (Backend::Bg, Kind::Codex) => ("kill", &[]),
+        // The driver leads its own process group, with the step running in it.
+        (Backend::Pipeline, _) => return ("kill", vec!["--".into(), format!("-{}", w.handle)]),
     };
     let args = args.iter().map(|a| a.to_string());
     (cmd, args.chain([w.handle.clone()]).collect())
@@ -1915,6 +2043,7 @@ mod tests {
             error: None,
             parent: None,
             pushed: false,
+            pipeline: None,
         }
     }
 
@@ -3178,6 +3307,7 @@ mod tests {
             error: None,
             parent: None,
             pushed: false,
+            pipeline: None,
         };
         let all = [
             mk("pane", Backend::Pane, Kind::Claude, "w1:p2"),
