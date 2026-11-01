@@ -39,9 +39,7 @@ pub fn successor_prompt(file: &Path) -> String {
 /// The named worker whose Herdr pane is `pane`: the session that is handing off, if reeve
 /// started it. Sessions the user started by hand are not reeve's to close.
 pub fn predecessor<'a>(all: &'a [Worker], pane: Option<&str>) -> Option<&'a Worker> {
-    let pane = pane?;
-    all.iter()
-        .find(|w| w.backend == Backend::Pane && w.handle == pane)
+    workers::pane_worker(all, pane?)
 }
 
 /// What a predecessor's tab shows. `text` is the pane read; the handoff shows in it as the
@@ -171,6 +169,8 @@ fn tidy_one(r: &Registry, next: &str, from: &str) -> Option<String> {
     // nothing of the handoff is left. The lock goes last, after another `tidy` that takes a
     // fresh one would find no `.from` and stop.
     let forget = || {
+        let _ = fs::remove_file(r.forwards_path(next).with_extension("last"));
+        let _ = fs::remove_file(r.forwards_path(next).with_extension("lastlock"));
         let _ = fs::remove_file(r.forwards_path(next));
         let _ = fs::remove_file(r.predecessor_path(next));
         let _ = fs::remove_file(r.forward_lock(next));
@@ -216,6 +216,9 @@ pub fn handed_off_from(r: &Registry, pane: &str) -> Option<(String, String)> {
 /// marks the handoff as forwarding.
 pub fn queue(r: &Registry, next: &str, from: &str, text: &str) -> io::Result<()> {
     use crate::msg;
+    if !claim_forward(r, next, text, msg::now_secs())? {
+        return Ok(());
+    }
     let m = msg::compose(
         from,
         next,
@@ -227,6 +230,38 @@ pub fn queue(r: &Registry, next: &str, from: &str, text: &str) -> io::Result<()>
     .map_err(io::Error::other)?;
     msg::write_atomic(&msg::Store::open()?.inbox(), &m)?;
     fs::write(r.forwards_path(next), "")
+}
+
+/// How long the same text from the predecessor counts as one message: a prompt can reach the
+/// hook several times at once.
+const DUPLICATE_SECS: u64 = 30;
+
+/// Whether `text` should be forwarded to `next`: false when the same text was forwarded in the
+/// last `DUPLICATE_SECS`. Records `text` when it is forwarded. Holds a lock, so hooks that run
+/// at the same moment forward it once.
+fn claim_forward(r: &Registry, next: &str, text: &str, now: u64) -> io::Result<bool> {
+    let dir = r.forwards_path(next);
+    let last = dir.with_extension("last");
+    let lock = File::create(dir.with_extension("lastlock"))?;
+    lock.lock()?;
+    let seen = fs::read_to_string(&last).ok().and_then(|s| {
+        let (at, prev) = s.split_once('\n')?;
+        Some((at.parse::<u64>().ok()?, prev.to_string()))
+    });
+    if seen.is_some_and(|(at, prev)| prev == text && now.saturating_sub(at) < DUPLICATE_SECS) {
+        return Ok(false);
+    }
+    fs::write(&last, format!("{now}\n{text}"))?;
+    Ok(true)
+}
+
+/// A prompt that is a machine event, not something the user typed: a finished background task
+/// or a message from another session. reeve delivers those to the successor itself.
+pub fn is_machine_event(text: &str) -> bool {
+    let t = text.trim_start();
+    ["<task-notification>", "<system-reminder", "<cross-session-message"]
+        .iter()
+        .any(|p| t.starts_with(p))
 }
 
 /// What the predecessor's prompt hook answers: the prompt is kept from the predecessor, and the
@@ -250,6 +285,11 @@ pub fn on_prompt(payload: &Value) -> Option<Value> {
         return None;
     }
     let text = payload["prompt"].as_str()?;
+    // The predecessor's own monitors and background tasks keep reporting to it; blocking those
+    // would loop, and the successor has its own.
+    if is_machine_event(text) {
+        return None;
+    }
     let pane = std::env::var("HERDR_PANE_ID").ok()?;
     let r = Registry::at(Registry::default_dir().ok()?);
     let (next, from) = handed_off_from(&r, &pane)?;
@@ -547,6 +587,73 @@ mod tests {
         );
         assert_eq!(predecessor(&all, Some("w1:p9")), None);
         assert_eq!(predecessor(&all, None), None);
+    }
+
+    #[test]
+    fn the_predecessor_in_a_reused_pane_is_the_newest_worker_there() {
+        let mut stale = w("stale");
+        stale.backend = Backend::Pane;
+        stale.handle = "w1:p2".into();
+        stale.started = 100;
+        let mut current = stale.clone();
+        current.name = "current".into();
+        current.started = 200;
+        let all = [stale, current];
+        assert_eq!(
+            predecessor(&all, Some("w1:p2")).map(|w| &w.name[..]),
+            Some("current")
+        );
+    }
+
+    #[test]
+    fn three_workers_sharing_a_pane_across_two_handoffs_resolve_to_the_newest() {
+        let dir = std::env::temp_dir().join(format!("reeve-ho-three-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let r = Registry::at(dir);
+        let at = |name: &str, started| {
+            let mut x = w(name);
+            x.backend = Backend::Pane;
+            x.handle = "wH4:p3".into();
+            x.started = started;
+            x
+        };
+        for x in [at("knip", 100), at("report", 200), at("ws6", 300)] {
+            r.put(x).unwrap();
+        }
+        fs::create_dir_all(r.predecessor_path("x").parent().unwrap()).unwrap();
+        fs::write(r.predecessor_path("report-2"), "report").unwrap();
+        fs::write(r.predecessor_path("ws7"), "ws6").unwrap();
+        r.put(w("report-2")).unwrap();
+        r.put(w("ws7")).unwrap();
+        // ws6 hands off from the shared pane: the handoff is ws6's, not knip's or report's.
+        assert_eq!(
+            handed_off_from(&r, "wH4:p3"),
+            Some(("ws7".into(), "ws6".into()))
+        );
+    }
+
+    #[test]
+    fn a_repeated_forward_is_dropped_within_the_window_only() {
+        let dir = std::env::temp_dir().join(format!("reeve-ho-dup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("handoffs")).unwrap();
+        let r = Registry::at(dir);
+        assert!(claim_forward(&r, "next", "hello", 1000).unwrap());
+        assert!(!claim_forward(&r, "next", "hello", 1002).unwrap());
+        assert!(claim_forward(&r, "next", "something else", 1003).unwrap());
+        assert!(claim_forward(&r, "next", "hello", 1004).unwrap());
+        assert!(!claim_forward(&r, "next", "hello", 1005).unwrap());
+        assert!(claim_forward(&r, "next", "hello", 1005 + DUPLICATE_SECS).unwrap());
+        assert!(claim_forward(&r, "other", "hello", 1005).unwrap());
+    }
+
+    #[test]
+    fn machine_events_are_not_forwarded() {
+        assert!(is_machine_event("<task-notification>\n<task-id>x</task-id>"));
+        assert!(is_machine_event("  <system-reminder>\nfoo"));
+        assert!(is_machine_event("<cross-session-message from=\"a\">hi"));
+        assert!(!is_machine_event("please look at <task-notification> handling"));
+        assert!(!is_machine_event("hello"));
     }
 
     #[test]

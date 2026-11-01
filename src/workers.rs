@@ -823,6 +823,15 @@ impl Caller {
     }
 }
 
+/// The pane worker in Herdr pane `pane`. Herdr hands the id of a closed pane to a later one,
+/// and the closed pane's worker stays registered, so several workers can share a handle: the
+/// one that started last is in the pane now.
+pub fn pane_worker<'a>(all: &'a [Worker], pane: &str) -> Option<&'a Worker> {
+    all.iter()
+        .filter(|w| w.backend == Backend::Pane && w.handle == pane)
+        .max_by_key(|w| w.started)
+}
+
 /// The named worker a session is: the pane worker in its Herdr pane; else the background
 /// Claude worker whose session `claude agents` (`agents`, asked only then) lists under the
 /// session's id; else the background Codex worker whose log (`thread_of`) has its thread.
@@ -833,9 +842,7 @@ pub fn caller_of<'a>(
     thread_of: impl Fn(&Worker) -> Option<String>,
 ) -> Option<&'a Worker> {
     if let Some(pane) = &c.pane
-        && let Some(w) = all
-            .iter()
-            .find(|w| w.backend == Backend::Pane && w.handle == *pane)
+        && let Some(w) = pane_worker(all, pane)
     {
         return Some(w);
     }
@@ -2923,6 +2930,33 @@ mod tests {
         let only_pane = [all[0].clone()];
         let asked = caller_of(&only_pane, &session("s-1"), || panic!("asked"), |_| None);
         assert!(asked.is_none());
+    }
+
+    #[test]
+    fn a_reused_pane_id_belongs_to_the_newest_worker_in_it() {
+        let mk = |name: &str, started| Worker {
+            name: name.into(),
+            backend: Backend::Pane,
+            agent: Kind::Claude,
+            cwd: "/w".into(),
+            started,
+            report: format!("/st/reports/{name}.md").into(),
+            handle: "wH4:p3".into(),
+            starting: false,
+            error: None,
+        };
+        // Herdr hands the id of a closed pane to a later one; the old entry stays registered.
+        let all = [mk("stale", 100), mk("successor", 200), mk("older", 50)];
+        let c = Caller {
+            pane: Some("wH4:p3".into()),
+            ..Caller::default()
+        };
+        let me = caller_of(&all, &c, || None, |_| None).map(|w| w.name.as_str());
+        assert_eq!(me, Some("successor"));
+        assert_eq!(
+            pane_worker(&all, "wH4:p3").map(|w| w.name.as_str()),
+            Some("successor")
+        );
     }
 
     #[test]
