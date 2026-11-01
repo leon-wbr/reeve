@@ -1,0 +1,63 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v reeve >/dev/null && reeve ls --brief || true # reeve setup claude"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v reeve >/dev/null && reeve hook context || true # reeve setup claude"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v reeve >/dev/null && reeve hook context || true # reeve setup claude"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v reeve >/dev/null && reeve hook background || true # reeve setup claude"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(reeve ls:*)",
+      "Bash(reeve watch:*)",
+      "Bash(reeve report:*)",
+      "Bash(reeve close:*)",
+      "Bash(reeve run:*)",
+      "Bash(reeve handoff:*)",
+      "Bash(reeve feedback:*)",
+      "Bash(reeve doctor:*)",
+      "Bash(reeve wait:*)",
+      "Bash(reeve rm:*)",
+      "Bash(reeve inbox:*)",
+      "Bash(reeve --skill)"
+    ],
+    "defaultMode": "auto"
+  }
+}

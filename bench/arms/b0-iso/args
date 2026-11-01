@@ -1,0 +1,3 @@
+# Vanilla without the owner's user settings, CLAUDE.md, skills, hooks or plugins.
+--setting-sources
+project,local
