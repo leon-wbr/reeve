@@ -118,6 +118,27 @@ pub fn hook_state(settings: &Value, k: Kind) -> Piece {
     if current { Piece::Ok } else { Piece::Stale }
 }
 
+/// Whether `settings` has the prompt hook setup writes for `k`, the one that passes a
+/// predecessor's prompts on to its successor (`handoff::on_prompt`).
+pub fn diverts_prompts(settings: &Value, k: Kind) -> bool {
+    let want = context_command(k);
+    settings["hooks"]["UserPromptSubmit"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|g| g["hooks"].as_array())
+        .flatten()
+        .any(|h| h["command"] == want.as_str())
+}
+
+/// `diverts_prompts` for the settings `k` reads; false when they can't be read.
+pub fn prompt_hook_installed(k: Kind) -> bool {
+    Paths::of(k)
+        .ok()
+        .and_then(|p| read_settings(&p.settings).ok().flatten())
+        .is_some_and(|s| diverts_prompts(&s, k))
+}
+
 /// Takes out every hook carrying the marker, and any group, event list or `hooks` object left
 /// empty by that. Returns whether anything changed.
 pub fn remove_hook(settings: &mut Value, k: Kind) -> bool {
@@ -750,6 +771,22 @@ mod tests {
             },
             "env": { "A": "1" }
         })
+    }
+
+    #[test]
+    fn the_prompt_hook_that_passes_a_predecessors_prompts_on_is_found_per_agent() {
+        let mut s = others();
+        assert!(!diverts_prompts(&s, C));
+        add_hook(&mut s, C).unwrap();
+        assert!(diverts_prompts(&s, C));
+        assert!(!diverts_prompts(&s, Kind::Codex));
+        // Only the prompt hook counts, not the others setup writes.
+        s["hooks"]
+            .as_object_mut()
+            .unwrap()
+            .remove("UserPromptSubmit");
+        assert!(!diverts_prompts(&s, C));
+        assert!(!diverts_prompts(&json!([]), C));
     }
 
     #[test]
