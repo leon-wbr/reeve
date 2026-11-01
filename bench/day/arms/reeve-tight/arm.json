@@ -1,0 +1,7 @@
+{
+  "note": "The reeve arm with a stress budget: a fresh reeve session's start context (23K) plus 5K, where main's hook storms.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "contextBudget": 28000
+}
