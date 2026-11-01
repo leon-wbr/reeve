@@ -86,11 +86,15 @@ enum Top {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// List named workers and whether each is running, done or gone
+    /// List named workers and whether each is running, done or gone; finished ones whose agent
+    /// is gone drop out 12 hours after they finish
     Ls {
         /// One short line for a session-start hook, and nothing when there are no workers
         #[arg(long)]
         brief: bool,
+        /// Every worker in the registry, finished history too
+        #[arg(long, conflicts_with = "brief")]
+        all: bool,
     },
     /// Block until a named worker has written its report
     Wait {
@@ -630,7 +634,7 @@ pub fn main() -> ExitCode {
             ev.label = sandbox.clone().flatten();
             start(bg, sandbox, &opts, explicit, &args)
         }
-        Top::Ls { brief: true } => {
+        Top::Ls { brief: true, .. } => {
             ev.label = Some("brief".into());
             workers()
                 .and_then(|r| {
@@ -682,13 +686,13 @@ pub fn main() -> ExitCode {
                 })
                 .map(|_| 0)
         }
-        Top::Ls { brief: false } => workers()
+        Top::Ls { brief: false, all } => workers()
             .and_then(|r| {
                 tidy_predecessors(&r);
                 let unread = msg::Store::open()
                     .map(|s| inbox::unread_counts(&s, msg::now_secs()))
                     .unwrap_or_default();
-                workers::ls(&r, &remote::ls_rows(), &unread)
+                workers::ls(&r, &remote::ls_rows(), &unread, all)
             })
             .map(|out| println!("{out}"))
             .map(|_| 0),

@@ -1317,11 +1317,12 @@ fn ls_shows_unread_messages_and_a_worker_is_told_to_follow_its_inbox_at_start() 
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();
     registry(&root, &["a", "b"]);
-    let plain = String::from_utf8_lossy(&reeve(&root, &project, &["ls"]).stdout).into_owned();
+    let plain =
+        String::from_utf8_lossy(&reeve(&root, &project, &["ls", "--all"]).stdout).into_owned();
     assert!(!plain.contains("UNREAD"), "{plain}");
     reeve(&root, &project, &["send", "a", "one"]);
     reeve(&root, &project, &["send", "a", "two"]);
-    let ls = String::from_utf8_lossy(&reeve(&root, &project, &["ls"]).stdout).into_owned();
+    let ls = String::from_utf8_lossy(&reeve(&root, &project, &["ls", "--all"]).stdout).into_owned();
     assert!(ls.lines().next().unwrap().contains("UNREAD"), "{ls}");
     let cols = |name: &str| -> Vec<String> {
         ls.lines()
@@ -1348,6 +1349,50 @@ fn ls_shows_unread_messages_and_a_worker_is_told_to_follow_its_inbox_at_start() 
     assert!(me.contains("`reeve inbox --follow`"), "{me}");
     assert!(me.contains("Monitor") && me.contains("1800000"), "{me}");
     assert!(!brief("p-user").contains("You are worker"));
+}
+
+#[test]
+fn ls_leaves_out_old_finished_workers_whose_pane_is_gone_but_never_a_live_one() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    // Both started long ago and the fake herdr knows no pane: b, gone, is finished history;
+    // a wrote its report just now, so it stays until 12 hours after that.
+    registry(&root, &["a", "b"]);
+    report(&root, "a");
+    let ls =
+        |args: &[&str]| String::from_utf8_lossy(&reeve(&root, &project, args).stdout).into_owned();
+    let out = ls(&["ls"]);
+    assert!(out.contains("\na ") && !out.contains("\nb "), "{out}");
+    assert!(
+        out.trim_end().ends_with(
+            "\n1 older finished worker (agent gone, finished over 12h ago): `reeve ls --all`"
+        ),
+        "{out}"
+    );
+    let brief = ls(&["ls", "--brief"]);
+    assert!(
+        brief.starts_with(
+            "reeve: 1 worker: a done (report ready) (1 older finished: `reeve ls --all`)."
+        ),
+        "{brief}"
+    );
+    let all = ls(&["ls", "--all"]);
+    assert!(all.contains("\na ") && all.contains("\nb "), "{all}");
+    assert!(!all.contains("older finished"), "{all}");
+    // An old worker whose pane is still there stays, done or not.
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"claude","agent_status":"idle"}}}"#,
+    )
+    .unwrap();
+    let out = ls(&["ls"]);
+    assert!(out.contains("\na ") && out.contains("\nb "), "{out}");
+    assert!(!out.contains("older finished"), "{out}");
+    let brief = ls(&["ls", "--brief"]);
+    assert!(
+        brief.starts_with("reeve: 2 workers: b idle without a report, a done"),
+        "{brief}"
+    );
 }
 
 #[test]

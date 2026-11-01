@@ -306,3 +306,19 @@ Readings of `usage --plan` (whole percents of the weekly limit, reset 2026-11-05
 
   `reeve ls` and `herdr agent list` showed no others. The outage (18:50–19:20 Tbilisi) cost a pair and about 20 minutes.
 - **What it buys:** at about $7 per point, the plan's backlog calibration (about $10) is about 1.5% of a week, and a 30-minute parallel arm at n=2 ($20–60) is 3–9%.
+
+## `reeve ls` leaves out finished history (2 Nov)
+
+The live registry had 300 workers, most of them done or gone days ago with no pane or session left. `reeve ls` printed all 300, and the session-start brief (`reeve ls --brief`, the hook's output) named the eight oldest, all finished, so running, idle and blocked workers sank into "292 more". The change hides a worker once it is done or gone, its agent is absent and it finished (wrote its report, or else started) over 12 hours ago. A last line counts the hidden ones and `reeve ls --all` lists them. A worker whose pane or session is still there is never hidden. The brief also names blocked workers first, then idle, then running, then finished, newest first within each.
+
+Measured on a copy of the live `workers.json` under its own `XDG_STATE_HOME`, main (5f7c1eb) and the branch alternating, n=3 per arm. The output depends only on the registry and the live panes, so all three runs of an arm agree, and the ranges are 0 ([results/ls-tidy.tsv](results/ls-tidy.tsv)). No agent sessions ran: $0 and 0 weekly points.
+
+| | main | branch |
+|---|---|---|
+| `reeve ls` bytes (≈ tokens) | 27,170 (≈6,800) | **8,458 (≈2,100), −69%** |
+| `reeve ls` lines | 302 | **98** |
+| brief bytes | 797 | 853 (+7%) |
+| live workers among the brief's 8 names | 0 | **8** |
+| workers the brief counts | 300 | 95 (+ "205 older finished") |
+
+The brief was already capped at 1,000 characters. It now spends those characters on workers someone has to act on. 79 of the 95 still listed are done: they finished in the last 12 hours or still have their pane open, waiting for `reeve close`.

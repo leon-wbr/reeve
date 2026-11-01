@@ -14,7 +14,7 @@ Inside Herdr each worker gets its own tab in its project's workspace, where the 
 ```sh
 reeve run --name fix-flaky --cwd ~/app -- "Fix the flaky test in tests/api; run it 20 times to confirm."
 reeve run --name review --cwd ~/app -- --model sonnet "Review it."
-reeve ls                 # every worker: starting, running, blocked, idle, done or gone
+reeve ls                 # live workers, and ones finished in the last 12h; --all for all
 reeve watch fix-flaky    # a line per change, with the next step
 reeve report fix-flaky   # prints the report
 reeve close fix-flaky    # closes its tab and clean pushed worktree; --preserve keeps it
