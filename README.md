@@ -123,6 +123,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - [docs/events.md](docs/events.md)
 - [docs/codex.md](docs/codex.md)
 - [docs/remotes.md](docs/remotes.md)
+- [docs/schedule.md](docs/schedule.md)
 
 ## License
 

@@ -23,7 +23,7 @@ Every reeve command appends one JSON line to `~/.local/state/reeve/events.jsonl`
 | `ms` | How long the command took |
 | `heavy_wait_ms`, `heavy_run_ms` | Time in the heavy queue, and the command's run time |
 | `handoff_ms` | From `reeve run --name` until the new worker's agent is up |
-| `actor`, `agent` | `agent` or `person`, from the variables agent CLIs set (`CLAUDECODE`, `CODEX_SANDBOX`, `AI_AGENT`); `agent` names a known one, or says `other` |
+| `actor`, `agent` | `agent` or `person`, from the variables agent CLIs set (`CLAUDECODE`, `CODEX_SANDBOX`, `AI_AGENT`); `agent` names a known one, or says `other`. `schedule` when no agent is set and `REEVE_ACTOR=schedule` is, as a launchd or cron job sets it ([schedule.md](schedule.md)) |
 
 **The privacy rule:** the log never holds prompt text, file contents, report text, command arguments, error messages or environment values.
 
