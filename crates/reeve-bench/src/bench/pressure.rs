@@ -269,7 +269,24 @@ pub fn sample(run: &[Proc]) -> Sample {
 /// `reeve heavy` caller, that is the shell the caller runs in and everything under it. A job the
 /// caller runs as its child dies with it; one that runs elsewhere doesn't.
 pub fn reap_target(all: &[Proc], run: &[Proc]) -> Vec<u32> {
-    let Some(caller) = run.iter().filter(|p| p.is_heavy_caller()).max_by_key(|p| p.pid) else {
+    // Only a session's own tasks: a process outside every session's tree is out of its reach.
+    let parent: HashMap<u32, &Proc> = all.iter().map(|p| (p.pid, p)).collect();
+    let in_session = |p: &Proc| {
+        let mut q = parent.get(&p.ppid).copied();
+        for _ in 0..64 {
+            match q {
+                Some(a) if a.name() == "claude" => return true,
+                Some(a) if a.pid > 1 => q = parent.get(&a.ppid).copied(),
+                _ => return false,
+            }
+        }
+        false
+    };
+    let Some(caller) = run
+        .iter()
+        .filter(|p| p.is_heavy_caller() && in_session(p))
+        .max_by_key(|p| p.pid)
+    else {
         return vec![];
     };
     let shell = all
