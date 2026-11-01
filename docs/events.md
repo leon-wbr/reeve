@@ -22,6 +22,7 @@ Every reeve command appends one JSON line to `~/.local/state/reeve/events.jsonl`
 | `error` | A fixed kind such as `no_worker`, `worker_gone`, `timeout`, `usage`, `herdr`, `remote_unreachable`, `remote_timeout`, `box_invalid`; never the message |
 | `ms` | How long the command took |
 | `heavy_wait_ms`, `heavy_run_ms` | Time in the heavy queue, and the command's run time |
+| `heavy_limit_ms`, `timed_out` | A heavy command's time limit, and `true` if it was stopped for reaching it |
 | `handoff_ms` | From `reeve run --name` until the new worker's agent is up |
 | `actor`, `agent` | `agent` or `person`, from the variables agent CLIs set (`CLAUDECODE`, `CODEX_SANDBOX`, `AI_AGENT`); `agent` names a known one, or says `other` |
 

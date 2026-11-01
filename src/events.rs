@@ -30,6 +30,12 @@ pub struct Event {
     pub heavy_wait_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heavy_run_ms: Option<u64>,
+    /// A heavy command's time limit, when it had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heavy_limit_ms: Option<u64>,
+    /// Set when a heavy command was stopped for reaching its limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timed_out: Option<bool>,
     /// From `reeve run --name` until the new worker's agent is up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_ms: Option<u64>,

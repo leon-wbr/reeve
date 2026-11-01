@@ -33,6 +33,9 @@ pub struct Entry {
     /// The `--lock` key this run holds, or waits for in the lock list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock: Option<String>,
+    /// The run's time limit once it runs, in ms; missing means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_ms: Option<u64>,
 }
 
 /// A ticket or slot file, locked for as long as its owner lives. An unlocked file belongs to a
@@ -304,8 +307,61 @@ pub struct Args {
     /// resource that can't be shared; prefer making runs independent (own database or port)
     #[arg(long, value_name = "KEY", value_parser = non_empty)]
     lock: Option<String>,
+    /// Longest the command may run once it has a slot (e.g. 45m, 90s). At the limit its process
+    /// group is stopped and reeve heavy exits 124. Start visual/e2e runs narrow rather than
+    /// raising this; prefer a large value to `none`, which removes the limit
+    #[arg(
+        long,
+        env = "REEVE_HEAVY_TIMEOUT",
+        value_name = "DURATION",
+        default_value = DEFAULT_TIMEOUT,
+        value_parser = parse_limit
+    )]
+    timeout: Limit,
     #[arg(last = true)]
     cmd: Vec<String>,
+}
+
+/// Longest successful heavy run in the event history was 22 min, so nothing that worked is cut.
+pub const DEFAULT_TIMEOUT: &str = "30m";
+
+/// A time limit; None is `none`.
+type Limit = Option<Duration>;
+
+fn parse_limit(s: &str) -> Result<Limit, String> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (n, unit) = s.split_at(split);
+    let n: u64 = n
+        .parse()
+        .map_err(|_| format!("`{s}` is not a duration like 45m, 90s or 2h, or `none`"))?;
+    let ms = match unit {
+        "ms" => n,
+        "s" => n.saturating_mul(1000),
+        "m" => n.saturating_mul(60_000),
+        "h" => n.saturating_mul(3_600_000),
+        _ => {
+            return Err(format!(
+                "`{s}` needs a unit: ms, s, m or h (e.g. 45m), or `none`"
+            ));
+        }
+    };
+    if ms == 0 {
+        return Err("the limit can't be zero; use `none` for no limit".into());
+    }
+    Ok(Some(Duration::from_millis(ms)))
+}
+
+fn show_limit(ms: u64) -> String {
+    match ms {
+        m if m % 3_600_000 == 0 => format!("{}h", m / 3_600_000),
+        m if m % 60_000 == 0 => format!("{}m", m / 60_000),
+        m if m % 1000 == 0 => format!("{}s", m / 1000),
+        m => format!("{m}ms"),
+    }
 }
 
 fn non_empty(s: &str) -> Result<String, String> {
@@ -349,7 +405,7 @@ pub fn main(args: Args, ev: &mut Event) -> io::Result<i32> {
     let label = args
         .label
         .unwrap_or_else(|| args.cmd.join(" ").chars().take(40).collect());
-    run(&q, label, args.lock, &args.cmd, slots, ev)
+    run(&q, label, args.lock, &args.cmd, slots, args.timeout, ev)
 }
 
 static STOP: AtomicI32 = AtomicI32::new(0);
@@ -370,6 +426,7 @@ fn run(
     lock: Option<String>,
     cmd: &[String],
     slots: usize,
+    limit: Limit,
     ev: &mut Event,
 ) -> io::Result<i32> {
     let command = || {
@@ -395,6 +452,7 @@ fn run(
         cwd: std::env::current_dir().map_or_else(|_| String::new(), |d| d.display().to_string()),
         since: now_ms(),
         lock: lock.clone(),
+        limit_ms: None,
     };
     // In a terminal's foreground job the command shares our process group, so Ctrl-C, Ctrl-Z and
     // reads from the terminal work as usual. Elsewhere (agents) it gets its own group, which is
@@ -466,6 +524,7 @@ fn run(
     let entry = Entry {
         group: (!interactive).then(|| child.id()),
         since: now_ms(),
+        limit_ms: limit.map(|l| l.as_millis() as u64),
         ..slot.entry.clone()
     };
     if let Err(err) = q.update(&mut slot, entry) {
@@ -477,12 +536,26 @@ fn run(
         -(child.id() as i32)
     };
     let ran = Instant::now();
-    let status = wait(&mut child, target);
+    let (status, timed_out) = wait(&mut child, target, limit.map(|l| ran + l));
     ev.heavy_run_ms = Some(ran.elapsed().as_millis() as u64);
+    if let Some(l) = limit {
+        ev.heavy_limit_ms = Some(l.as_millis() as u64);
+        ev.timed_out = timed_out.then_some(true);
+    }
     if !interactive {
         kill_group(target);
     }
     q.drop(slot);
+    if let (true, Some(l)) = (timed_out, limit) {
+        eprintln!(
+            "reeve heavy: hit the time limit of {} and stopped the command; narrow the run \
+             (only the affected suite or spec) or pass --timeout DURATION|none",
+            show_limit(l.as_millis() as u64)
+        );
+        if stopped().is_none() {
+            return Ok(124);
+        }
+    }
     Ok(stopped().map_or_else(|| code(status), |sig| 128 + sig))
 }
 
@@ -532,13 +605,20 @@ fn take_lock(q: &Queue, key: &str, me: &Entry, interactive: bool) -> io::Result<
 }
 
 /// Waits for the command, passing on any signal reeve heavy gets. It is killed if it hasn't
-/// stopped after `GRACE`, or at once on a second signal.
-fn wait(child: &mut Child, target: i32) -> ExitStatus {
+/// stopped after `GRACE`, or at once on a second signal. At `limit` it is stopped the same way
+/// as if signalled; the flag says that happened.
+fn wait(child: &mut Child, target: i32, limit: Option<Instant>) -> (ExitStatus, bool) {
     let mut forwarded = None;
     let mut deadline = None;
+    let mut timed_out = false;
     loop {
         if let Ok(Some(status)) = child.try_wait() {
-            return status;
+            return (status, timed_out);
+        }
+        if !timed_out && limit.is_some_and(|l| Instant::now() >= l) {
+            timed_out = true;
+            unsafe { libc::kill(target, libc::SIGTERM) };
+            deadline.get_or_insert(Instant::now() + GRACE);
         }
         if let Some(sig) = stopped().filter(|&s| forwarded != Some(s)) {
             forwarded = Some(sig);
@@ -594,8 +674,13 @@ fn ls(running: &[Entry], waiting: &[Entry], lock_waiting: &[Entry], now: u64) ->
                 Some(k) => format!("  holds lock {k}"),
                 None => String::new(),
             };
+            let limit = match (*state, e.limit_ms) {
+                ("running", Some(ms)) => format!("  limit {}", show_limit(ms)),
+                ("running", None) => "  no limit".into(),
+                _ => String::new(),
+            };
             format!(
-                "{state}  {:<width$}  pid {:<6}  {:>5}  {}{lock}\n",
+                "{state}  {:<width$}  pid {:<6}  {:>5}  {}{limit}{lock}\n",
                 e.label,
                 e.pid,
                 age(now.saturating_sub(e.since)),
@@ -625,6 +710,7 @@ mod tests {
             cwd: "/w".into(),
             since,
             lock: None,
+            limit_ms: None,
         }
     }
 
@@ -761,6 +847,21 @@ mod tests {
         assert_eq!(encode_key("trustroots-e2e_db.1"), "trustroots-e2e_db.1");
         assert_eq!(encode_key("a/b"), "a%2Fb");
         assert_ne!(encode_key("a/b"), encode_key("a%2Fb"));
+    }
+
+    #[test]
+    fn limits_parse_with_a_unit_or_none() {
+        let ms = |s| parse_limit(s).unwrap().map(|d| d.as_millis());
+        assert_eq!(ms("90s"), Some(90_000));
+        assert_eq!(ms("45m"), Some(2_700_000));
+        assert_eq!(ms("2h"), Some(7_200_000));
+        assert_eq!(ms("500ms"), Some(500));
+        assert_eq!(ms("none"), None);
+        assert!(parse_limit("45").is_err());
+        assert!(parse_limit("0s").is_err());
+        assert!(parse_limit("fast").is_err());
+        assert_eq!(ms(DEFAULT_TIMEOUT), Some(1_800_000));
+        assert_eq!(show_limit(2_700_000), "45m");
     }
 
     #[test]

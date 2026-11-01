@@ -10,7 +10,8 @@ fn heavy(state: &Path, args: &[&str]) -> Command {
         .env("REEVE_EVENTS", state.join("events.jsonl"))
         .stdin(Stdio::null())
         .env_remove("REEVE_HEAVY")
-        .env_remove("REEVE_HEAVY_SLOTS");
+        .env_remove("REEVE_HEAVY_SLOTS")
+        .env_remove("REEVE_HEAVY_TIMEOUT");
     c
 }
 
@@ -479,4 +480,130 @@ fn a_run_that_ends_or_is_terminated_frees_its_lock() {
         .status
         .success()
     );
+}
+
+fn events(state: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(state.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_command_over_its_limit_is_killed_with_its_children_and_exits_124() {
+    let d = tempfile::tempdir().unwrap();
+    let script = format!("{}; wait", background_sleep(d.path()));
+    let t = Instant::now();
+    let o = run(d.path(), &["--timeout", "1s", "--", "sh", "-c", &script]);
+    assert_eq!(o.status.code(), Some(124));
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    let pid = background_pid(d.path());
+    wait_for("the child to die", || !alive(pid));
+    assert_eq!(files(d.path(), "slots"), 0);
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(
+        err.contains("time limit") && err.contains("1s") && err.contains("--timeout"),
+        "{err}"
+    );
+    assert_eq!(err.matches("time limit").count(), 1, "{err}");
+}
+
+#[test]
+fn a_command_that_ignores_sigterm_is_killed_after_the_grace_period_on_timeout() {
+    let d = tempfile::tempdir().unwrap();
+    let script = "trap '' TERM; sleep 30";
+    let o = run(d.path(), &["--timeout", "1s", "--", "sh", "-c", script]);
+    assert_eq!(o.status.code(), Some(124));
+    assert_eq!(files(d.path(), "slots"), 0);
+}
+
+#[test]
+fn timeout_none_never_times_out_and_a_quick_command_keeps_its_code() {
+    let d = tempfile::tempdir().unwrap();
+    let o = run(
+        d.path(),
+        &["--timeout", "none", "--", "sh", "-c", "sleep 2; exit 3"],
+    );
+    assert_eq!(o.status.code(), Some(3));
+    let o = run(d.path(), &["--timeout", "5s", "--", "sh", "-c", "exit 4"]);
+    assert_eq!(o.status.code(), Some(4));
+}
+
+#[test]
+fn the_default_comes_from_the_env_and_none_overrides_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = heavy(d.path(), &["--", "sleep", "30"]);
+    c.env("REEVE_HEAVY_TIMEOUT", "1s");
+    assert_eq!(c.output().unwrap().status.code(), Some(124));
+    let mut c = heavy(
+        d.path(),
+        &["--timeout", "none", "--", "sh", "-c", "sleep 2"],
+    );
+    c.env("REEVE_HEAVY_TIMEOUT", "1s");
+    assert_eq!(c.output().unwrap().status.code(), Some(0));
+}
+
+#[test]
+fn waiting_for_a_slot_does_not_count_against_the_limit() {
+    let d = tempfile::tempdir().unwrap();
+    let holder = hold(d.path(), "holder");
+    let second = heavy(
+        d.path(),
+        &[
+            "--slots",
+            "1",
+            "--timeout",
+            "3s",
+            "--",
+            "sh",
+            "-c",
+            "sleep 1",
+        ],
+    )
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    // Waits longer than its whole limit before getting the slot.
+    std::thread::sleep(Duration::from_secs(4));
+    stop(holder);
+    let o = finish(second, 10);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+#[test]
+fn a_timeout_is_recorded_in_the_event_log() {
+    let d = tempfile::tempdir().unwrap();
+    run(d.path(), &["--timeout", "1s", "--", "sleep", "30"]);
+    let ev = events(d.path());
+    let e = ev.iter().find(|e| e["command"] == "heavy").unwrap();
+    assert_eq!(e["exit"], 124);
+    assert_eq!(e["timed_out"], true);
+    assert_eq!(e["heavy_limit_ms"], 1000);
+}
+
+#[test]
+fn ls_shows_a_running_jobs_limit_and_elapsed_time() {
+    let d = tempfile::tempdir().unwrap();
+    let started = d.path().join("s");
+    let script = format!("touch {}; sleep 30", started.display());
+    let c = heavy(d.path(), &["--timeout", "45m", "--", "sh", "-c", &script])
+        .spawn()
+        .unwrap();
+    wait_for("start", || started.exists());
+    let o = stdout(&run(d.path(), &["ls"]));
+    assert!(o.contains("limit 45m"), "{o}");
+    stop(c);
+    let c = heavy(d.path(), &["--timeout", "none", "--", "sh", "-c", &script])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let o = stdout(&run(d.path(), &["ls"]));
+    assert!(o.contains("no limit"), "{o}");
+    stop(c);
 }
