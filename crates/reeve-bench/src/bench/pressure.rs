@@ -138,12 +138,42 @@ pub fn jobs(ledger: &str, ids: &[String]) -> Jobs {
     j
 }
 
-/// A process, from `ps -axo pid=,ppid=,rss=,args=`.
+/// Physical footprints by pid, in KB, from `top -l 1 -stats pid,mem` ("614M", "12K+", "1.2G").
+pub fn parse_top(top: &str) -> HashMap<u32, u64> {
+    top.lines()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            let pid = w.next()?.parse().ok()?;
+            let m = w.next()?.trim_end_matches(['+', '-']);
+            let (num, unit) = m.split_at(m.find(|c: char| c.is_ascii_alphabetic())?);
+            let k = match unit {
+                "B" => 1.0 / 1024.0,
+                "K" => 1.0,
+                "M" => 1024.0,
+                "G" => 1024.0 * 1024.0,
+                _ => return None,
+            };
+            Some((pid, (num.parse::<f64>().ok()? * k) as u64))
+        })
+        .collect()
+}
+
+/// Each process's memory as `top` counts it, compressed pages included; RSS leaves those out,
+/// and on a Mac that swaps it reads a 600 MB job as 40 MB. RSS stays where `top` has none.
+pub fn footprints(procs: &mut [Proc], fp: &HashMap<u32, u64>) {
+    for p in procs {
+        if let Some(&kb) = fp.get(&p.pid) {
+            p.mem_kb = kb;
+        }
+    }
+}
+
+/// A process, from `ps -axo pid=,ppid=,rss=,args=`; `mem_kb` is RSS until `footprints`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proc {
     pub pid: u32,
     pub ppid: u32,
-    pub rss_kb: u64,
+    pub mem_kb: u64,
     pub args: String,
 }
 
@@ -170,7 +200,7 @@ pub fn parse_ps(ps: &str) -> Vec<Proc> {
             Some(Proc {
                 pid: w.next()?.parse().ok()?,
                 ppid: w.next()?.parse().ok()?,
-                rss_kb: w.next()?.parse().ok()?,
+                mem_kb: w.next()?.parse().ok()?,
                 args: w.collect::<Vec<_>>().join(" "),
             })
         })
@@ -213,9 +243,9 @@ pub fn in_run(procs: &[Proc], lsof: &str, dir: &Path, skip: u32) -> Vec<Proc> {
 /// One sample of the run's processes.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Sample {
-    pub rss_kb: u64,
+    pub mem_kb: u64,
     /// What the heavy jobs hold.
-    pub jobs_rss_kb: u64,
+    pub jobs_mem_kb: u64,
     pub sessions: usize,
     pub jobs: usize,
     pub procs: usize,
@@ -224,12 +254,12 @@ pub struct Sample {
 pub fn sample(run: &[Proc]) -> Sample {
     let mut s = Sample::default();
     for p in run {
-        s.rss_kb += p.rss_kb;
+        s.mem_kb += p.mem_kb;
         s.procs += 1;
         s.sessions += usize::from(p.name() == "claude");
         if p.is_job() {
             s.jobs += 1;
-            s.jobs_rss_kb += p.rss_kb;
+            s.jobs_mem_kb += p.mem_kb;
         }
     }
     s
@@ -320,28 +350,30 @@ fn sampler(s: Sampler) {
     // lsof reports real paths: /private/var, not /var.
     let dir = fs::canonicalize(&s.dir).unwrap_or_else(|_| s.dir.clone());
     while !s.stop.load(Ordering::Relaxed) {
-        let all = parse_ps(&output(Command::new("ps").args(["-axo", "pid=,ppid=,rss=,args="])));
+        let mut all = parse_ps(&output(Command::new("ps").args(["-axo", "pid=,ppid=,rss=,args="])));
+        let fp = parse_top(&output(Command::new("top").args(["-l", "1", "-stats", "pid,mem"])));
+        footprints(&mut all, &fp);
         let lsof = output(Command::new("lsof").args(["-n", "-P", "-d", "cwd", "-Fpn"]));
         let run = in_run(&all, &lsof, &dir, me);
         let x = sample(&run);
         let t = clock() - s.t0;
         let _ = append(
             &s.logs.join("samples.tsv"),
-            format!("{t}\t{}\t{}\t{}\t{}\t{}\n", x.rss_kb, x.jobs_rss_kb, x.sessions, x.jobs, x.procs).as_bytes(),
+            format!("{t}\t{}\t{}\t{}\t{}\t{}\n", x.mem_kb, x.jobs_mem_kb, x.sessions, x.jobs, x.procs).as_bytes(),
         );
-        if s.budget_kb > 0 && x.jobs_rss_kb > s.budget_kb && t - last_kill >= 5_000 {
+        if s.budget_kb > 0 && x.jobs_mem_kb > s.budget_kb && t - last_kill >= 5_000 {
             let tree = reap_target(&all, &run);
             if !tree.is_empty() {
                 let pids: Vec<String> = tree.iter().map(u32::to_string).collect();
                 let _ = Command::new("kill").arg("-9").args(&pids).stderr(Stdio::null()).status();
                 last_kill = t;
                 *s.kills.lock().unwrap() += 1;
-                let line = json!({ "t": t, "event": "reap", "jobsRssKb": x.jobs_rss_kb, "pids": tree });
+                let line = json!({ "t": t, "event": "reap", "jobsMemKb": x.jobs_mem_kb, "pids": tree });
                 let _ = append(&s.logs.join("events.jsonl"), format!("{line}\n").as_bytes());
             }
         }
         let mut p = s.peak.lock().unwrap();
-        if x.rss_kb > p.1.rss_kb {
+        if x.mem_kb > p.1.mem_kb {
             *p = (t, x);
         }
         drop(p);
@@ -437,6 +469,9 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         ("XDG_STATE_HOME".into(), state.clone().into()),
         ("REEVE_HOME".into(), logs.join("reeve-home").into()),
         ("ORCH_HOME".into(), o.trials.join(".orch-sink").into()),
+        // Set, not left out: a background session otherwise gets the daemon's value, such as
+        // a day run's 30K, and hands off again and again.
+        ("REEVE_HANDOFF_TOKENS".into(), "350000".into()),
     ]);
     for (k, v) in &arm.env {
         let v = v.as_str().map_or_else(|| v.to_string(), String::from);
@@ -547,8 +582,8 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         "endedAt": ended, "jobs": total, "completed": j.completed, "killed": killed,
         "lost": total - j.completed, "started": j.started,
         "doneAt": if j.completed == total { j.last_done.map(|t| t - t0) } else { None },
-        "peakRssMb": round(p.rss_kb as f64 / 1024.0, 0), "peakAt": peak_t,
-        "peakJobsRssMb": round(p.jobs_rss_kb as f64 / 1024.0, 0),
+        "peakMemMb": round(p.mem_kb as f64 / 1024.0, 0), "peakAt": peak_t,
+        "peakJobsMemMb": round(p.jobs_mem_kb as f64 / 1024.0, 0),
         "sessionsAtPeak": p.sessions, "jobsAtPeak": p.jobs, "procsAtPeak": p.procs,
         "runFailures": run_failures, "usage": usage.json(), "costUsd": round(usage.cost, 3),
         "sessionCount": sessions, "reeve": reeve,
@@ -556,7 +591,7 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     fs::write(logs.join("result.json"), serde_json::to_string_pretty(&result)?)?;
     println!("{}", json!({
         "run": run, "completed": j.completed, "killed": killed, "lost": total - j.completed,
-        "peakRssMb": result["peakRssMb"], "sessionsAtPeak": p.sessions, "doneAt": result["doneAt"],
+        "peakMemMb": result["peakMemMb"], "sessionsAtPeak": p.sessions, "doneAt": result["doneAt"],
         "cost": result["costUsd"],
     }));
     cleanup(&base, &run, &dir)?;
@@ -588,7 +623,7 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
     let mut arms: Vec<String> = runs.iter().map(|r| js_str(r.get("arm"))).collect();
     arms.dedup();
     let header = [
-        "arm", "n", "jobs", "completed", "lost", "killed", "peak RSS MB", "sessions at peak",
+        "arm", "n", "jobs", "completed", "lost", "killed", "peak mem MB", "sessions at peak",
         "min to done", "cost $",
     ];
     let mut rows: Vec<Vec<String>> = vec![header.map(String::from).to_vec()];
@@ -602,7 +637,7 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
             col("completed", 0),
             col("lost", 0),
             col("killed", 0),
-            col("peakRssMb", 0),
+            col("peakMemMb", 0),
             col("sessionsAtPeak", 0),
             fmt(&rs.iter().map(|r| r["doneAt"].as_f64().map(|t| t / 60e3)).collect::<Vec<_>>(), 1),
             col("costUsd", 2),
