@@ -51,6 +51,20 @@ fn the_reaper_kills_the_newest_heavy_callers_task_and_what_runs_under_it() {
     assert!(reap_target(&all, &none).is_empty(), "a job no caller runs is left alone");
 }
 
+/// A detached heavy runner (reparented to launchd, cwd in the run) is no session's background
+/// task, so Claude Code's reaper can't reach it; the stand-in mustn't either.
+#[test]
+fn the_reaper_only_kills_heavy_callers_under_a_session() {
+    let ps = format!(
+        "{PS}\n120 1 20 /x/reeve heavy __run /s/jobs/1\n121 120 600000 node scripts/job.mjs --id w2-1"
+    );
+    let lsof = format!("{LSOF}\np120\nfcwd\nn/trials/rp-x-1");
+    let all = parse_ps(&ps);
+    let run = in_run(&all, &lsof, Path::new("/trials/rp-x-1"), 500);
+    assert!(run.iter().any(|p| p.pid == 121), "its job still counts in the run");
+    assert_eq!(reap_target(&all, &run), [110, 111]);
+}
+
 #[test]
 fn a_job_holds_its_memory_logs_its_run_and_clears_its_live_file() {
     let t = tempfile::tempdir().unwrap();
