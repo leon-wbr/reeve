@@ -43,7 +43,7 @@ The hook `reeve setup claude` (or `codex`) installs adds a "Context check" line 
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It starts the successor, a worker told to read the file. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. A message the user sends the old session goes to the successor's inbox; don't relay it.
+It starts the successor, a worker told to read the file. Stop once it succeeds; if it fails, carry on and tell the user. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. A message the user sends the old session goes to the successor's inbox; don't relay it.
 
 ## Heavy commands on a shared machine
 
