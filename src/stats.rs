@@ -15,6 +15,8 @@ pub struct Stats {
     pub errors: BTreeMap<String, usize>,
     pub actors: BTreeMap<String, usize>,
     pub agents: BTreeMap<String, usize>,
+    /// `registry_mismatch` events by what differed; not commands, so counted apart.
+    pub mismatches: BTreeMap<String, usize>,
 }
 
 /// Started and failed come from the log; the rest is the state now of each worker started in
@@ -70,12 +72,18 @@ pub fn summarize(
     state: impl Fn(&str) -> Option<State>,
 ) -> Stats {
     let since = now_ms.saturating_sub(days * 86_400_000);
-    let events: Vec<&Event> = events.iter().filter(|e| e.ts >= since).collect();
+    let (mismatches, events): (Vec<&Event>, Vec<&Event>) = events
+        .iter()
+        .filter(|e| e.ts >= since)
+        .partition(|e| e.command == "registry_mismatch");
     let mut s = Stats {
         days,
         commands: events.len(),
         ..Stats::default()
     };
+    for m in mismatches.iter().filter_map(|e| e.mismatch.as_ref()) {
+        *s.mismatches.entry(m.clone()).or_default() += 1;
+    }
     let runs = events.iter().filter(|e| e.command == "run");
     let mut started = BTreeSet::new();
     for e in runs {
@@ -160,7 +168,8 @@ pub fn render(s: &Stats) -> String {
          heavy: {} runs, wait {}, run {}\n\
          handoff: {} over {}\n\
          errors: {}\n\
-         actors: {}{agents}\n",
+         actors: {}{agents}\n\
+         registry mismatches: {}\n",
         s.days,
         s.commands,
         w.started,
@@ -176,6 +185,7 @@ pub fn render(s: &Stats) -> String {
         s.handoff_ms.n,
         none(&s.errors),
         none(&s.actors),
+        none(&s.mismatches),
     )
 }
 
@@ -284,6 +294,31 @@ mod tests {
         assert_eq!(s.actors["person"], 1);
         assert_eq!(s.agents["codex"], 1);
         assert!(render(&s).contains("actors: agent 1, person 1 (codex 1)"));
+    }
+
+    #[test]
+    fn registry_mismatches_are_counted_by_kind_and_not_as_commands() {
+        let m = |what: &str| Event {
+            worker: Some("w".into()),
+            mismatch: Some(what.into()),
+            ..ev("registry_mismatch", 10 * DAY)
+        };
+        let all = [
+            ev("ls", 10 * DAY),
+            m("registry=idle claude=blocked"),
+            m("registry=idle claude=blocked"),
+            m("registry=working claude=absent"),
+        ];
+        let s = summarize(&all, 10 * DAY, 7, |_| None);
+        assert_eq!(s.commands, 1);
+        assert_eq!(s.actors["person"], 1);
+        assert_eq!(s.mismatches["registry=idle claude=blocked"], 2);
+        assert!(render(&s).contains(
+            "registry mismatches: registry=idle claude=blocked 2, \
+             registry=working claude=absent 1\n"
+        ));
+        let none = summarize(&all[..1], 10 * DAY, 7, |_| None);
+        assert!(render(&none).contains("registry mismatches: none\n"));
     }
 
     #[test]

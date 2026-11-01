@@ -25,13 +25,16 @@ Every reeve command appends one JSON line to `~/.local/state/reeve/events.jsonl`
 | `heavy_limit_ms`, `timed_out` | A heavy command's time limit, and `true` if it was stopped for reaching it |
 | `heavy_unfollowed` | `true` if a heavy job ended with nobody following it (its caller was killed); the job's runner logs it, with the `worker` it told |
 | `handoff_ms` | From `reeve run --name` until the new worker's agent is up |
+| `mismatch` | For a `registry_mismatch` event, e.g. `registry=idle claude=blocked` |
 | `actor`, `agent` | `agent` or `person`, from the variables agent CLIs set (`CLAUDECODE`, `CODEX_SANDBOX`, `AI_AGENT`); `agent` names a known one, or says `other`. `schedule` when no agent is set and `REEVE_ACTOR=schedule` is, as a launchd or cron job sets it ([schedule.md](schedule.md)) |
+
+`reeve ls` (and the session-start brief) also look each Claude worker up by name in `claude agents --json`, and log a `registry_mismatch` event where that disagrees with what its Herdr pane or registered session id says. The count tells whether `workers.json` and the per-pane probes can give way to `claude agents`. Codex has no machine-readable session list, so Codex workers log none.
 
 **The privacy rule:** the log never holds prompt text, file contents, report text, command arguments, error messages or environment values.
 
 ## `reeve stats`
 
-Sums up the last 7 days (or `--days N`): commands; workers started, failed starts, and how many of the started ones are done, gone or still running now; heavy runs with wait and run time at p50 and p90; handoff latency; errors by kind; and the split between people and agents. `--json` prints the same as JSON.
+Sums up the last 7 days (or `--days N`): commands; workers started, failed starts, and how many of the started ones are done, gone or still running now; heavy runs with wait and run time at p50 and p90; handoff latency; errors by kind; the split between people and agents; and `registry_mismatch` events by what differed. `--json` prints the same as JSON.
 
 ## `reeve feedback`
 

@@ -42,6 +42,10 @@ pub struct Event {
     /// From `reeve run --name` until the new worker's agent is up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_ms: Option<u64>,
+    /// For `registry_mismatch`: what the registry's handle and `claude agents` each said, as
+    /// fixed words such as `registry=idle claude=blocked`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mismatch: Option<String>,
     /// `agent`, `person` or `schedule`.
     pub actor: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
