@@ -1,5 +1,5 @@
 // Hidden assertions for the done-check: `node hidden.mjs <snapshot dir>` prints { item: bool } as
-// its last line. CI, the flaky loop and `done` are decided by `reeve bench check`.
+// its last line. CI, the flaky loop and `done` are decided by `reeve-bench check`.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

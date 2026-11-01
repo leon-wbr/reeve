@@ -4,7 +4,7 @@
 
 use super::check::{ITEMS, check};
 use super::sim::{Sim, simulate};
-use super::{home, js_str, num, root, round, term, trials};
+use super::{home, js_str, num, reeve_bin, root, round, term, trials};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -393,10 +393,7 @@ pub(super) fn bench_env() -> io::Result<Vec<(OsString, OsString)>> {
         })
         .collect();
     env.push(("ORCH_HOME".into(), trials().join(".orch-sink").into()));
-    let exe_dir = std::env::current_exe()?
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let exe_dir = reeve_bin()?.parent().map(PathBuf::from).unwrap_or_default();
     let path = std::env::var_os("PATH").unwrap_or_default();
     env.push((
         "PATH".into(),
@@ -458,7 +455,7 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         let ok = Command::new(arm_dir.join("setup"))
             .current_dir(&dir)
             .env("RUN", &run)
-            .env("REEVE", std::env::current_exe()?)
+            .env("REEVE", reeve_bin()?)
             .status()?
             .success();
         if !ok {
