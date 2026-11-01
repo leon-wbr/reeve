@@ -802,10 +802,20 @@ mod tests {
         // Check passed at 10 min; the session claimed (its last event) at 14; the user would read
         // it at 18. The old rule (now - pass > 5 min) fired at 15.1, before the user read it.
         assert!(!never_claimed(Some(10 * min), 14 * min, 18 * min, 5 * min));
-        assert!(never_claimed(Some(10 * min), 14 * min, 19 * min + 1, 5 * min));
+        assert!(never_claimed(
+            Some(10 * min),
+            14 * min,
+            19 * min + 1,
+            5 * min
+        ));
         // A session silent since before the pass gets the grace from the pass.
         assert!(!never_claimed(Some(10 * min), 2 * min, 15 * min, 5 * min));
-        assert!(never_claimed(Some(10 * min), 2 * min, 15 * min + 1, 5 * min));
+        assert!(never_claimed(
+            Some(10 * min),
+            2 * min,
+            15 * min + 1,
+            5 * min
+        ));
         assert!(!never_claimed(None, 0, 99 * min, 5 * min));
     }
 

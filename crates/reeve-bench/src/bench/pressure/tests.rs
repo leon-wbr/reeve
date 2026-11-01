@@ -13,7 +13,16 @@ fn the_ledger_counts_a_job_done_once() {
     ]
     .join("\n");
     let j = jobs(&ledger, &ids);
-    assert_eq!(j, Jobs { completed: 1, started: 3, live: 1, last_t: Some(31), last_done: Some(30) });
+    assert_eq!(
+        j,
+        Jobs {
+            completed: 1,
+            started: 3,
+            live: 1,
+            last_t: Some(31),
+            last_done: Some(30)
+        }
+    );
 }
 
 const PS: &str = "100 1 1000 /opt/claude/claude --bg\n\
@@ -37,12 +46,22 @@ fn a_sample_sums_the_processes_in_the_run_and_their_children() {
     let pids: Vec<u32> = run.iter().map(|p| p.pid).collect();
     assert_eq!(pids, [100, 101, 102, 103, 110, 111, 300]);
     let s = sample(&run);
-    assert_eq!(s, Sample { mem_kb: 603_140, jobs_mem_kb: 600_000, sessions: 2, jobs: 1, procs: 7 });
+    assert_eq!(
+        s,
+        Sample {
+            mem_kb: 603_140,
+            jobs_mem_kb: 600_000,
+            sessions: 2,
+            jobs: 1,
+            procs: 7
+        }
+    );
 }
 
 #[test]
 fn memory_is_tops_footprint_where_top_has_one() {
-    let top = "Processes: 9 total\nPID    MEM\n103    614M\n100    1.5G+\n101    12K-\n102    900B\n";
+    let top =
+        "Processes: 9 total\nPID    MEM\n103    614M\n100    1.5G+\n101    12K-\n102    900B\n";
     let fp = parse_top(top);
     assert_eq!(fp.get(&103), Some(&628_736));
     assert_eq!(fp.get(&100), Some(&1_572_864));
@@ -50,8 +69,16 @@ fn memory_is_tops_footprint_where_top_has_one() {
     assert_eq!(fp.get(&102), Some(&0));
     let mut all = parse_ps(PS);
     footprints(&mut all, &fp);
-    let mem: Vec<u64> = all.iter().filter(|p| [103, 110].contains(&p.pid)).map(|p| p.mem_kb).collect();
-    assert_eq!(mem, [628_736, 50], "the job's footprint; RSS where top has none");
+    let mem: Vec<u64> = all
+        .iter()
+        .filter(|p| [103, 110].contains(&p.pid))
+        .map(|p| p.mem_kb)
+        .collect();
+    assert_eq!(
+        mem,
+        [628_736, 50],
+        "the job's footprint; RSS where top has none"
+    );
 }
 
 #[test]
@@ -60,9 +87,20 @@ fn the_reaper_kills_the_newest_heavy_callers_task_and_what_runs_under_it() {
     let run = in_run(&all, LSOF, Path::new("/trials/rp-x-1"), 500);
     assert_eq!(reap_target(&all, &run), [110, 111]);
     let older: Vec<Proc> = run.iter().filter(|p| p.pid < 110).cloned().collect();
-    assert_eq!(reap_target(&all, &older), [101, 102, 103], "a job under its caller dies with it");
-    let none: Vec<Proc> = run.iter().filter(|p| p.pid == 100 || p.pid == 103).cloned().collect();
-    assert!(reap_target(&all, &none).is_empty(), "a job no caller runs is left alone");
+    assert_eq!(
+        reap_target(&all, &older),
+        [101, 102, 103],
+        "a job under its caller dies with it"
+    );
+    let none: Vec<Proc> = run
+        .iter()
+        .filter(|p| p.pid == 100 || p.pid == 103)
+        .cloned()
+        .collect();
+    assert!(
+        reap_target(&all, &none).is_empty(),
+        "a job no caller runs is left alone"
+    );
 }
 
 /// A detached heavy runner (reparented to launchd, cwd in the run) is no session's background
@@ -75,7 +113,10 @@ fn the_reaper_only_kills_heavy_callers_under_a_session() {
     let lsof = format!("{LSOF}\np120\nfcwd\nn/trials/rp-x-1");
     let all = parse_ps(&ps);
     let run = in_run(&all, &lsof, Path::new("/trials/rp-x-1"), 500);
-    assert!(run.iter().any(|p| p.pid == 121), "its job still counts in the run");
+    assert!(
+        run.iter().any(|p| p.pid == 121),
+        "its job still counts in the run"
+    );
     assert_eq!(reap_target(&all, &run), [110, 111]);
 }
 
@@ -161,30 +202,65 @@ fn a_fake_run_starts_the_workers_measures_the_jobs_and_is_scored() {
     };
     assert_eq!(run(&o).unwrap(), 0);
     let logs = o.trials.join("logs/rp-fake-1");
-    let r: Value = serde_json::from_str(&fs::read_to_string(logs.join("result.json")).unwrap()).unwrap();
+    let r: Value =
+        serde_json::from_str(&fs::read_to_string(logs.join("result.json")).unwrap()).unwrap();
     assert_eq!(r["end"], "all done", "{r:#}");
-    assert_eq!((r["jobs"].as_u64(), r["completed"].as_u64(), r["lost"].as_u64()), (Some(4), Some(4), Some(0)));
+    assert_eq!(
+        (
+            r["jobs"].as_u64(),
+            r["completed"].as_u64(),
+            r["lost"].as_u64()
+        ),
+        (Some(4), Some(4), Some(0))
+    );
     assert!(r["doneAt"].as_i64().unwrap() > 0, "{r:#}");
-    assert!(r["peakMemMb"].as_f64().unwrap() >= 20.0, "a job's memory shows: {r:#}");
+    assert!(
+        r["peakMemMb"].as_f64().unwrap() >= 20.0,
+        "a job's memory shows: {r:#}"
+    );
     assert_eq!(r["reeve"]["heavyRuns"], 4, "{r:#}");
     assert_eq!(r["reeve"]["workersStarted"], 2, "{r:#}");
     assert_eq!(r["sessionCount"], 2, "{r:#}");
     let args = fs::read_to_string(&log).unwrap();
-    assert!(args.contains("--model sonnet --setting-sources project,local --settings "), "{args}");
-    let s: Value = serde_json::from_str(&fs::read_to_string(logs.join("settings.json")).unwrap()).unwrap();
+    assert!(
+        args.contains("--model sonnet --setting-sources project,local --settings "),
+        "{args}"
+    );
+    let s: Value =
+        serde_json::from_str(&fs::read_to_string(logs.join("settings.json")).unwrap()).unwrap();
     assert_eq!(s["env"]["REEVE_HEAVY_SLOTS"], "3", "{s:#}");
-    assert_eq!(s["env"]["REEVE_HANDOFF_TOKENS"], "350000", "not the daemon's: {s:#}");
+    assert_eq!(
+        s["env"]["REEVE_HANDOFF_TOKENS"], "350000",
+        "not the daemon's: {s:#}"
+    );
     assert!(s["hooks"].is_object(), "{s:#}");
-    assert!(!o.trials.join("rp-fake-1").exists(), "the run's worktree is cleaned up");
+    assert!(
+        !o.trials.join("rp-fake-1").exists(),
+        "the run's worktree is cleaned up"
+    );
     let table = score(&o.trials, &[]).unwrap();
-    assert!(table.lines().nth(1).unwrap().starts_with("fake\t1\t4 [4–4]\t4 [4–4]\t0 [0–0]"), "{table}");
+    assert!(
+        table
+            .lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("fake\t1\t4 [4–4]\t4 [4–4]\t0 [0–0]"),
+        "{table}"
+    );
 }
 
 #[test]
 fn the_arm_in_the_repo_parses() {
-    let text = fs::read_to_string(super::super::root().join("pressure/arms/reeve/arm.json")).unwrap();
+    let text =
+        fs::read_to_string(super::super::root().join("pressure/arms/reeve/arm.json")).unwrap();
     let a: Arm = serde_json::from_str(&text).unwrap();
     assert_eq!((a.workers, a.jobs), (6, 2));
-    assert!(a.job_mb * 2 <= a.budget_mb && a.job_mb * 3 > a.budget_mb, "three at once don't fit");
-    assert_eq!(a.env["REEVE_HEAVY_SLOTS"], "3", "three slots, so the reaper has work");
+    assert!(
+        a.job_mb * 2 <= a.budget_mb && a.job_mb * 3 > a.budget_mb,
+        "three at once don't fit"
+    );
+    assert_eq!(
+        a.env["REEVE_HEAVY_SLOTS"], "3",
+        "three slots, so the reaper has work"
+    );
 }
