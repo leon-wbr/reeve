@@ -1,6 +1,8 @@
 {
-  "note": "Vanilla Claude Code: none of the owner's user setup, auto mode.",
+  "note": "Vanilla Claude Code: none of the owner's user setup, auto mode. Past 40K of context the harness asks for notes and starts a fresh session on them.",
   "model": "sonnet",
   "settingSources": "project,local",
-  "setup": "arms/b0-iso"
+  "setup": "arms/b0-iso",
+  "contextBudget": 40000,
+  "handoff": "notes"
 }
