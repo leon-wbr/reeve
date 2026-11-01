@@ -355,19 +355,6 @@ pub(super) fn read_stderr(mut err: impl Read, path: PathBuf) {
     }
 }
 
-fn open_asks(dir: &Path) -> Vec<Value> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return vec![];
-    };
-    entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension().is_some_and(|x| x == "json") && !p.with_extension("answer").exists()
-        })
-        .filter_map(|p| serde_json::from_str(&fs::read_to_string(p).ok()?).ok())
-        .collect()
-}
-
 fn falsy(v: &Value) -> bool {
     v.is_null() || *v == false || *v == 0 || *v == ""
 }
@@ -413,8 +400,10 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
     let dir = trials.join(&run);
     let arm_dir = here.join("arms").join(arm);
     let mut env = bench_env()?;
-    let queue = trials.join("logs").join(&run).join("reeve");
-    env.push(("REEVE_HOME".into(), queue.clone().into()));
+    env.push((
+        "REEVE_HOME".into(),
+        trials.join("logs").join(&run).join("reeve").into(),
+    ));
     let mut b = Bench {
         logs: trials.join("logs").join(&run),
         base: base.to_string_lossy().into_owned(),
@@ -540,7 +529,7 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         }
     };
     let (mut last_check, mut last_poll, mut last_blocked, mut ended) = (0, clock(), clock(), false);
-    let error = 'run: loop {
+    let error = loop {
         if ended {
             break None;
         }
@@ -591,45 +580,6 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         if now - t0 > TOTAL_MS {
             result["timeout"] = true.into();
             break None;
-        }
-        // Questions in the decision queue are read even while the session is busy.
-        for q in open_asks(&queue.join("asks")) {
-            if now - q["askedAt"].as_i64().unwrap_or(now) < REPLY_DELAY_MS {
-                continue;
-            }
-            let question = js_str(q.get("question"));
-            history.push(("communicator (decision queue)", question.clone()));
-            let sim = Sim {
-                asks: &asks,
-                key: &key,
-                items: &ITEMS,
-                history: &history,
-                silent_minutes: 0,
-                env: &b.env,
-                cwd: &trials,
-            };
-            let s = match simulate(&sim).or_else(|_| simulate(&sim)) {
-                Ok(s) => s,
-                Err(e) => break 'run Some(e.to_string()),
-            };
-            let reply = s["reply"]
-                .as_str()
-                .filter(|r| !r.is_empty())
-                .unwrap_or("your call")
-                .to_string();
-            b.log(
-                "queue-answer",
-                &json!({ "question": question, "text": reply }),
-            );
-            push(
-                &mut result["interventions"],
-                json!({ "t": now - t0, "kind": "answer", "via": "queue", "text": reply }),
-            );
-            history.push(("user", reply.clone()));
-            let id = js_str(q.get("id"));
-            if let Err(e) = fs::write(queue.join("asks").join(format!("{id}.answer")), reply) {
-                break 'run Some(e.to_string());
-            }
         }
         let (busy, last_event) = {
             let c = state.lock().unwrap();

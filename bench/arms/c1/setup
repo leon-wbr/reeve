@@ -1,2 +1,0 @@
-#!/bin/sh
-exec "$REEVE" gate install --protect "$RUN" --ci 'node scripts/ci.mjs {rev}'

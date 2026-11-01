@@ -192,19 +192,23 @@ pub fn add_hook(settings: &mut Value, k: Kind) -> Result<bool, String> {
 
 /// reeve's own subcommands, which agents run without a prompt. Claude Code resolves a matching
 /// allow rule before auto mode's classifier, so the brief in a `reeve run` is never judged. Not
-/// `heavy`: it runs any command, so its rule would let any command past the classifier. Not
-/// `answer`: answers to the user's questions come from the user. `run` and `handoff` refuse
-/// agent flags that skip permission checks on the host (`run::unchecked_flag`).
-const ALLOWED: [&str; 14] = [
-    "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "feedback", "doctor",
-    "wait", "rm", "inbox", "--skill",
+/// `heavy`: it runs any command, so its rule would let any command past the classifier. `run`
+/// and `handoff` refuse agent flags that skip permission checks on the host
+/// (`run::unchecked_flag`).
+const ALLOWED: [&str; 12] = [
+    "ls", "watch", "report", "close", "run", "handoff", "feedback", "doctor", "wait", "rm",
+    "inbox", "--skill",
 ];
 
-/// Rules an earlier setup wrote that this one takes out again.
-const RETIRED: [&str; 1] = ["Bash(reeve answer:*)"];
+/// Subcommands an earlier setup wrote rules for and this one takes out again: they are gone.
+const RETIRED: [&str; 3] = ["answer", "ask", "asks"];
 
 fn retired(v: &Value) -> bool {
-    v.as_str().is_some_and(|s| RETIRED.contains(&s))
+    v.as_str().is_some_and(|s| {
+        RETIRED
+            .iter()
+            .any(|sub| s == format!("Bash(reeve {sub}:*)"))
+    })
 }
 
 /// The `permissions.allow` entries setup writes for Claude Code. `reeve --skill` is a flag, so
@@ -331,7 +335,7 @@ pub fn rules() -> String {
         "{RULES_START} reeve's bookkeeping writes ~/.local/state/reeve, which Codex's sandbox\n\
          # doesn't allow. `reeve heavy` isn't here: it runs any command, so Codex asks as usual.\n\
          prefix_rule(\n    pattern = [\"reeve\", [\"ls\", \"wait\", \"watch\", \"report\", \"rm\", \"run\", \
-         \"close\", \"handoff\", \"ask\", \"asks\", \"feedback\", \"doctor\", \"inbox\"]],\n    decision = \"allow\",\n    \
+         \"close\", \"handoff\", \"feedback\", \"doctor\", \"inbox\"]],\n    decision = \"allow\",\n    \
          match = [\"reeve ls\", \"reeve run --name x -- go\"],\n    \
          not_match = [\"reeve heavy -- cargo test\"],\n)\n"
     )
@@ -1122,13 +1126,13 @@ mod tests {
         let r = rules();
         assert!(r.starts_with(RULES_START));
         for sub in [
-            "ls", "wait", "watch", "report", "rm", "run", "close", "handoff", "ask", "feedback",
-            "doctor",
+            "ls", "wait", "watch", "report", "rm", "run", "close", "handoff", "feedback", "doctor",
+            "inbox",
         ] {
             assert!(r.contains(&format!("\"{sub}\"")), "{sub}");
         }
         assert!(!r.contains("\"heavy\","), "{r}");
-        assert!(!r.contains("\"answer\""), "{r}");
+        assert!(!r.contains("\"ask"), "{r}");
         assert!(r.contains("decision = \"allow\""));
         assert_eq!(rules_state(Some(&r)), Piece::Ok);
         assert_eq!(rules_state(Some("old")), Piece::Stale);
@@ -1181,13 +1185,12 @@ mod tests {
     fn the_allow_rules_cover_reeves_subcommands_and_nothing_broad() {
         let rules = allow_rules();
         for sub in [
-            "ls", "watch", "report", "close", "run", "handoff", "ask", "asks", "feedback",
-            "doctor", "wait", "rm",
+            "ls", "watch", "report", "close", "run", "handoff", "feedback", "doctor", "wait", "rm",
+            "inbox",
         ] {
             assert!(rules.contains(&format!("Bash(reeve {sub}:*)")), "{sub}");
         }
-        // Answers to the user's questions come from the user.
-        assert!(!rules.iter().any(|r| r.contains("answer")), "{rules:?}");
+        assert!(!rules.iter().any(|r| r.contains("ask")), "{rules:?}");
         assert!(rules.contains(&"Bash(reeve --skill)".to_string()));
         assert!(
             rules
@@ -1238,10 +1241,10 @@ mod tests {
         add_perms(&mut full).unwrap();
         let old = || {
             let mut s = full.clone();
-            s["permissions"]["allow"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!("Bash(reeve answer:*)"));
+            let allow = s["permissions"]["allow"].as_array_mut().unwrap();
+            for sub in RETIRED {
+                allow.push(json!(format!("Bash(reeve {sub}:*)")));
+            }
             s
         };
         let mut s = old();
