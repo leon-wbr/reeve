@@ -259,9 +259,13 @@ fn claim_forward(r: &Registry, next: &str, text: &str, now: u64) -> io::Result<b
 /// or a message from another session. reeve delivers those to the successor itself.
 pub fn is_machine_event(text: &str) -> bool {
     let t = text.trim_start();
-    ["<task-notification>", "<system-reminder", "<cross-session-message"]
-        .iter()
-        .any(|p| t.starts_with(p))
+    [
+        "<task-notification>",
+        "<system-reminder",
+        "<cross-session-message",
+    ]
+    .iter()
+    .any(|p| t.starts_with(p))
 }
 
 /// What the predecessor's prompt hook answers: the prompt is kept from the predecessor, and the
@@ -649,10 +653,14 @@ mod tests {
 
     #[test]
     fn machine_events_are_not_forwarded() {
-        assert!(is_machine_event("<task-notification>\n<task-id>x</task-id>"));
+        assert!(is_machine_event(
+            "<task-notification>\n<task-id>x</task-id>"
+        ));
         assert!(is_machine_event("  <system-reminder>\nfoo"));
         assert!(is_machine_event("<cross-session-message from=\"a\">hi"));
-        assert!(!is_machine_event("please look at <task-notification> handling"));
+        assert!(!is_machine_event(
+            "please look at <task-notification> handling"
+        ));
         assert!(!is_machine_event("hello"));
     }
 
