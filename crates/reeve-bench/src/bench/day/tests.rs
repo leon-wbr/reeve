@@ -213,8 +213,11 @@ while IFS= read -r line; do
   if [[ "$line" == *backlog* ]]; then
     cp "$sol/src/price.js" "$sol/src/tax.js" "$sol/src/slug.js" src/ && commit "price, vat, slug"
     if [ "$FAKE_MODE" = flaky ]; then
-      # The branch is gone for less than two checks, then back: a transient check error.
-      sha=$(git rev-parse HEAD); git update-ref -d "$branch"; sleep 0.4; git update-ref "$branch" "$sha"
+      # The branch is gone until a check has failed on it, then back: one transient check
+      # error, however long a check takes on this machine.
+      sha=$(git rev-parse HEAD); git update-ref -d "$branch"
+      for _ in $(seq 400); do grep -q '"check-error"' "$FAKE_EVENTS" 2>/dev/null && break; sleep 0.05; done
+      git update-ref "$branch" "$sha"
     fi
     if [ "$FAKE_MODE" = reeve ]; then
       reeve --skill >/dev/null
@@ -317,6 +320,12 @@ fn fake_run_code(
             ("FAKE_SOLUTION".into(), root.join("day/solution").into()),
             ("FAKE_MODE".into(), mode.into()),
             ("FAKE_LOG".into(), log.clone().into()),
+            (
+                "FAKE_EVENTS".into(),
+                t.path()
+                    .join(format!("trials/logs/rd-{arm}-1/events.jsonl"))
+                    .into(),
+            ),
         ]
         .into_iter()
         .chain(env.iter().map(|(k, v)| (k.into(), v.into())))
