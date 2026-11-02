@@ -625,22 +625,81 @@ pub fn pane_agent(probe: Result<&str, &str>, kind: Kind) -> Agent {
     }
 }
 
+/// The sessions `claude agents --json` lists, or `None` when the call or its output failed.
+fn listed(probe: Result<&str, &str>) -> Option<Vec<Value>> {
+    serde_json::from_str(probe.ok()?).ok()
+}
+
+/// What one entry of `claude agents --json` is doing. Interactive sessions carry only a
+/// `status`; background ones also a `state`.
+fn listed_agent(a: &Value) -> Agent {
+    match a {
+        a if a["status"] == "busy" => Agent::Working,
+        a if a["state"] == "stopped" || a["state"] == "failed" => Agent::Absent,
+        // Also without a process: one idle for an hour is stopped and resumes on attach.
+        a if a["state"] == "blocked" || a["status"] == "waiting" => Agent::Blocked,
+        _ => Agent::Idle,
+    }
+}
+
 /// From `claude agents --json`, which keeps listing a background session after its turn.
 pub fn bg_agent(probe: Result<&str, &str>, id: &str) -> Agent {
-    let Ok(all) = probe.map(serde_json::from_str::<Vec<Value>>) else {
+    let Some(all) = listed(probe) else {
         return Agent::Unknown;
     };
-    let Ok(all) = all else {
+    all.iter()
+        .find(|a| a["id"] == id)
+        .map_or(Agent::Absent, listed_agent)
+}
+
+/// What `claude agents --json` says about the session named NAME, found by the `-n NAME`
+/// reeve starts every Claude worker with, so without the registry's handle. When several carry
+/// the name, such as a restart beside its stopped first try, the busiest counts.
+pub fn named_agent(probe: Result<&str, &str>, name: &str) -> Agent {
+    let Some(all) = listed(probe) else {
         return Agent::Unknown;
     };
-    match all.iter().find(|a| a["id"] == id) {
-        None => Agent::Absent,
-        Some(a) if a["status"] == "busy" => Agent::Working,
-        Some(a) if a["state"] == "stopped" || a["state"] == "failed" => Agent::Absent,
-        // Also without a process: one idle for an hour is stopped and resumes on attach.
-        Some(a) if a["state"] == "blocked" => Agent::Blocked,
-        Some(_) => Agent::Idle,
+    let rank = |a: &Agent| match a {
+        Agent::Working => 0,
+        Agent::Blocked => 1,
+        Agent::Idle => 2,
+        _ => 3,
+    };
+    all.iter()
+        .filter(|a| a["name"] == name)
+        .map(listed_agent)
+        .min_by_key(rank)
+        .unwrap_or(Agent::Absent)
+}
+
+impl fmt::Display for Agent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            Agent::Working => "working",
+            Agent::Idle => "idle",
+            Agent::Blocked => "blocked",
+            Agent::Absent => "absent",
+            Agent::Unknown => "unknown",
+        })
     }
+}
+
+/// How what the registry's handle shows (a Herdr pane or a background session's id) differs
+/// from what `claude agents` shows by name, as the fixed words the event log may hold; `None`
+/// when they agree or either side couldn't tell.
+pub fn mismatch(registry: Agent, claude: Agent) -> Option<String> {
+    let unsure = registry == Agent::Unknown || claude == Agent::Unknown;
+    (!unsure && registry != claude).then(|| format!("registry={registry} claude={claude}"))
+}
+
+/// Logs a `registry_mismatch` event: the data that says whether `claude agents` can replace
+/// `workers.json` and the per-pane probes for Claude workers.
+fn log_mismatch(name: &str, what: String) {
+    let mut ev = crate::events::Event::start("registry_mismatch");
+    ev.worker = Some(name.into());
+    ev.mismatch = Some(what);
+    ev.finish(0, None);
+    crate::events::log(&ev);
 }
 
 /// From `ps -o command= -p PID`: a background `codex exec` works until its process is gone. It
@@ -1174,20 +1233,30 @@ pub fn brief(shown: &[(&str, State)], older: usize) -> String {
 
 /// States for many workers, asking `claude agents` only once, each with whether it is
 /// finished [`history`]. A worker whose agent was never asked about (it failed to start, or is
-/// still starting) counts as having none.
+/// still starting) counts as having none. Each Claude worker is also looked up there by name,
+/// and a `registry_mismatch` event is logged where that disagrees with its pane or registered
+/// session. Codex has no such list (`codex agents` is a TUI), so its workers keep their own
+/// probes and log none.
 pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
-    let mut bg: Option<Result<String, String>> = None;
+    let mut claude: Option<Result<String, String>> = None;
     let now = now();
     all.iter()
         .map(|w| {
             let mut a = Agent::Absent;
             let s = state_of(w, now, || {
-                a = match (w.backend, w.agent) {
-                    (Backend::Pane, _) | (Backend::Bg, Kind::Codex) => agent(w),
-                    (Backend::Bg, Kind::Claude) => {
-                        let p = bg.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
-                        bg_agent(p.as_deref().map_err(|e| e.as_str()), &w.handle)
+                a = if w.agent != Kind::Claude {
+                    agent(w)
+                } else {
+                    let p = claude.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
+                    let p = p.as_deref().map_err(|e| e.as_str());
+                    let registry = match w.backend {
+                        Backend::Pane => agent(w),
+                        Backend::Bg => bg_agent(p, &w.handle),
+                    };
+                    if let Some(m) = mismatch(registry, named_agent(p, &w.name)) {
+                        log_mismatch(&w.name, m);
                     }
+                    registry
                 };
                 a
             });
@@ -2359,6 +2428,45 @@ mod tests {
         assert_eq!(bg_agent(Ok(json), "nope"), Agent::Absent);
         assert_eq!(bg_agent(Ok("not json"), "a1"), Agent::Unknown);
         assert_eq!(bg_agent(Err("claude: boom"), "a1"), Agent::Unknown);
+    }
+
+    #[test]
+    fn claude_agents_knows_a_worker_by_the_name_reeve_gave_it() {
+        let json = r#"[{"pid":1,"kind":"interactive","name":"fix","status":"busy"},
+            {"pid":2,"kind":"interactive","name":"ask","status":"waiting","waitingFor":"permission prompt"},
+            {"pid":3,"kind":"interactive","name":"rest","status":"idle"},
+            {"id":"a4","kind":"background","name":"bg","status":"idle","state":"done"},
+            {"id":"a5","kind":"background","name":"old","state":"stopped"},
+            {"pid":6,"kind":"interactive","name":"again","status":"idle"},
+            {"pid":7,"kind":"interactive","name":"again","status":"busy"}]"#;
+        assert_eq!(named_agent(Ok(json), "fix"), Agent::Working);
+        assert_eq!(named_agent(Ok(json), "ask"), Agent::Blocked);
+        assert_eq!(named_agent(Ok(json), "rest"), Agent::Idle);
+        assert_eq!(named_agent(Ok(json), "bg"), Agent::Idle);
+        assert_eq!(named_agent(Ok(json), "old"), Agent::Absent);
+        assert_eq!(named_agent(Ok(json), "nope"), Agent::Absent);
+        assert_eq!(
+            named_agent(Ok(json), "again"),
+            Agent::Working,
+            "the busiest"
+        );
+        assert_eq!(named_agent(Ok("not json"), "fix"), Agent::Unknown);
+        assert_eq!(named_agent(Err("claude: boom"), "fix"), Agent::Unknown);
+    }
+
+    #[test]
+    fn a_mismatch_is_any_difference_both_sides_could_tell() {
+        assert_eq!(mismatch(Agent::Working, Agent::Working), None);
+        assert_eq!(mismatch(Agent::Unknown, Agent::Idle), None);
+        assert_eq!(mismatch(Agent::Idle, Agent::Unknown), None);
+        assert_eq!(
+            mismatch(Agent::Idle, Agent::Blocked).as_deref(),
+            Some("registry=idle claude=blocked")
+        );
+        assert_eq!(
+            mismatch(Agent::Working, Agent::Absent).as_deref(),
+            Some("registry=working claude=absent")
+        );
     }
 
     #[test]
