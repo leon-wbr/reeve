@@ -9,6 +9,7 @@ use super::check::check;
 use super::run::{Bench, Scenario, TOTAL_MS, clock, finish, new_result, note_check};
 use super::{home, reeve_bin};
 use serde_json::{Value, json};
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -47,6 +48,15 @@ fn reeve(b: &Bench, args: &[&str]) -> io::Result<Output> {
         .output()
 }
 
+/// Where the run's reeve keeps its registry, reports and pipeline logs: its `XDG_STATE_HOME`,
+/// which `prepare` points at the run's own logs, else reeve's default.
+fn reeve_state(env: &[(OsString, OsString)]) -> PathBuf {
+    env.iter()
+        .find(|(k, _)| k == "XDG_STATE_HOME")
+        .map(|(_, v)| PathBuf::from(v).join("reeve"))
+        .unwrap_or_else(|| home().join(".local/state/reeve"))
+}
+
 /// The driver's pid, from reeve's registry.
 fn driver(state: &Path, run: &str) -> Option<String> {
     let all: Vec<Value> =
@@ -69,8 +79,7 @@ fn alive(pid: &str) -> bool {
 pub(super) fn run(mut b: Bench, arm: &str, preset: &str, s: Scenario) -> io::Result<i32> {
     let run = b.run.clone();
     let dir = PathBuf::from(&b.dir);
-    // Bench sessions run without XDG_STATE_HOME, so reeve keeps its records in the default place.
-    let state = home().join(".local/state/reeve");
+    let state = reeve_state(&b.env);
     let report = state.join("reports").join(format!("{run}.md"));
     let steps = state
         .join("logs")
@@ -179,5 +188,22 @@ mod tests {
         assert_eq!(s[0]["name"], "rv-p-brief-1-brief");
         assert_eq!(s[0]["sessionId"], "s1");
         assert_eq!(s[1]["kind"], "step");
+    }
+
+    #[test]
+    fn reeve_state_follows_the_run_s_xdg_state_home() {
+        let env: Vec<(std::ffi::OsString, std::ffi::OsString)> = vec![
+            ("PATH".into(), "/bin".into()),
+            ("XDG_STATE_HOME".into(), "/t/logs/rv-p-plain-1/state".into()),
+        ];
+        assert_eq!(
+            reeve_state(&env),
+            PathBuf::from("/t/logs/rv-p-plain-1/state/reeve")
+        );
+        assert_eq!(
+            reeve_state(&[]),
+            home().join(".local/state/reeve"),
+            "without XDG_STATE_HOME, reeve's default"
+        );
     }
 }
