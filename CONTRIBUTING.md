@@ -14,4 +14,4 @@ Send the PR, even if it builds something the docs haven't designed yet; a workin
 - **names the number.** For a new capability, say which metric in [docs/metrics.md](docs/metrics.md) it should move. Until the benchmark is public, the maintainer runs it on your PR. Fixes, docs and simplifications don't need a number.
 - **stays optional.** It plugs in like everything else around the core (principle 2) and keeps reeve local by default.
 
-CI runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` on every PR; run them locally first.
+CI runs only `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings`, on PRs that change code and aren't drafts. The gate before merging is `scripts/ci-local.sh`, which adds `cargo test --workspace`; run it as `reeve heavy -- scripts/ci-local.sh` and say in the PR that it passed.
