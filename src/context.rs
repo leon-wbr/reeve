@@ -45,10 +45,7 @@ pub fn threshold(env: Option<&str>, config: Option<&str>) -> u64 {
 /// Claude Code's `usage` lines, or the `token_count` events in a Codex rollout, whose input
 /// tokens already include the cached ones.
 pub fn tokens(tail: &str, back: usize) -> Option<u64> {
-    tail.lines()
-        .rev()
-        .filter_map(line_tokens)
-        .nth(back)
+    tail.lines().rev().filter_map(line_tokens).nth(back)
 }
 
 fn line_tokens(l: &str) -> Option<u64> {
@@ -114,12 +111,7 @@ pub fn notice(payload: &Value, tail: &str, limit: u64) -> Option<String> {
 
 /// `notice`, with the context the session started with (its first turn). The threshold is at
 /// least `MIN_GROWTH` above that.
-pub fn notice_from(
-    payload: &Value,
-    tail: &str,
-    start: Option<u64>,
-    limit: u64,
-) -> Option<String> {
+pub fn notice_from(payload: &Value, tail: &str, start: Option<u64>, limit: u64) -> Option<String> {
     let event = payload["hook_event_name"].as_str()?;
     if event != "UserPromptSubmit" && event != "PostToolUse" {
         return None;
@@ -350,7 +342,10 @@ mod tests {
         let grown = 36_000 + MIN_GROWTH;
         assert_eq!(notice(&p, &transcript(&[36_000, grown - 1]), 30_000), None);
         let n = notice(&p, &transcript(&[36_000, grown]), 30_000).unwrap();
-        assert!(n.contains(&format!("past the {} handoff threshold", k(grown))), "{n}");
+        assert!(
+            n.contains(&format!("past the {} handoff threshold", k(grown))),
+            "{n}"
+        );
         // A budget above start + MIN_GROWTH stays what it was.
         assert!(notice(&p, &transcript(&[10_000, 30_000]), 30_000).is_some());
         assert_eq!(notice(&p, &transcript(&[10_000, 29_999]), 30_000), None);
