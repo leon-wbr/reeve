@@ -203,6 +203,7 @@ mod tests {
             report: f.r.report_path(name),
             handle: "h".into(),
             starting: false,
+            queued: false,
             error: None,
             parent: parent.map(String::from),
             pushed: false,

@@ -1,0 +1,12 @@
+{
+  "note": "The worker cap with the finished workers' sessions closed to make room: the same ten workers and the same limit as `w10-cap`, but `reeve run` also ends the open sessions of finished background workers before it queues a new one.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "workers": 10,
+  "jobs": 2,
+  "jobMb": 600,
+  "jobSeconds": 60,
+  "budgetMb": 1500,
+  "env": { "REEVE_HEAVY_SLOTS": "3", "REEVE_MAX_WORKERS": "2", "REEVE_MIN_FREE": "0.1" }
+}

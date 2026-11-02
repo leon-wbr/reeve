@@ -309,10 +309,14 @@ fn a_heartbeat_reads_up_or_stale_and_a_drop_overrides_it_in_ls_without_any_ssh()
 fn ls_is_unchanged_without_remotes_and_a_queue_shows_in_its_row() {
     let e = Env::new();
     let plain = e.ok(&["ls"]);
+    // The table is as it was; only a line about memory follows it.
+    let mut lines = plain.lines();
     assert_eq!(
-        plain.trim_end(),
-        "NAME  STATE     AGENT   BACKEND  AGE  CWD"
+        lines.next(),
+        Some("NAME  STATE     AGENT   BACKEND  AGE  CWD")
     );
+    assert!(lines.next().unwrap().starts_with("memory:"), "{plain}");
+    assert_eq!(lines.next(), None);
     e.add_remote("myserver");
     e.down(true);
     e.ok(&["send", "hermes@myserver", "stuck"]);

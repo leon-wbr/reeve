@@ -1,0 +1,12 @@
+{
+  "note": "The baseline for the worker cap: the `reeve` arm's setup, but ten workers at once and the cap off, so every worker starts at once. Ten workers each run two 600 MB jobs through `reeve heavy` with three slots, on a machine with 1500 MB for jobs.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "workers": 10,
+  "jobs": 2,
+  "jobMb": 600,
+  "jobSeconds": 60,
+  "budgetMb": 1500,
+  "env": { "REEVE_HEAVY_SLOTS": "3", "REEVE_MAX_WORKERS": "0", "REEVE_MIN_FREE": "0" }
+}
