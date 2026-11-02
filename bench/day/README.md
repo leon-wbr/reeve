@@ -8,7 +8,7 @@
 - **A slow, shared test suite.** `npm test` takes a minute because its integration test holds the shared test database ([scripts/db.mjs](repo/scripts/db.mjs)). Every checkout on the machine, worktrees included, uses that one database, and a second job fails with "test database busy".
 - **A long job.** `node scripts/rebuild-fixtures.mjs` holds the same database for six minutes.
 - **A mid-run message.** Five minutes in, the user adds an urgent sixth task ([followups.json](followups.json)).
-- **A context budget.** An arm's `contextBudget` sets where a session has to hand off: reeve's own hook (`REEVE_HANDOFF_TOKENS`), or, with `"handoff": "notes"`, the harness's own check, which asks for notes and starts a fresh session on them. Both arms use 60K. A fresh session starts at 18K (b0) or 23K (reeve) and works at 36–40K, so a budget near that hands off again and again. At 60K no session reached the budget ([FINDINGS](../FINDINGS.md#batch-d2-b0-against-reeve-at-60k-n3-resultsday-sonnet-60ktsv)): to exercise handoffs, use about 45K.
+- **A context budget.** An arm's `contextBudget` sets where a session has to hand off: reeve's own hook (`REEVE_HANDOFF_TOKENS`), or, with `"handoff": "notes"`, the harness's own check, which asks for notes and starts a fresh session on them. Both arms use 60K. A fresh session starts at 18K (b0) or 23K (reeve) and works at 36–40K, so a budget near that hands off again and again. `reeve-bench day ARM N --budget TOKENS` overrides it for one run. Sessions now peak at 36–44K, so 45K and up never hands off, and 35K storms ([FINDINGS](../FINDINGS.md#batch-h-when-should-reeve-hand-off-partial-n2-resultsday-sonnet-thresholdstsv)).
 
 Done means all six [hidden checks](hidden.mjs) pass on main, with the suite green on a private copy of the database. Every item fails if `test/db.json` changed. The fixture counts only if a rebuild finished on the shared database. [solution/](solution/) is a reference solution, which the tests use.
 
@@ -28,7 +28,7 @@ The run ends when the session says `ALL DONE` (false done if the check fails), w
 
 ## Measures
 
-`reeve-bench day-score [ARM...]` prints, per arm over valid runs: done, items, false done, never claimed, minutes to done, interventions, cost (all transcripts, priced per model) and the user model's cost, cache-read and output tokens, peak context of a turn, sessions, and reeve's own records: workers started, heavy runs and their wait, database collisions and handoffs. A run whose transcripts, stderr or driver log hold a sign of an API or network error (`API Error`, `ECONNRESET`, a failed call to the user model, …) is marked invalid and left out.
+`reeve-bench day-score [ARM...]` prints, per arm and round over valid runs, the round being the run's N without its trial number (`d2` for `rd-reeve-d2-3`): the budget, done, items, false done, never claimed, minutes to done, interventions, cost (all transcripts, priced per model), turns, wall minutes and the user model's cost, cache-read and output tokens, peak context of a turn, sessions, and reeve's own records: workers started, heavy runs and their wait, database collisions and handoffs. A run whose transcripts, stderr or driver log hold a sign of an API or network error (`API Error`, `ECONNRESET`, a failed call to the user model, …) is marked invalid and left out.
 
 ## Running it
 

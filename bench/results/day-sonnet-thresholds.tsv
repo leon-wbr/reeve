@@ -1,0 +1,11 @@
+trial	run	arm	budget_k	valid	done	items	min_to_done	interventions	false_done	never_claimed	cost_usd	turns	wall_min	sessions	peak_ctx_k	heavy_runs	handoffs	note
+1	rd-b0-h45k-1	b0	45	yes	True	6	16.3	1	False	False	0.341	18	18.2	1	36	0	0	
+2	rd-b0-h45k-2	b0	45	yes	True	6	14.7	1	False	False	0.420	23	16.4	1	39	0	0	
+1	rd-reeve-h350k-1	reeve	350	yes	False	5		3	None	False	0.585	34	50.0	1	44	6	0	rename missing; timeout
+2	rd-reeve-h350k-2	reeve	350	yes	True	6	15.7	1	False	False	0.424	23	17.6	1	41	9	0	
+1	rd-reeve-h35k-1	reeve	35	yes	True	6	30.9	3	False	False	3.467	138	32.8	12	51	9	11	
+2	rd-reeve-h35k-2	reeve	35	yes	True	6	21.9	1	None	True	1.256	53	26.9	5	44	9	4	
+1	rd-reeve-h45k-1	reeve	45	no	False	5		4	None	False	0.306	15	50.0	1	37	1	0	invalid: 6 ECONNREFUSED retries at 14:11; also never asked for the rename name, timed out
+2	rd-reeve-h45k-2	reeve	45	yes	True	6	11.7	1	False	False	0.322	15	12.4	1	40	4	0	
+1	rd-reeve-h60k-1	reeve	60	yes	True	6	13.2	1	False	False	0.311	16	14.2	1	36	6	0	
+2	rd-reeve-h60k-2	reeve	60	yes	True	6	14.2	1	False	False	0.315	17	15.0	1	36	7	0	

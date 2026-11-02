@@ -425,6 +425,26 @@ Sonnet, `--setting-sources project,local`, auto mode, budget 60K, the fixed driv
 - **reeve costs 2.7x b0, from turns, as in D1:** 42 against 17. Every `reeve heavy` ran in the background and its result came back as a new turn. reeve was 2 minutes faster to done.
 - **Weekly:** 39% before the first D2 run, 42% after it.
 
+### Batch H: when should reeve hand off? Partial, n=2 ([results/day-sonnet-thresholds.tsv](results/day-sonnet-thresholds.tsv))
+
+The question: should reeve hand off earlier than its 350K default, or does a later handoff cost less? Each reeve run used `reeve-bench day reeve hKk-N --budget K000`, and b0 ran at 45K as the baseline. Sonnet, `--setting-sources project,local`, auto mode, reeve at main `76310e9` plus this branch's bench fixes. Runs went one at a time under the `reeve-bench` lock, taking turns with another worker's batch, on 2 Nov, 13:00–21:06 UTC. The owner stopped the batch during the third trial, so each row has two valid runs. rd-reeve-h45k-1 is invalid: 6 ECONNREFUSED retries hit it at 14:11. The in-flight rd-reeve-h35k-3 was killed and set aside in `logs-invalid/`. Metric: **cost per completed day**, which is the cost of all valid runs divided by the days that passed the check.
+
+| Arm | Budget | Valid n | Done | Cost per completed day $ | Cost $ | Turns | Wall min | Min to done | Sessions | Handoffs | Peak ctx K |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| reeve | 35K | 2 | 2/2 | 2.36 | 2.36 [1.26–3.47] | 96 [53–138] | 29.9 [26.9–32.8] | 26.4 [21.9–30.9] | 9 [5–12] | 8 [4–11] | 47 [44–51] |
+| reeve | 45K | 1 | 1/1 | 0.32 | 0.32 | 15 | 12.4 | 11.7 | 1 | 0 | 40 |
+| reeve | 60K | 2 | 2/2 | **0.31** | 0.31 [0.31–0.32] | 17 [16–17] | 14.6 [14.2–15.0] | 13.7 [13.2–14.2] | 1 | 0 | 36 [36–36] |
+| reeve | 350K (default) | 2 | 1/2 | 1.01 | 0.50 [0.42–0.58] | 29 [23–34] | 33.8 [17.6–50.0] | 15.7 | 1 | 0 | 42 [41–44] |
+| b0 | 45K | 2 | 2/2 | 0.38 | 0.38 [0.34–0.42] | 21 [18–23] | 17.3 [16.4–18.2] | 15.5 [14.7–16.3] | 1 | 0 | 37 [36–39] |
+
+- **An earlier handoff costs more here.** Only 35K handed off, and it cost 7.6x the 60K row per completed day. A successor starts at about 30K, so each successor is past 35K after a few turns and hands off again. That gave 4 and 11 handoffs, and 53 and 138 turns. That is D1t's storm at 30K once more.
+- **At 45K and above the threshold never fired.** Every session peaked at 36–44K, so 45K, 60K and 350K ran the same configuration: one session and no handoff. The gaps between those rows are noise, not the threshold.
+- **The misses are the rename, not the threshold.** rd-reeve-h350k-1, and the invalid rd-reeve-h45k-1, never asked for the rename's new name and timed out at 50 minutes. That is b0's miss in D1 and D2. Neither session reached a threshold.
+- **Cheapest at equal success: 60K**, at $0.31 per completed day over 2/2. On this day, any threshold above a session's working peak (about 45K) costs the same. A threshold below the successor's starting context plus room for a task storms.
+- **reeve is leaner than in D2.** At 60K it took 17 turns, against D2's 42, and cost $0.31 against $0.81. It ran fewer heavy runs in the background (6–7 against 8–10) and its context peaked at 36K against 54K. The reeve under test is main at `76310e9`, where D2 ran main + #50. So reeve now costs about what b0 does (b0 at 45K: $0.38 per completed day).
+- **Background sessions' threshold.** It reaches every session of a run, workers and successors included, through the run's settings `env`. A test now checks that for `--budget`. No reeve-side change was needed for the thresholds to take effect.
+- **Left:** each row's third trial, plus h45k-4 to replace the invalid h45k-1. The batch is [day/thresholds.sh](day/thresholds.sh), which skips runs that already have a result: `thresholds.sh 3`, then `CELLS=reeve:45 thresholds.sh 4`.
+
 ## Pressure scenario
 
 [pressure/](pressure/README.md) checks the loss of 1 Nov. Six workers, started with `reeve run`, each run two 600 MB, 60 s jobs through `reeve heavy`, with 3 slots. The bench's memory budget is 1500 MB, so two jobs fit and a third at once doesn't. Past the budget, a stand-in for Claude Code's low-memory reaper kills the newest `reeve heavy` caller's background shell under a session, at most once every 5 s. Memory is `top`'s physical footprint. On this Mac, which was swapping 8 GB that evening, RSS read a 600 MB job as 40 MB. Sonnet, `--setting-sources project,local`, reeve's setup.
