@@ -1,0 +1,3 @@
+arm	run	valid	interventions	done	false_done	never_claimed	items	min_to_done	report_at_min	cost_usd	note
+b0-iso	rv-b0-iso-p1	yes	1	yes	no	no	6	18.2		0.480	main's plain session, scored by this branch's harness
+p-plain	rv-p-plain-p1	yes	0	no		no	4		5.9	0.470	report partial: rename left for the user, summary missed the undelivered follow-up; cost priced from its step transcript at Sonnet list prices, steps.jsonl was lost to the bug fixed in feed728
