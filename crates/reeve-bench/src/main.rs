@@ -77,6 +77,10 @@ enum Cmd {
         /// Seconds the fixture rebuild holds it
         #[arg(long)]
         rebuild: Option<u64>,
+        /// Context, in tokens, past which a session hands off, instead of the arm's
+        /// `contextBudget`
+        #[arg(long)]
+        budget: Option<u64>,
     },
     /// Aggregate day runs per arm, without runs marked invalid unless asked
     DayScore {
@@ -117,7 +121,12 @@ fn day_opts(
     sim_model: String,
     hold_s: Option<u64>,
     rebuild_s: Option<u64>,
+    budget: Option<u64>,
 ) -> std::io::Result<bench::day::Opts> {
+    let root = bench::root();
+    let arm_json = budget
+        .map(|b| bench::day::with_budget(&root, &arm, b))
+        .transpose()?;
     let claude = std::env::var_os("REEVE_BENCH_CLAUDE")
         .map(PathBuf::from)
         .or_else(|| bench::day::which("claude", None))
@@ -125,7 +134,7 @@ fn day_opts(
     Ok(bench::day::Opts {
         arm,
         n,
-        root: bench::root(),
+        root,
         trials: bench::trials(),
         claude,
         reeve: Some(bench::reeve_bin()?),
@@ -135,7 +144,7 @@ fn day_opts(
         rebuild_s,
         sim_model,
         extra_env: vec![],
-        arm_json: None,
+        arm_json,
     })
 }
 
@@ -215,7 +224,8 @@ fn main() -> ExitCode {
             sim_model,
             hold,
             rebuild,
-        } => day_opts(arm, n, sim_model, hold, rebuild).and_then(|o| bench::day::run(&o)),
+            budget,
+        } => day_opts(arm, n, sim_model, hold, rebuild, budget).and_then(|o| bench::day::run(&o)),
         Cmd::DayScore { arms, with_invalid } => {
             bench::day::score(&bench::trials(), &arms, with_invalid)
                 .map(|t| println!("{t}"))

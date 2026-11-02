@@ -793,6 +793,16 @@ impl Run<'_> {
     }
 }
 
+/// The arm's `arm.json` with `contextBudget` set to `budget`.
+pub fn with_budget(root: &Path, arm: &str, budget: u64) -> io::Result<String> {
+    let path = root.join("day/arms").join(arm).join("arm.json");
+    let text =
+        fs::read_to_string(&path).map_err(|e| io::Error::other(format!("arm {arm}: {e}")))?;
+    let mut v: Value = serde_json::from_str(&text).map_err(io::Error::other)?;
+    v["contextBudget"] = json!(budget);
+    Ok(v.to_string())
+}
+
 /// One run of an arm, named rd-<ARM>-<N>.
 pub fn run(o: &Opts) -> io::Result<i32> {
     let leaks = crate::bench_block::ancestor_instructions(&o.trials);
@@ -1495,7 +1505,19 @@ fn items_done(r: &Value) -> usize {
         .map_or(0, |m| m.values().filter(|v| **v == true).count())
 }
 
-/// Per arm over its valid runs: median [min–max] of each measure.
+/// The round a run belongs to: its N without the trial number, so `rd-reeve-d2-3` is round `d2`
+/// and `rd-reeve-t5` round `t`; `-` for a bare number.
+pub fn round_of(run: &str, arm: &str) -> String {
+    let n = run
+        .strip_prefix(&format!("rd-{arm}-"))
+        .unwrap_or(run)
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+        .trim_end_matches('-');
+    if n.is_empty() { "-".into() } else { n.into() }
+}
+
+/// Per arm and round over its valid runs: median [min–max] of each measure. Rounds stay apart, so
+/// runs from different batches in one trials dir don't pool under the arm's name.
 pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<String> {
     let logs = trials.join("logs");
     let mut runs: Vec<Value> = fs::read_dir(&logs)?
@@ -1507,11 +1529,18 @@ pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<S
         .filter(|r: &Value| with_invalid || r["invalid"] != true)
         .collect();
     runs.sort_by_key(|r| js_str(r.get("run")));
-    let mut arms: Vec<String> = runs.iter().map(|r| js_str(r.get("arm"))).collect();
-    arms.sort();
-    arms.dedup();
+    let key = |r: &Value| {
+        let arm = js_str(r.get("arm"));
+        let round = round_of(&js_str(r.get("run")), &arm);
+        (arm, round)
+    };
+    let mut groups: Vec<(String, String)> = runs.iter().map(key).collect();
+    groups.sort();
+    groups.dedup();
     let header = [
         "arm",
+        "round",
+        "budget k",
         "n",
         "done",
         "items",
@@ -1520,6 +1549,8 @@ pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<S
         "min to done",
         "interv.",
         "cost $",
+        "turns",
+        "wall min",
         "sim $",
         "cache read M",
         "output k",
@@ -1532,14 +1563,25 @@ pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<S
         "handoffs",
     ];
     let mut rows: Vec<Vec<String>> = vec![header.map(String::from).to_vec()];
-    for arm in arms.iter().filter(|a| only.is_empty() || only.contains(a)) {
-        let rs: Vec<&Value> = runs.iter().filter(|r| r["arm"] == arm.as_str()).collect();
+    for (arm, round) in groups
+        .iter()
+        .filter(|(a, _)| only.is_empty() || only.contains(a))
+    {
+        let rs: Vec<&Value> = runs
+            .iter()
+            .filter(|r| key(r) == (arm.clone(), round.clone()))
+            .collect();
         let col = |f: &dyn Fn(&Value) -> Option<f64>, d| {
             fmt(&rs.iter().map(|r| f(r)).collect::<Vec<_>>(), d)
         };
         let count = |f: &dyn Fn(&Value) -> bool| rs.iter().filter(|r| f(r)).count();
         rows.push(vec![
             arm.clone(),
+            round.clone(),
+            col(
+                &|r| r["params"]["contextBudget"].as_f64().map(|x| x / 1e3),
+                0,
+            ),
             rs.len().to_string(),
             format!("{}/{}", count(&|r| r["final"]["done"] == true), rs.len()),
             col(&|r| Some(items_done(r) as f64), 0),
@@ -1551,6 +1593,8 @@ pub fn score(trials: &Path, only: &[String], with_invalid: bool) -> io::Result<S
                 0,
             ),
             col(&|r| r["costUsd"].as_f64(), 2),
+            col(&|r| r["usage"]["turns"].as_f64(), 0),
+            col(&|r| r["endedAt"].as_f64().map(|t| t / 60e3), 1),
             col(&|r| r["simCostUsd"].as_f64(), 3),
             col(&|r| r["usage"]["cacheRead"].as_f64().map(|x| x / 1e6), 1),
             col(&|r| r["usage"]["output"].as_f64().map(|x| x / 1e3), 0),

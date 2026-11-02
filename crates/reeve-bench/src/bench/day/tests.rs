@@ -502,8 +502,9 @@ fn a_fake_b0_session_runs_end_to_end_and_is_scored() {
         "{args}"
     );
     let table = score(&t.path().join("trials"), &[], false).unwrap();
+    let row = table.lines().nth(1).unwrap();
     assert!(
-        table.lines().nth(1).unwrap().starts_with("b0   1  1/1"),
+        row.starts_with("b0   -  ") && row.contains("  1  1/1  "),
         "{table}"
     );
 }
@@ -578,4 +579,80 @@ fn the_notes_check_reads_like_reeves_and_names_the_file() {
         "{t}"
     );
     assert!(t.contains("questions) to /l/HANDOFF.md, and stop"), "{t}");
+}
+
+#[test]
+fn a_budget_override_reaches_every_sessions_settings() {
+    let root = super::super::root();
+    let arm = with_budget(&root, "reeve", 45_000).unwrap();
+    let v: Value = serde_json::from_str(&arm).unwrap();
+    assert_eq!(v["contextBudget"], 45_000);
+    assert_eq!(v["setup"], "arms/reeve", "the rest of the arm stays: {v}");
+    let (t, r, _) = fake_run_with("reeve", "reeve", Some(&arm), &[]);
+    assert_eq!(r["params"]["contextBudget"], 45_000);
+    // Background sessions (`claude --bg`) get the daemon's environment, not the run's, so the
+    // threshold has to travel in the settings every session of the run is started with.
+    let settings: Value = serde_json::from_str(
+        &fs::read_to_string(t.path().join("trials/logs/rd-reeve-1/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings["env"]["REEVE_HANDOFF_TOKENS"], "45000",
+        "{settings}"
+    );
+}
+
+fn fake_result(trials: &Path, arm: &str, n: &str, budget: u64, cost: f64, done: bool) {
+    let run = format!("rd-{arm}-{n}");
+    let dir = trials.join("logs").join(&run);
+    fs::create_dir_all(&dir).unwrap();
+    let r = json!({
+        "arm": arm, "run": run, "params": { "contextBudget": budget },
+        "final": { "done": done, "items": {} }, "interventions": [], "costUsd": cost,
+        "usage": { "turns": 10 }, "endedAt": 600_000, "invalid": false,
+    });
+    fs::write(dir.join("result.json"), r.to_string()).unwrap();
+}
+
+#[test]
+fn rounds_of_one_arm_score_apart() {
+    assert_eq!(round_of("rd-reeve-d2-3", "reeve"), "d2");
+    assert_eq!(round_of("rd-reeve-t5", "reeve"), "t");
+    assert_eq!(round_of("rd-b0-2", "b0"), "-");
+    assert_eq!(round_of("rd-reeve-h45k-1", "reeve"), "h45k");
+
+    let t = tempfile::tempdir().unwrap();
+    fake_result(t.path(), "reeve", "d2-1", 60_000, 1.0, true);
+    fake_result(t.path(), "reeve", "d2-2", 60_000, 3.0, true);
+    fake_result(t.path(), "reeve", "h45k-1", 45_000, 9.0, false);
+    fake_result(t.path(), "reeve", "t1", 30_000, 5.0, true);
+    let table = score(t.path(), &[], false).unwrap();
+    let rows: Vec<&str> = table.lines().skip(1).collect();
+    assert_eq!(rows.len(), 3, "one row per round:\n{table}");
+    let row = |round: &str| {
+        let r = rows
+            .iter()
+            .find(|l| l.split_whitespace().nth(1) == Some(round))
+            .unwrap_or_else(|| panic!("no {round} row:\n{table}"));
+        r.split("  ")
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect::<Vec<_>>()
+    };
+    let d2 = row("d2");
+    assert_eq!(&d2[..4], ["reeve", "d2", "60 [60–60]", "2"], "{table}");
+    assert!(
+        d2.contains(&"2/2") && d2.contains(&"2.00 [1.00–3.00]"),
+        "{table}"
+    );
+    let h45 = row("h45k");
+    assert!(
+        h45.contains(&"0/1") && h45.contains(&"9.00 [9.00–9.00]"),
+        "{table}"
+    );
+    let header = table.lines().next().unwrap();
+    assert!(
+        header.contains("turns") && header.contains("wall min"),
+        "{header}"
+    );
 }
