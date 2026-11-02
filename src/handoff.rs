@@ -402,9 +402,7 @@ pub fn handoff(
         && let Some(done) = existing_successor(r, from)
     {
         println!("{}", r.handoff_path(&done).display());
-        eprintln!(
-            "reeve: already handed off to {done}; stop now and leave the workers running"
-        );
+        eprintln!("reeve: already handed off to {done}; stop now and leave the workers running");
         return Ok(());
     }
     let notes = fs::read_to_string(notes)?;
