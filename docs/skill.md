@@ -19,7 +19,7 @@ reeve waiting            # what waits on you
 reeve usage              # limits; --max 90 [--window session|all] exits 1 over
 reeve watch fix-flaky    # a line, with the next step, when it needs you
 reeve report fix-flaky   # the report
-reeve close fix-flaky    # closes its tab and clean pushed worktree; --preserve keeps it
+reeve close fix-flaky    # closes it now, with its clean pushed worktree
 ```
 
 The last argument after `--` is the prompt; agent flags like `--model` go before it. `--worktree` gives it its own git worktree; `--agent codex` runs Codex.
@@ -27,7 +27,7 @@ For unattended work with a clear end, start the prompt with `/goal` and pass `--
 
 Reports reach your inbox as `NAME done: …`; also follow each with `reeve watch NAME...`: in Claude Code the Monitor tool with `timeout_ms` 1800000, re-armed for the rest; elsewhere a background shell. It prints only what needs you and exits once each is done or gone; don't poll. Act on each line:
 
-- **done**: read the report if needed, then `reeve close NAME`.
+- **done**: read it if needed; reeve closes it in 2 minutes, or says why not.
 - **idle** without a report or `reeve heavy` job for 10 minutes: read it where the line says; one stuck on a prompt can show as idle. If it waits on its own background job, do nothing; else nudge it with `reeve send NAME "TEXT"`, let it carry on if it can decide, or ask the user.
 - **blocked** (a permission prompt, a question): answer it yourself, as the line says. Approve reads and work within its task; bring the user only deploys, production data changes, force-pushes and anything published.
 
