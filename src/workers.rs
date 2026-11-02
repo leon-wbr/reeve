@@ -1175,7 +1175,7 @@ pub fn brief(shown: &[(&str, State)], older: usize) -> String {
 /// States for many workers, asking `claude agents` only once, each with whether it is
 /// finished [`history`]. A worker whose agent was never asked about (it failed to start, or is
 /// still starting) counts as having none.
-fn states(all: &[Worker]) -> Vec<(State, bool)> {
+pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
     let mut bg: Option<Result<String, String>> = None;
     let now = now();
     all.iter()
@@ -1357,7 +1357,7 @@ pub fn wait(r: &Registry, name: &str, timeout: Option<u64>) -> io::Result<()> {
 const IDLE_POLLS: u32 = 3;
 const POLL: Duration = Duration::from_secs(2);
 
-fn answer_where(w: &Worker) -> String {
+pub(crate) fn answer_where(w: &Worker) -> String {
     match (w.backend, w.agent) {
         (Backend::Pane, _) => format!(
             "in its tab (read it with `herdr pane read {0}`, answer with \

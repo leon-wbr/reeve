@@ -216,9 +216,9 @@ pub fn add_hook(settings: &mut Value, k: Kind) -> Result<bool, String> {
 /// `heavy`: it runs any command, so its rule would let any command past the classifier. `run`
 /// and `handoff` refuse agent flags that skip permission checks on the host
 /// (`run::unchecked_flag`).
-const ALLOWED: [&str; 12] = [
+const ALLOWED: [&str; 13] = [
     "ls", "watch", "report", "close", "run", "handoff", "feedback", "doctor", "wait", "rm",
-    "inbox", "--skill",
+    "inbox", "waiting", "--skill",
 ];
 
 /// Subcommands an earlier setup wrote rules for and this one takes out again: they are gone.
@@ -356,7 +356,7 @@ pub fn rules() -> String {
         "{RULES_START} reeve's bookkeeping writes ~/.local/state/reeve, which Codex's sandbox\n\
          # doesn't allow. `reeve heavy` isn't here: it runs any command, so Codex asks as usual.\n\
          prefix_rule(\n    pattern = [\"reeve\", [\"ls\", \"wait\", \"watch\", \"report\", \"rm\", \"run\", \
-         \"close\", \"handoff\", \"feedback\", \"doctor\", \"inbox\"]],\n    decision = \"allow\",\n    \
+         \"close\", \"handoff\", \"feedback\", \"doctor\", \"inbox\", \"waiting\"]],\n    decision = \"allow\",\n    \
          match = [\"reeve ls\", \"reeve run --name x -- go\"],\n    \
          not_match = [\"reeve heavy -- cargo test\"],\n)\n"
     )
@@ -1223,7 +1223,7 @@ mod tests {
         let rules = allow_rules();
         for sub in [
             "ls", "watch", "report", "close", "run", "handoff", "feedback", "doctor", "wait", "rm",
-            "inbox",
+            "inbox", "waiting",
         ] {
             assert!(rules.contains(&format!("Bash(reeve {sub}:*)")), "{sub}");
         }

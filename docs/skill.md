@@ -9,12 +9,13 @@ reeve is a small local CLI that runs coding agents beside your session. Two rule
 
 `reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session and writes its report to `~/.local/state/reeve/reports/NAME.md` for any later session. Pass the project root as `--cwd` for its `.claude/` setup.
 
-Inside Herdr each worker gets its own tab in its project's workspace, where the user sees and answers it; use `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session (`--bg`, for that case only). `--force` skips reeve's safety checks, such as that one.
+Inside Herdr each worker gets its own tab in its project's workspace, where the user sees and answers it; use `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session (`--bg`, for that case only). `--force` skips reeve's safety checks.
 
 ```sh
 reeve run --name fix-flaky --cwd ~/app -- "Fix the flaky test in tests/api; run it 20 times to confirm."
 reeve run --name review --cwd ~/app -- --model sonnet "Review it."
 reeve ls                 # live workers, and ones finished in the last 12h; --all for all
+reeve waiting            # what waits on you
 reeve watch fix-flaky    # a line per change, with the next step
 reeve report fix-flaky   # prints the report
 reeve close fix-flaky    # closes its tab and clean pushed worktree; --preserve keeps it
@@ -54,7 +55,7 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs, waits and why
 ```
 
-You decide what's heavy; when in doubt, queue it. One unit test can skip it. It limits load, not collisions on a shared database or port. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
+You decide what's heavy; when in doubt, queue it. One unit test can skip it. It limits load, not collisions. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
 
 Runs time out after 30 minutes with a slot (exit 124): start visual/e2e runs narrow, and raise `--timeout 45m` only for a known full run.
 
