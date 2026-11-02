@@ -3,8 +3,8 @@
 //! the predecessor after that goes to the successor's inbox, like any `reeve send`, and the
 //! predecessor is closed.
 
-use crate::setup;
 use crate::workers::{self, Agent, Backend, Kind, Registry, State, Worker};
+use crate::{msg, push, setup};
 use serde_json::{Value, json};
 use std::fs::{self, File};
 use std::io;
@@ -332,6 +332,30 @@ pub fn follow(r: &Registry, next: &str) {
     }
 }
 
+/// What a started successor takes over from the session handing off (see `push`): the workers
+/// that report to it, as the predecessor's name or its session, and their unread pushes. A
+/// predecessor reeve started gets its report, unless it wrote one, so whoever started it hears
+/// where the work went instead of seeing it gone. Best effort: the handoff stands either way.
+fn pass_on(r: &Registry, next: &str, from: Option<&str>, file: &Path) {
+    let mut old: Vec<String> = from.map(String::from).into_iter().collect();
+    old.extend(push::session_of(&workers::Caller::from_env()));
+    if let Ok(store) = msg::Store::open() {
+        let _ = push::adopt(r, &store, &old, next);
+    }
+    if let Some(w) = from.and_then(|f| r.get(f).ok())
+        && !w.report.exists()
+    {
+        let _ = fs::write(
+            &w.report,
+            format!(
+                "partial\nHanded off to {next}, which carries on and reports when done.\n\n\
+                 Handoff notes: {}\n",
+                file.display()
+            ),
+        );
+    }
+}
+
 /// Writes the handoff for `next` and starts it; the calling session should stop afterwards.
 /// `from` is the calling session when reeve started it: `tidy` closes it once it is done.
 pub fn handoff(
@@ -373,11 +397,14 @@ pub fn handoff(
             fs::write(r.forwards_path(next), "")?;
         }
     }
-    if let Err(e) = workers::run(r, next, kind, backend, &args) {
+    // The successor reports to whoever the predecessor reported to.
+    let parent = from.and_then(|f| r.get(f).ok()).and_then(|w| w.parent);
+    if let Err(e) = workers::run(r, next, kind, backend, &args, parent) {
         let _ = fs::remove_file(r.forwards_path(next));
         let _ = fs::remove_file(r.predecessor_path(next));
         return Err(e);
     }
+    pass_on(r, next, from, &file);
     // Closes the predecessor as soon as it is done, not at some later `reeve ls`.
     if from.is_some() {
         let _ = spawn_follow(next);
@@ -402,6 +429,8 @@ mod tests {
             handle: "ab12".into(),
             starting: false,
             error: None,
+            parent: None,
+            pushed: false,
         }
     }
 

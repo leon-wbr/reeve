@@ -1441,3 +1441,165 @@ fn a_prompt_in_a_session_that_has_not_handed_off_is_left_alone() {
     assert_eq!(String::from_utf8_lossy(&o.stdout), "");
     assert!(!read(root.join("herdr.log")).contains("agent prompt"));
 }
+
+/// Writes `name`'s report and dates it `secs` back, past the time a push waits for it to settle.
+fn settled_report(root: &Path, name: &str, text: &str, secs: u64) {
+    let path = root.join(format!("state/reeve/reports/{name}.md"));
+    std::fs::write(&path, text).unwrap();
+    let f = std::fs::File::options().write(true).open(&path).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs))
+        .unwrap();
+}
+
+fn worker_field(root: &Path, name: &str, field: &str) -> Value {
+    let v: Value = serde_json::from_str(&read(root.join("state/reeve/workers.json"))).unwrap();
+    v.as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == name)
+        .map(|w| w[field].clone())
+        .unwrap()
+}
+
+#[test]
+fn a_report_reaches_the_session_that_started_the_worker_once_whenever_it_looks() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let boss = [("CLAUDE_CODE_SESSION_ID", "s-boss")];
+    let o = reeve_with(
+        &root,
+        &project,
+        &["run", "--name", "kid", "--", "do it"],
+        &boss,
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "kid");
+    assert_eq!(worker_field(&root, "kid", "parent"), "session-s-boss");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("reeve inbox --follow"), "{err}");
+
+    let follow = || {
+        let o = reeve_with(
+            &root,
+            &project,
+            &["inbox", "--follow", "--rounds", "2"],
+            &boss,
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    // Busy: the parent isn't following while the worker finishes; nothing is lost meanwhile.
+    assert_eq!(follow(), "");
+    settled_report(&root, "kid", "done\nAll 20 runs green.\n\nDetails…", 5);
+    assert!(reeve(&root, &project, &["ls"]).status.success());
+    let out = follow();
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(
+        out.contains("from kid: done: All 20 runs green. (`reeve report kid`)"),
+        "{out}"
+    );
+    // Re-armed after a restart or compaction, it shows nothing twice; polling still says done.
+    assert_eq!(follow(), "");
+    assert_eq!(worker_field(&root, "kid", "pushed"), true);
+    let ls = String::from_utf8_lossy(&reeve(&root, &project, &["ls"]).stdout).into_owned();
+    assert!(ls.contains("done"), "{ls}");
+}
+
+#[test]
+fn a_worker_started_by_a_worker_pushes_to_it_and_its_tool_hook_shows_it() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["boss"]);
+    let o = reeve_with(
+        &root,
+        &project,
+        &["run", "--name", "kid", "--bg", "--", "do it"],
+        &[("HERDR_PANE_ID", "p-boss")],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "kid");
+    assert_eq!(worker_field(&root, "kid", "parent"), "boss");
+    settled_report(&root, "kid", "partial\nPR pushed; gh pr create blocked", 5);
+    // The parent is busy in one long turn: its next tool call carries the push.
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "transcript_path": root.join("no-transcript.jsonl"),
+    });
+    let o = hook(&root, &project, "p-boss", &payload);
+    let out: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ctx.contains("from kid") && ctx.contains("partial: PR pushed; gh pr create blocked"),
+        "{ctx}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&hook(&root, &project, "p-boss", &payload).stdout),
+        ""
+    );
+}
+
+#[test]
+fn a_push_whose_parent_never_looks_stays_in_the_inbox_and_the_worker_reads_done() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let o = reeve_with(
+        &root,
+        &project,
+        &["run", "--name", "kid", "--", "do it"],
+        &[("CLAUDE_CODE_SESSION_ID", "s-gone")],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "kid");
+    settled_report(&root, "kid", "failed\nno disk", 5);
+    let ls = String::from_utf8_lossy(&reeve(&root, &project, &["ls"]).stdout).into_owned();
+    assert!(ls.contains("done"), "{ls}");
+    let left = unread(&root);
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0]["to"], "session-s-gone");
+    assert_eq!(left[0]["from"], "kid");
+    let listed = String::from_utf8_lossy(&reeve(&root, &project, &["inbox"]).stdout).into_owned();
+    assert!(listed.contains("failed: no disk"), "{listed}");
+}
+
+#[test]
+fn a_handoff_passes_the_parent_on_takes_over_the_workers_and_reports_the_predecessor() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["old", "kid"]);
+    let path = root.join("state/reeve/workers.json");
+    let mut all: Value = serde_json::from_str(&read(path.clone())).unwrap();
+    all[0]["parent"] = "session-s-boss".into();
+    all[1]["parent"] = "old".into();
+    std::fs::write(&path, all.to_string()).unwrap();
+    std::fs::write(project.join("n.md"), "Goal.").unwrap();
+    let args = ["handoff", "--name", "next", "--notes", "n.md", "--bg"];
+    let o = reeve_with(&root, &project, &args, &[("HERDR_PANE_ID", "p-old")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "next");
+    assert_eq!(worker_field(&root, "next", "parent"), "session-s-boss");
+    assert_eq!(worker_field(&root, "kid", "parent"), "next");
+    let report = read(root.join("state/reeve/reports/old.md"));
+    assert!(
+        report.starts_with("partial\n") && report.contains("next"),
+        "{report}"
+    );
+    // Once settled, the predecessor's parent hears where the work went, once.
+    settled_report(&root, "old", &report, 5);
+    let follow = || {
+        let o = reeve_with(
+            &root,
+            &project,
+            &["inbox", "--follow", "--rounds", "1"],
+            &[("CLAUDE_CODE_SESSION_ID", "s-boss")],
+        );
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let out = follow();
+    assert!(
+        out.contains("from old: partial: Handed off to next"),
+        "{out}"
+    );
+    assert_eq!(follow(), "");
+}

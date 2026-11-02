@@ -9,6 +9,7 @@ mod heavy;
 mod inbox;
 pub mod mem;
 mod msg;
+mod push;
 mod remote;
 mod run;
 mod sandbox;
@@ -604,7 +605,8 @@ pub fn main() -> ExitCode {
                 eprintln!("reeve: {w}");
             }
             let started = moved.and_then(|_| workers()).and_then(|r| {
-                workers::run(&r, &name, agent, backend, &args)?;
+                let parent = push::parent(&r, &workers::Caller::from_env());
+                workers::run(&r, &name, agent, backend, &args, parent)?;
                 r.get(&name)
             });
             if let Ok(w) = &started {
@@ -645,6 +647,7 @@ pub fn main() -> ExitCode {
             workers()
                 .and_then(|r| {
                     tidy_predecessors(&r);
+                    push::quietly();
                     let me = workers::caller(&r, &workers::Caller::from_env());
                     let hint = me.as_ref().map(|w| inbox::start_hint(&w.name, w.agent));
                     // The user's own sessions, and successors they hand off to, start with
@@ -704,6 +707,7 @@ pub fn main() -> ExitCode {
         Top::Ls { brief: false, all } => workers()
             .and_then(|r| {
                 tidy_predecessors(&r);
+                push::quietly();
                 let unread = msg::Store::open()
                     .map(|s| inbox::unread_counts(&s, msg::now_secs()))
                     .unwrap_or_default();
@@ -848,17 +852,17 @@ pub fn main() -> ExitCode {
             rounds,
             ..
         }) => to
-            .map(Ok)
+            .map(|t| Ok(vec![t]))
             .unwrap_or_else(|| {
-                workers::caller(&workers()?, &workers::Caller::from_env())
-                    .map(|w| w.name)
+                Some(push::addresses(&workers()?, &workers::Caller::from_env()))
+                    .filter(|a| !a.is_empty())
                     .ok_or_else(|| {
                         io::Error::other(
-                            "this session is no named worker reeve knows; pass --to NAME",
+                            "this session is no named worker reeve knows and has no session id; pass --to NAME",
                         )
                     })
             })
-            .and_then(|name| inbox::follow(&name, rounds)),
+            .and_then(|names| inbox::follow(&names, rounds)),
         Top::Inbox(InboxArgs {
             from,
             to,

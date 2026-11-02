@@ -437,6 +437,8 @@ mod tests {
             handle: String::new(),
             starting,
             error: None,
+            parent: None,
+            pushed: false,
         };
         let all = [
             w("new", Kind::Claude, true, 990),
