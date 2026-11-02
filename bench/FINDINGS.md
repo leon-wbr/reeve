@@ -322,3 +322,148 @@ Measured on a copy of the live `workers.json` under its own `XDG_STATE_HOME`, ma
 | workers the brief counts | 300 | 95 (+ "205 older finished") |
 
 The brief was already capped at 1,000 characters. It now spends those characters on workers someone has to act on. 79 of the 95 still listed are done: they finished in the last 12 hours or still have their pane open, waiting for `reeve close`.
+
+## Day scenario
+
+The six-ask scenario never needed reeve's workers, heavy queue or handoffs, so [day/](day/README.md) is a working day in one repo: five backlog tasks, an urgent sixth at minute 5, a 60 s suite and a 6-minute fixture rebuild on one shared test database, a scripted user, and a context budget that forces handoffs. All runs: Sonnet, `--setting-sources project,local`, auto mode, budget 30K, n=3 per arm. Per-run rows are in [results/day-sonnet-30k.tsv](results/day-sonnet-30k.tsv). No run showed an API or network error, so none is invalid on that count.
+
+### Batch D1: b0 against reeve, with the handoff broken
+
+- **Arms:**
+  - **b0:** vanilla; past 30K the harness asks for notes and starts a fresh session on them.
+  - **reeve:** b0 plus `reeve setup claude --claude-md`, with reeve's own hook at 30K.
+- **Broken:** the trials dir wasn't a trusted workspace, so `claude --bg` refused every `reeve handoff` successor. The reeve sessions carried on past the budget in one session (peak 51–61K). One of them (rd-reeve-2) obeyed the manual's "stop once it returns", waited for the user, and lost 20 minutes to two status polls.
+- **Outage:** the owner's network dropped at 17:15–17:24 UTC, during D1. A scan of every transcript, stderr and driver log found no error sign, and rd-reeve-2's stall follows its failed handoff by the timestamps, so no D1 run was set aside.
+
+| Arm | Done | Min to done | Interventions | Cost $ | Turns | Heavy runs |
+|---|---|---|---|---|---|---|
+| b0 | 2/3 | 20.9 [18.3–23.4] | 1 [1–3] | 0.43 [0.39–0.77] | 22 [19–41] | 0 |
+| reeve | 3/3 | 25.4 [15.8–40.1] | 2 [1–3] | 1.03 [0.64–1.18] | 47 [28–55] | 8 |
+
+- **b0's miss is real:** rd-b0-2's successor never did the rename and timed out at 50 minutes, through three status polls.
+- **reeve costs about 2.4x b0, from turns.** b0 ran the 60 s suite in the foreground. reeve's sessions put every `reeve heavy` in the background, as the manual says, and each result came back as a notification and a new turn.
+
+### Batch D1t: reeve with working handoffs
+
+The trials dir became a git repo trusted once in Claude Code, with every run a worktree inside it (worktrees inherit their main repo's trust). Five runs started; t1 and t2 were started as background tasks of the session that ran the batch and died with it when that session handed off. They are lost, unscored, and t4 and t5 replace them.
+
+| Arm | Done | Min to done | Interventions | Cost $ | Turns | Sessions |
+|---|---|---|---|---|---|---|
+| reeve | 3/3 | 29.4 [27.0–40.3] | 3 [2–4] | 1.13 [0.90–3.82] | 55 [43–150] | 2 [2–13] |
+
+- **Handoffs work, and then they storm.** Each run's first handoff succeeded and its successor finished the day. But a fresh Sonnet session with reeve's setup starts at about 30–37K, so a successor is past a 30K budget on its first turns and hands off again. rd-reeve-t5 went through 13 sessions and 150 turns for $3.82; the lost rd-reeve-t1 had run `reeve handoff` 13 times, twice 1.4 s apart, and the lost rd-reeve-t2 ended with two successors of the same name working side by side.
+- **So 30K is miscalibrated.** It sits below a session's working floor; reeve's default is 350K. A budget for this scenario needs to be the floor plus room for a task or two, about 60–80K. D1 and D1t are kept as measured, with the arms at 30K, so the numbers stay reproducible.
+- **`day-score`'s `handoffs` undercounts:** it reads one reeve state, so it shows 1 for t5. The `sessions` column is the signal.
+
+### Candidate R1: background a heavy run only when it would wait. Dropped.
+
+From D1's turn count: the PreToolUse hook set `run_in_background` on every `reeve heavy`. R1 set it only when the run would wait (someone in line, every slot taken, or its `--lock` key held), and the manual and skill stub stopped saying "in the background". Arm `reeve-r1`, the same as reeve otherwise; the code and arm are on branch `bench-r1-heavy-bg`.
+
+| Arm | Done | Min to done | Interventions | Cost $ | Turns | Sessions |
+|---|---|---|---|---|---|---|
+| reeve (D1t) | 3/3 | 29.4 [27.0–40.3] | 3 [2–4] | 1.13 [0.90–3.82] | 55 [43–150] | 2 [2–13] |
+| reeve-r1 | 1/3 | 23.1 (one run) | 3 [2–4] | 1.14 [0.74–1.17] | 48 [33–50] | 4 [3–4] |
+
+- **Verdict: no gain, dropped.** R1 cut task notifications (13–17 per run against about 36 in t3, by a rough transcript count), but turns and cost didn't move, because the handoff churn above dominates both. Two of three R1 runs timed out without the rename, b0-2's miss. Whether R1 helps in a scenario with a working budget is open.
+- **Not run:** the block-smoke regression check, since R1 was dropped.
+
+### Cost against the weekly limit
+
+| Time (UTC) | Weekly | Point |
+|---|---|---|
+| 16:04 | 27% | task start |
+| 16:51 | 29% | reading during setup |
+| 18:02 | 31% | after D1, before D1t |
+| 19:06 | 33% | D1t running, R1 started at 18:39 |
+| 19:29 | 33% | after R1 |
+| 19:48 | 34% | after D1t's reruns; stop |
+
+| Batch | Runs | $ (bench-reported, valid runs) | Verdict |
+|---|---|---|---|
+| D1 | 6 | 4.45 | b0 2/3, reeve 3/3 at 2.4x cost; handoffs broken |
+| D1t | 5 (3 scored) | 5.85, plus t1 and t2 unpriced | handoffs work, then storm at 30K |
+| R1 | 3 | 3.05 | dropped |
+
+- **7 points (27→34%) for about $13 of scored runs** plus the pilot, smoke and lost runs, the simulated user and this orchestrating session. That is far worse than the November round's $7 per point: the lost and storming runs, many parallel sessions and other sessions sharing the plan (the owner's weekend coordinator and its workers) all count. The readings are whole percents.
+
+### What's next
+
+- **Budget: done (D2, 60K).** For a handoff test, use about 45K (see D2).
+- **reeve fixes the day showed:**
+  - two handoffs seconds apart start two successors; a second handoff from the same session should be refused;
+  - when `reeve handoff` can't start the successor, its message should say to carry on and tell the user, not leave the manual's "stop once it returns" in force;
+  - a successor that starts past the threshold hands off at once; the hook could measure from the session's starting context.
+
+### Driver fixes after D1 (2 Nov)
+
+Each fix has a test that failed before it:
+
+- **Check errors.** A check error skips its tick, and only three in a row end the run. Before, one transient error ended the trial.
+- **The final check.** An error there is now recorded in `result.json` and marks the run invalid. Before, it skipped stopping the sessions, scoring and cleanup.
+- **The successor.** It's the transcript created after the handoff whose first prompt is reeve's take-over line. Before, the driver could pick the predecessor, which also says "handoff", and copy its whole history into what the user read.
+- **The context window.** The 256K window on a transcript now starts on a char boundary. A multi-byte char at the mark panicked.
+- **Handoffs.** They are counted from every session's transcript: the `reeve handoff` calls that succeeded, plus the harness's notes handoffs. Before, they came from one reeve state, so rd-reeve-t5's 13 sessions scored 1.
+- **Notes handoffs.** Every b0 session past the budget hands off, successors too, as with reeve's hook. Before, b0 handed off once.
+- **Background sessions' environment.** Workers and successors run under `claude --bg`, which Claude Code's daemon starts with the daemon's environment, not the caller's. A D1t successor had kept its reeve state in another run's dir. The driver now passes the run's variables through the run's settings `env`. One variable left unset there is still the daemon's: the first pressure run's workers got a day run's `REEVE_HANDOFF_TOKENS=30000` and handed off 9 times.
+
+### The budget: 60K
+
+A fresh one-turn Sonnet session in the day repo, given the take-over prompt, reads 18.4K with b0's setup and 22.9K with reeve's. The D1t successors were at 36–40K once they had read their notes and the manual. Taking the larger start plus about 35K gives 58K. Both arms now hand off at 60K; D1 and D1t ran at 30K.
+
+### Batch D2: b0 against reeve at 60K, n=3 ([results/day-sonnet-60k.tsv](results/day-sonnet-60k.tsv))
+
+Sonnet, `--setting-sources project,local`, auto mode, budget 60K, the fixed driver, reeve at main + #50 (c11ac97). No run showed an API or network error. Run 2 Nov, 21:56–02:48 UTC, one at a time under the `reeve-bench` lock.
+
+| Arm | Done | Min to done | Interventions | Cost $ | Turns | Peak ctx K | Heavy runs | Handoffs |
+|---|---|---|---|---|---|---|---|---|
+| b0 | 2/3 | 15.3 [15.2–15.3] | 1 [1–3] | 0.30 [0.28–0.38] | 17 [14–20] | 34 [34–38] | 0 | 0 |
+| reeve | 3/3 | 13.2 [12.7–14.7] | 1 [1–1] | 0.81 [0.58–0.98] | 42 [28–48] | 54 [48–57] | 8 [8–10] | 0 |
+
+- **This is the baseline** for reeve changes on the day scenario: these arms, this budget, n≥3.
+- **No session reached 60K, so nothing handed off.** reeve's sessions peaked at 48–57K and b0's at 34–38K: the whole day fits in one session. To test handoffs here, set the budget at about 45K or lengthen the day. 45K sits above both arms' working floor (36–40K) and below reeve's peak.
+- **b0's miss is D1's again.** rd-b0-d2-3 never asked for the rename's new name and timed out at 50 minutes after three status polls. reeve did every rename in D1, D1t and D2.
+- **reeve costs 2.7x b0, from turns, as in D1:** 42 against 17. Every `reeve heavy` ran in the background and its result came back as a new turn. reeve was 2 minutes faster to done.
+- **Weekly:** 39% before the first D2 run, 42% after it.
+
+## Pressure scenario
+
+[pressure/](pressure/README.md) checks the loss of 1 Nov. Six workers, started with `reeve run`, each run two 600 MB, 60 s jobs through `reeve heavy`, with 3 slots. The bench's memory budget is 1500 MB, so two jobs fit and a third at once doesn't. Past the budget, a stand-in for Claude Code's low-memory reaper kills the newest `reeve heavy` caller's background shell under a session, at most once every 5 s. Memory is `top`'s physical footprint. On this Mac, which was swapping 8 GB that evening, RSS read a 600 MB job as 40 MB. Sonnet, `--setting-sources project,local`, reeve's setup.
+
+### Batch P1: baseline, main + #50, n=3 ([results/pressure-reeve-n3.tsv](results/pressure-reeve-n3.tsv))
+
+| Arm | Jobs | Completed | Lost | Reaper kills | Peak memory MB | Sessions at peak | Cost $ |
+|---|---|---|---|---|---|---|---|
+| reeve | 12 | 4 [2–5] | 8 [7–10] | 8 [6–8] | 3284 [3223–3299] | 6 | 1.08 [0.91–1.25] |
+
+- **Most of the work is lost, as on 1 Nov.** reeve admitted three jobs (1.8 GB) into a 1.5 GB budget. The reaper then took the newest callers, which were mostly queued waiters holding no memory, so the jobs' memory stayed at 1.8 GB through every kill. 6–7 jobs started per run, and 2 of them died with their caller.
+- **No run finished every job**, so there is no time to done. Each run ended once no job had started or finished for three minutes.
+- **A first run was set aside**, kept as `logs-invalid/rp-reeve-1-rss`. It measured RSS, its jobs were one repeated byte that macOS compresses, and its workers took the daemon's 30K handoff threshold and handed off 9 times, which cost $2.46.
+- **This is the baseline** for memory-aware heavy changes (reeve-heavy-mem, reeve-worker-cap). An arm's `reeve` field picks the binary and its `env` field sets reeve's knobs.
+
+### Cost of this round (1–2 Nov)
+
+| Time (UTC) | Weekly | Point |
+|---|---|---|
+| 20:28 | 36% | task start |
+| 20:44 | 37% | before the first pressure run |
+| 21:54 | 39% | after P1, set-aside run included |
+| 21:56 | 39% | before D2 |
+| 02:48 | 42% | after D2 |
+
+The bench reported about $9.10: $2.46 for the set-aside pressure run, $3.25 for P1, $3.33 for D2 and $0.07 for the start-context probe. Other workers shared the plan and ran their own bench runs under the same lock that evening, so the 5 points aren't this round's alone.
+
+### Batch P2: jobs that outlive their caller (#52), n=3 ([results/pressure-heavy-mem-n3.tsv](results/pressure-heavy-mem-n3.tsv))
+
+Arm `heavy-mem` is the baseline arm with #52's build (`reeve: target/release/reeve`) and `REEVE_HEAVY_MIN_FREE=2` pinned in its env. Same scenario, model, slots and budget as P1; P1 is the baseline.
+
+| Arm | Jobs | Completed | Lost | Reaper kills | Peak memory MB | Sessions at peak | Min to done | Cost $ |
+|---|---|---|---|---|---|---|---|---|
+| reeve (P1) | 12 | 4 [2–5] | 8 [7–10] | 8 [6–8] | 3284 [3223–3299] | 6 | – (no run finished) | 1.08 [0.91–1.25] |
+| heavy-mem | 12 | **12 [12–12]** | **0 [0–0]** | 15 [10–16] | 3446 [3414–3508] | 6 | **4.2 [4.2–6.5]** | 2.12 [1.75–2.14] |
+
+- **No job is lost.** The reaper stand-in still killed the newest caller's shell, 10–16 times a run, and 34 of the 36 jobs ended with nobody following them (`heavy_unfollowed`). Each ran on in its detached runner, and its worker learned the outcome from its inbox. Every run finished all 12 jobs; no P1 run finished, and P1's runs ended after 5–9.5 min once nothing had happened for three minutes.
+- **No job ran twice.** 12 starts for 12 jobs in every run, so workers didn't rerun a job whose shell died.
+- **Peak memory is 5% higher** (3446 against 3284 MB median). The jobs' own peak is the same, 1842 MB with 3 jobs, so the difference is in sessions and reeve processes: callers and runners, and sessions working rather than idle. Like P1's, it stays over the 1500 MB budget, because three slots admit three 600 MB jobs.
+- **Cost is about double per run, and lower per job:** $2.12 for 12 jobs is $0.18 a job against P1's $1.08 for 4, $0.27 a job. The workers did all their work instead of stopping early.
+- **The memory floor never fired here.** `REEVE_HEAVY_MIN_FREE` reads the real machine's free memory, which stayed above 2 GB. The bench's budget is its own figure, which reeve can't see. So P2 proves the survival half of #52; the floor is covered only by its tests (`below_the_memory_floor_*`). A scenario for it would need jobs that actually take the machine below the floor.
+- **Cost against the weekly limit:** 39% before run 1, 41% after run 3; other sessions shared the plan, and the readings are whole percents.

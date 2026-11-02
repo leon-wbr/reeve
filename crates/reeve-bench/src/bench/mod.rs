@@ -2,7 +2,9 @@
 //! and scores the runs. Results are laid out as by the Node harness it replaces, so both compare.
 
 pub mod check;
+pub mod day;
 pub mod handoff;
+pub mod pressure;
 pub mod run;
 pub mod score;
 mod sim;
@@ -20,6 +22,9 @@ pub fn root() -> PathBuf {
 /// The real `reeve`, built or installed beside this binary: the shims hand it `--skill`, help
 /// and the hook, and the sessions run it.
 pub fn reeve_bin() -> io::Result<PathBuf> {
+    if let Some(p) = std::env::var_os("REEVE_BENCH_REEVE") {
+        return Ok(p.into());
+    }
     let exe = std::env::current_exe()?;
     let bin = exe.with_file_name("reeve");
     if bin.is_file() {

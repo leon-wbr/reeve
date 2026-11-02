@@ -1,0 +1,13 @@
+{
+  "note": "The baseline `reeve` arm with the heavy-mem branch's build: heavy jobs run in a detached runner, and a second run waits for free memory (REEVE_HEAVY_MIN_FREE at its default, 2 GB of the real machine's).",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "workers": 6,
+  "jobs": 2,
+  "jobMb": 600,
+  "jobSeconds": 60,
+  "budgetMb": 1500,
+  "reeve": "target/release/reeve",
+  "env": { "REEVE_HEAVY_SLOTS": "3", "REEVE_HEAVY_MIN_FREE": "2" }
+}

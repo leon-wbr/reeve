@@ -1,0 +1,1 @@
+[{ "afterS": 300, "text": "One more, urgent: cart total() must take discountCents off before VAT, not after. A 10.00 EUR item in DE with a 1.00 EUR discount should total 10.71 EUR." }]

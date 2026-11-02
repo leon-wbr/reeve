@@ -1,0 +1,1830 @@
+{
+ "version": 2,
+ "rows": [
+  {
+   "date": "2026-01-01",
+   "cents": 8024,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-02",
+   "cents": 4896,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-03",
+   "cents": 5728,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-04",
+   "cents": 5528,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-05",
+   "cents": 6736,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-06",
+   "cents": 3744,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-07",
+   "cents": 4364,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-08",
+   "cents": 1540,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-09",
+   "cents": -3192,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-10",
+   "cents": 8224,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-11",
+   "cents": 3796,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-12",
+   "cents": 9608,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-13",
+   "cents": 7528,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-14",
+   "cents": 4288,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-15",
+   "cents": 2944,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-16",
+   "cents": 7244,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-17",
+   "cents": 7480,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-18",
+   "cents": -9380,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-19",
+   "cents": 7672,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-20",
+   "cents": 3225,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-21",
+   "cents": 1492,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-22",
+   "cents": 3428,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-23",
+   "cents": 2112,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-24",
+   "cents": 2908,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-25",
+   "cents": 2636,
+   "country": "FR"
+  },
+  {
+   "date": "2026-01-26",
+   "cents": 3832,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-27",
+   "cents": -8940,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-28",
+   "cents": 5740,
+   "country": "AT"
+  },
+  {
+   "date": "2026-01-29",
+   "cents": 9536,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-30",
+   "cents": 3904,
+   "country": "DE"
+  },
+  {
+   "date": "2026-01-31",
+   "cents": 2912,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-01",
+   "cents": 3572,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-02",
+   "cents": 9816,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-03",
+   "cents": 9500,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-04",
+   "cents": 3544,
+   "country": "FR"
+  },
+  {
+   "date": "2026-02-05",
+   "cents": -7136,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-06",
+   "cents": 9520,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-07",
+   "cents": 7636,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-08",
+   "cents": 6268,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-09",
+   "cents": 6320,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-10",
+   "cents": 8756,
+   "country": "FR"
+  },
+  {
+   "date": "2026-02-11",
+   "cents": 2328,
+   "country": "FR"
+  },
+  {
+   "date": "2026-02-12",
+   "cents": 8968,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-13",
+   "cents": 612,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-14",
+   "cents": -2592,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-15",
+   "cents": 7952,
+   "country": "FR"
+  },
+  {
+   "date": "2026-02-16",
+   "cents": 4528,
+   "country": "FR"
+  },
+  {
+   "date": "2026-02-17",
+   "cents": 8172,
+   "country": "FR"
+  },
+  {
+   "date": "2026-02-18",
+   "cents": 9040,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-19",
+   "cents": 5532,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-20",
+   "cents": 2832,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-21",
+   "cents": 1336,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-22",
+   "cents": 736,
+   "country": "FR"
+  },
+  {
+   "date": "2026-02-23",
+   "cents": -2348,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-24",
+   "cents": 4056,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-25",
+   "cents": 8664,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-26",
+   "cents": 4956,
+   "country": "AT"
+  },
+  {
+   "date": "2026-02-27",
+   "cents": 6568,
+   "country": "DE"
+  },
+  {
+   "date": "2026-02-28",
+   "cents": 2304,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-01",
+   "cents": 1968,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-02",
+   "cents": 9884,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-03",
+   "cents": 4648,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-04",
+   "cents": -1652,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-05",
+   "cents": 7580,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-06",
+   "cents": 1900,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-07",
+   "cents": 6356,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-08",
+   "cents": 2712,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-09",
+   "cents": 1136,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-10",
+   "cents": 9900,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-11",
+   "cents": 7524,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-12",
+   "cents": 8572,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-13",
+   "cents": -5648,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-14",
+   "cents": 5436,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-15",
+   "cents": 3284,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-16",
+   "cents": 9116,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-17",
+   "cents": 5460,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-18",
+   "cents": 3796,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-19",
+   "cents": 5608,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-20",
+   "cents": 5952,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-21",
+   "cents": 7448,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-22",
+   "cents": -964,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-23",
+   "cents": 4440,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-24",
+   "cents": 5452,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-25",
+   "cents": 9208,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-26",
+   "cents": 9592,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-27",
+   "cents": 2204,
+   "country": "DE"
+  },
+  {
+   "date": "2026-03-28",
+   "cents": 9920,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-29",
+   "cents": 2800,
+   "country": "FR"
+  },
+  {
+   "date": "2026-03-30",
+   "cents": 7576,
+   "country": "AT"
+  },
+  {
+   "date": "2026-03-31",
+   "cents": -9424,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-01",
+   "cents": 8188,
+   "country": "FR"
+  },
+  {
+   "date": "2026-04-02",
+   "cents": 8072,
+   "country": "FR"
+  },
+  {
+   "date": "2026-04-03",
+   "cents": 1824,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-04",
+   "cents": 7848,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-05",
+   "cents": 1816,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-06",
+   "cents": 9316,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-07",
+   "cents": 3148,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-08",
+   "cents": 6332,
+   "country": "FR"
+  },
+  {
+   "date": "2026-04-09",
+   "cents": -640,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-10",
+   "cents": 2868,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-11",
+   "cents": 4244,
+   "country": "FR"
+  },
+  {
+   "date": "2026-04-12",
+   "cents": 6660,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-13",
+   "cents": 3708,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-14",
+   "cents": 9260,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-15",
+   "cents": 6244,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-16",
+   "cents": 1972,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-17",
+   "cents": 6868,
+   "country": "FR"
+  },
+  {
+   "date": "2026-04-18",
+   "cents": -3408,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-19",
+   "cents": 6272,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-20",
+   "cents": 8904,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-21",
+   "cents": 2320,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-22",
+   "cents": 3940,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-23",
+   "cents": 6112,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-24",
+   "cents": 1480,
+   "country": "FR"
+  },
+  {
+   "date": "2026-04-25",
+   "cents": 8976,
+   "country": "FR"
+  },
+  {
+   "date": "2026-04-26",
+   "cents": 1920,
+   "country": "FR"
+  },
+  {
+   "date": "2026-04-27",
+   "cents": -9504,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-28",
+   "cents": 7412,
+   "country": "AT"
+  },
+  {
+   "date": "2026-04-29",
+   "cents": 4880,
+   "country": "DE"
+  },
+  {
+   "date": "2026-04-30",
+   "cents": 8916,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-01",
+   "cents": 6416,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-02",
+   "cents": 4224,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-03",
+   "cents": 7632,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-04",
+   "cents": 7736,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-05",
+   "cents": 3180,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-06",
+   "cents": -4320,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-07",
+   "cents": 5332,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-08",
+   "cents": 3836,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-09",
+   "cents": 2796,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-10",
+   "cents": 8068,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-11",
+   "cents": 4688,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-12",
+   "cents": 1520,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-13",
+   "cents": 4920,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-14",
+   "cents": 8008,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-15",
+   "cents": -5724,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-16",
+   "cents": 6216,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-17",
+   "cents": 548,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-18",
+   "cents": 7296,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-19",
+   "cents": 5292,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-20",
+   "cents": 3060,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-21",
+   "cents": 9068,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-22",
+   "cents": 6520,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-23",
+   "cents": 4204,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-24",
+   "cents": -7640,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-25",
+   "cents": 9132,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-26",
+   "cents": 2792,
+   "country": "DE"
+  },
+  {
+   "date": "2026-05-27",
+   "cents": 9876,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-28",
+   "cents": 7104,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-29",
+   "cents": 7296,
+   "country": "FR"
+  },
+  {
+   "date": "2026-05-30",
+   "cents": 6204,
+   "country": "AT"
+  },
+  {
+   "date": "2026-05-31",
+   "cents": 3800,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-01",
+   "cents": 9840,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-02",
+   "cents": -6836,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-03",
+   "cents": 9396,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-04",
+   "cents": 5412,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-05",
+   "cents": 4000,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-06",
+   "cents": 944,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-07",
+   "cents": 5112,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-08",
+   "cents": 2724,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-09",
+   "cents": 904,
+   "country": "DE"
+  },
+  {
+   "date": "2026-06-10",
+   "cents": 5080,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-11",
+   "cents": -3384,
+   "country": "DE"
+  },
+  {
+   "date": "2026-06-12",
+   "cents": 3464,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-13",
+   "cents": 4672,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-14",
+   "cents": 9020,
+   "country": "DE"
+  },
+  {
+   "date": "2026-06-15",
+   "cents": 1628,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-16",
+   "cents": 2744,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-17",
+   "cents": 9256,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-18",
+   "cents": 940,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-19",
+   "cents": 2844,
+   "country": "DE"
+  },
+  {
+   "date": "2026-06-20",
+   "cents": -9532,
+   "country": "DE"
+  },
+  {
+   "date": "2026-06-21",
+   "cents": 8608,
+   "country": "DE"
+  },
+  {
+   "date": "2026-06-22",
+   "cents": 5096,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-23",
+   "cents": 7084,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-24",
+   "cents": 2328,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-25",
+   "cents": 8368,
+   "country": "FR"
+  },
+  {
+   "date": "2026-06-26",
+   "cents": 1292,
+   "country": "DE"
+  },
+  {
+   "date": "2026-06-27",
+   "cents": 3288,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-28",
+   "cents": 6892,
+   "country": "AT"
+  },
+  {
+   "date": "2026-06-29",
+   "cents": -9368,
+   "country": "DE"
+  },
+  {
+   "date": "2026-06-30",
+   "cents": 7272,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-01",
+   "cents": 5376,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-02",
+   "cents": 6592,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-03",
+   "cents": 4300,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-04",
+   "cents": 7604,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-05",
+   "cents": 6448,
+   "country": "AT"
+  },
+  {
+   "date": "2026-07-06",
+   "cents": 1572,
+   "country": "AT"
+  },
+  {
+   "date": "2026-07-07",
+   "cents": 6508,
+   "country": "AT"
+  },
+  {
+   "date": "2026-07-08",
+   "cents": -8504,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-09",
+   "cents": 3708,
+   "country": "AT"
+  },
+  {
+   "date": "2026-07-10",
+   "cents": 3960,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-11",
+   "cents": 7772,
+   "country": "AT"
+  },
+  {
+   "date": "2026-07-12",
+   "cents": 5824,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-13",
+   "cents": 6604,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-14",
+   "cents": 5200,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-15",
+   "cents": 9376,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-16",
+   "cents": 5828,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-17",
+   "cents": -2344,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-18",
+   "cents": 3612,
+   "country": "AT"
+  },
+  {
+   "date": "2026-07-19",
+   "cents": 3176,
+   "country": "AT"
+  },
+  {
+   "date": "2026-07-20",
+   "cents": 5776,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-21",
+   "cents": 4956,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-22",
+   "cents": 7976,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-23",
+   "cents": 5952,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-24",
+   "cents": 2392,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-25",
+   "cents": 6156,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-26",
+   "cents": -4516,
+   "country": "AT"
+  },
+  {
+   "date": "2026-07-27",
+   "cents": 592,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-28",
+   "cents": 9388,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-29",
+   "cents": 5772,
+   "country": "DE"
+  },
+  {
+   "date": "2026-07-30",
+   "cents": 2920,
+   "country": "FR"
+  },
+  {
+   "date": "2026-07-31",
+   "cents": 9180,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-01",
+   "cents": 2860,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-02",
+   "cents": 6192,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-03",
+   "cents": 8580,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-04",
+   "cents": -6680,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-05",
+   "cents": 7584,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-06",
+   "cents": 8444,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-07",
+   "cents": 4016,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-08",
+   "cents": 2316,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-09",
+   "cents": 3064,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-10",
+   "cents": 5784,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-11",
+   "cents": 9784,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-12",
+   "cents": 7076,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-13",
+   "cents": -5288,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-14",
+   "cents": 524,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-15",
+   "cents": 8968,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-16",
+   "cents": 6948,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-17",
+   "cents": 3212,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-18",
+   "cents": 1628,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-19",
+   "cents": 7492,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-20",
+   "cents": 8304,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-21",
+   "cents": 7400,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-22",
+   "cents": -3888,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-23",
+   "cents": 7836,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-24",
+   "cents": 3680,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-25",
+   "cents": 8640,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-26",
+   "cents": 1656,
+   "country": "AT"
+  },
+  {
+   "date": "2026-08-27",
+   "cents": 5832,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-28",
+   "cents": 3624,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-29",
+   "cents": 760,
+   "country": "DE"
+  },
+  {
+   "date": "2026-08-30",
+   "cents": 8840,
+   "country": "FR"
+  },
+  {
+   "date": "2026-08-31",
+   "cents": -7240,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-01",
+   "cents": 5636,
+   "country": "AT"
+  },
+  {
+   "date": "2026-09-02",
+   "cents": 6384,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-03",
+   "cents": 1836,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-04",
+   "cents": 8708,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-05",
+   "cents": 8680,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-06",
+   "cents": 4628,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-07",
+   "cents": 6324,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-08",
+   "cents": 9216,
+   "country": "AT"
+  },
+  {
+   "date": "2026-09-09",
+   "cents": -2276,
+   "country": "AT"
+  },
+  {
+   "date": "2026-09-10",
+   "cents": 2504,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-11",
+   "cents": 1712,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-12",
+   "cents": 1912,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-13",
+   "cents": 4720,
+   "country": "AT"
+  },
+  {
+   "date": "2026-09-14",
+   "cents": 8208,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-15",
+   "cents": 5860,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-16",
+   "cents": 1088,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-17",
+   "cents": 8928,
+   "country": "AT"
+  },
+  {
+   "date": "2026-09-18",
+   "cents": -7768,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-19",
+   "cents": 7588,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-20",
+   "cents": 9252,
+   "country": "AT"
+  },
+  {
+   "date": "2026-09-21",
+   "cents": 2172,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-22",
+   "cents": 3252,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-23",
+   "cents": 6184,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-24",
+   "cents": 9868,
+   "country": "AT"
+  },
+  {
+   "date": "2026-09-25",
+   "cents": 3796,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-26",
+   "cents": 1792,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-27",
+   "cents": -8744,
+   "country": "AT"
+  },
+  {
+   "date": "2026-09-28",
+   "cents": 8660,
+   "country": "DE"
+  },
+  {
+   "date": "2026-09-29",
+   "cents": 2668,
+   "country": "FR"
+  },
+  {
+   "date": "2026-09-30",
+   "cents": 1988,
+   "country": "AT"
+  },
+  {
+   "date": "2026-10-01",
+   "cents": 5232,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-02",
+   "cents": 8264,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-03",
+   "cents": 8536,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-04",
+   "cents": 1244,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-05",
+   "cents": 2096,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-06",
+   "cents": -9968,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-07",
+   "cents": 8200,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-08",
+   "cents": 6180,
+   "country": "AT"
+  },
+  {
+   "date": "2026-10-09",
+   "cents": 9820,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-10",
+   "cents": 1256,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-11",
+   "cents": 2048,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-12",
+   "cents": 2200,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-13",
+   "cents": 944,
+   "country": "AT"
+  },
+  {
+   "date": "2026-10-14",
+   "cents": 8400,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-15",
+   "cents": -2680,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-16",
+   "cents": 1440,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-17",
+   "cents": 3248,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-18",
+   "cents": 7348,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-19",
+   "cents": 1624,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-20",
+   "cents": 5764,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-21",
+   "cents": 6952,
+   "country": "AT"
+  },
+  {
+   "date": "2026-10-22",
+   "cents": 7784,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-23",
+   "cents": 1572,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-24",
+   "cents": -6948,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-25",
+   "cents": 2920,
+   "country": "FR"
+  },
+  {
+   "date": "2026-10-26",
+   "cents": 5160,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-27",
+   "cents": 3384,
+   "country": "AT"
+  },
+  {
+   "date": "2026-10-28",
+   "cents": 8036,
+   "country": "AT"
+  },
+  {
+   "date": "2026-10-29",
+   "cents": 8696,
+   "country": "DE"
+  },
+  {
+   "date": "2026-10-30",
+   "cents": 3008,
+   "country": "AT"
+  },
+  {
+   "date": "2026-10-31",
+   "cents": 4376,
+   "country": "DE"
+  },
+  {
+   "date": "2026-11-01",
+   "cents": 3376,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-02",
+   "cents": -3636,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-03",
+   "cents": 2128,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-04",
+   "cents": 572,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-05",
+   "cents": 504,
+   "country": "DE"
+  },
+  {
+   "date": "2026-11-06",
+   "cents": 9204,
+   "country": "DE"
+  },
+  {
+   "date": "2026-11-07",
+   "cents": 9580,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-08",
+   "cents": 8628,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-09",
+   "cents": 8856,
+   "country": "DE"
+  },
+  {
+   "date": "2026-11-10",
+   "cents": 4172,
+   "country": "DE"
+  },
+  {
+   "date": "2026-11-11",
+   "cents": -5056,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-12",
+   "cents": 7872,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-13",
+   "cents": 4192,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-14",
+   "cents": 3012,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-15",
+   "cents": 7500,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-16",
+   "cents": 9080,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-17",
+   "cents": 6592,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-18",
+   "cents": 6712,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-19",
+   "cents": 5868,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-20",
+   "cents": -3408,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-21",
+   "cents": 5996,
+   "country": "DE"
+  },
+  {
+   "date": "2026-11-22",
+   "cents": 3916,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-23",
+   "cents": 1272,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-24",
+   "cents": 2788,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-25",
+   "cents": 3388,
+   "country": "DE"
+  },
+  {
+   "date": "2026-11-26",
+   "cents": 4820,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-27",
+   "cents": 3100,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-28",
+   "cents": 3860,
+   "country": "FR"
+  },
+  {
+   "date": "2026-11-29",
+   "cents": -7736,
+   "country": "AT"
+  },
+  {
+   "date": "2026-11-30",
+   "cents": 8932,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-01",
+   "cents": 8400,
+   "country": "AT"
+  },
+  {
+   "date": "2026-12-02",
+   "cents": 6900,
+   "country": "AT"
+  },
+  {
+   "date": "2026-12-03",
+   "cents": 2588,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-04",
+   "cents": 8228,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-05",
+   "cents": 6448,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-06",
+   "cents": 7828,
+   "country": "AT"
+  },
+  {
+   "date": "2026-12-07",
+   "cents": 8004,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-08",
+   "cents": -4576,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-09",
+   "cents": 4404,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-10",
+   "cents": 5980,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-11",
+   "cents": 9580,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-12",
+   "cents": 3364,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-13",
+   "cents": 9204,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-14",
+   "cents": 5588,
+   "country": "AT"
+  },
+  {
+   "date": "2026-12-15",
+   "cents": 4932,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-16",
+   "cents": 1024,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-17",
+   "cents": -9504,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-18",
+   "cents": 3020,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-19",
+   "cents": 9556,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-20",
+   "cents": 1368,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-21",
+   "cents": 3236,
+   "country": "AT"
+  },
+  {
+   "date": "2026-12-22",
+   "cents": 3308,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-23",
+   "cents": 3976,
+   "country": "FR"
+  },
+  {
+   "date": "2026-12-24",
+   "cents": 1892,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-25",
+   "cents": 4304,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-26",
+   "cents": -3640,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-27",
+   "cents": 4144,
+   "country": "AT"
+  },
+  {
+   "date": "2026-12-28",
+   "cents": 5188,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-29",
+   "cents": 9064,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-30",
+   "cents": 4897,
+   "country": "DE"
+  },
+  {
+   "date": "2026-12-31",
+   "cents": 6824,
+   "country": "DE"
+  }
+ ]
+}
