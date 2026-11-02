@@ -52,7 +52,6 @@ Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), loca
 reeve heavy -- cargo test
 reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs, waits and why
-reeve heavy stop PID     # shell dying doesn't end a job; this does
 ```
 
 You decide what's heavy; when in doubt, queue it. One unit test can skip it. It limits load, not collisions on a shared database or port. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
