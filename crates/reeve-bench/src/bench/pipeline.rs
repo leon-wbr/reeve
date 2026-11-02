@@ -48,6 +48,17 @@ fn reeve(b: &Bench, args: &[&str]) -> io::Result<Output> {
         .output()
 }
 
+/// How long a run waits after the report appears for the pipeline's driver to exit. A last
+/// step may write the report itself and still have to finish, and only then does the driver
+/// log it in `steps.jsonl`, which the run's cost comes from.
+const REPORT_GRACE_MS: i64 = 180_000;
+
+/// Whether a pipeline run is over: its driver exited, or its report has stood for
+/// [`REPORT_GRACE_MS`] (`report_at`, ms, when the report first appeared).
+fn over(report_at: Option<i64>, driver_gone: bool, now: i64) -> bool {
+    driver_gone || report_at.is_some_and(|t| now - t >= REPORT_GRACE_MS)
+}
+
 /// Where the run's reeve keeps its registry, reports and pipeline logs: its `XDG_STATE_HOME`,
 /// which `prepare` points at the run's own logs, else reeve's default.
 fn reeve_state(env: &[(OsString, OsString)]) -> PathBuf {
@@ -105,6 +116,7 @@ pub(super) fn run(mut b: Bench, arm: &str, preset: &str, s: Scenario) -> io::Res
     let mut followups = s.followups.clone();
     let mut undelivered = vec![];
     let mut last_check = 0;
+    let mut report_at: Option<i64> = None;
     let error = loop {
         thread::sleep(Duration::from_secs(5));
         let now = clock();
@@ -123,11 +135,15 @@ pub(super) fn run(mut b: Bench, arm: &str, preset: &str, s: Scenario) -> io::Res
             b.log("followup-undelivered", &f);
             undelivered.push(f);
         }
-        if report.is_file() {
-            break None;
+        if report_at.is_none() && report.is_file() {
+            report_at = Some(now);
+            b.log("report", &json!({}));
         }
-        if driver(&state, &run).is_some_and(|pid| !alive(&pid)) {
-            b.log("pipeline-exit", &json!({}));
+        let gone = driver(&state, &run).is_some_and(|pid| !alive(&pid));
+        if over(report_at, gone, now) {
+            if gone {
+                b.log("pipeline-exit", &json!({}));
+            }
             break None;
         }
         if now - t0 > TOTAL_MS {
@@ -143,7 +159,7 @@ pub(super) fn run(mut b: Bench, arm: &str, preset: &str, s: Scenario) -> io::Res
     let text = std::fs::read_to_string(&report).unwrap_or_default();
     let claimed = claims_done(&text);
     if claimed {
-        result["claims"] = json!([{ "t": now - t0, "items": "all" }]);
+        result["claims"] = json!([{ "t": report_at.unwrap_or(now) - t0, "items": "all" }]);
         result["falseDone"] = (c["done"] != true).into();
     } else {
         result["neverClaimed"] = (c["done"] == true).into();
@@ -188,6 +204,24 @@ mod tests {
         assert_eq!(s[0]["name"], "rv-p-brief-1-brief");
         assert_eq!(s[0]["sessionId"], "s1");
         assert_eq!(s[1]["kind"], "step");
+    }
+
+    #[test]
+    fn a_report_ends_the_run_only_once_the_driver_exits_or_the_grace_runs_out() {
+        assert!(!over(None, false, 10_000), "no report, driver running");
+        assert!(
+            over(None, true, 10_000),
+            "the driver exited without a report"
+        );
+        assert!(
+            !over(Some(10_000), false, 10_000 + REPORT_GRACE_MS - 1),
+            "a step that wrote the report itself is still finishing"
+        );
+        assert!(over(Some(10_000), true, 15_000), "report and exit");
+        assert!(
+            over(Some(10_000), false, 10_000 + REPORT_GRACE_MS),
+            "a driver that hangs after its report"
+        );
     }
 
     #[test]
