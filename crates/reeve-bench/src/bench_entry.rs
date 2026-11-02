@@ -68,7 +68,7 @@ impl Case {
 
     fn brief(self) -> String {
         match self {
-            Case::Successor => workers::brief(&[(WORKER, State::Running, 1800)]),
+            Case::Successor => workers::brief(&[(WORKER, State::Running)], 0),
             _ => String::new(),
         }
     }
