@@ -2,8 +2,10 @@
 //! background session or as a detached `codex exec`, recorded so that any later session can find
 //! them and their reports.
 
+use crate::autoclose::Outcome;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
@@ -748,7 +750,7 @@ fn herdr<S: AsRef<OsStr>>(args: impl IntoIterator<Item = S>) -> io::Result<Value
     serde_json::from_str(&stdout("herdr", args)?).map_err(io::Error::other)
 }
 
-fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -1021,6 +1023,8 @@ pub fn run(
     let report = r.report_path(name);
     let reports = report.parent().expect("reports dir");
     fs::create_dir_all(reports)?;
+    // A rerun starts without the last run's --keep-open.
+    let _ = fs::remove_file(r.report_path(name).with_extension("keep-open"));
     let old = report.with_extension("md.old");
     match fs::rename(&report, &old) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
@@ -1161,7 +1165,7 @@ pub fn started(w: &Worker) -> String {
         "reeve: worker {name} is starting; its report goes to {}\n\
          reeve: {push}follow it with `reeve watch {name}` (Claude Code: the Monitor tool, timeout_ms \
          1800000, re-armed when it expires; elsewhere a background shell). A line per change \
-         says what to do: done, read the report, then `reeve close {name}`; idle, read {}: \
+         says what to do: done, read the report (its tab closes by itself); idle, read {}: \
          nothing if it waits on its own job, else nudge it with `reeve send {name} \"TEXT\"`, \
          let it carry on, or ask the user; blocked, answer it {} if you can, else ask the user.",
         crate::setup::tilde(&w.report),
@@ -1233,7 +1237,7 @@ pub fn brief(shown: &[(&str, State)], older: usize) -> String {
         parts.join(", ")
     );
     if shown.iter().any(|(_, s)| *s == State::Done) {
-        out += "; `reeve report NAME` prints a report, then `reeve close NAME` tidies up";
+        out += "; `reeve report NAME` prints a report; a done worker's tab closes by itself";
     }
     if shown.iter().any(|(_, s)| *s == State::Idle) {
         out += "; look at an idle one and nudge it";
@@ -1277,9 +1281,25 @@ pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
                 };
                 a
             });
+            if w.error.is_none() && !w.starting {
+                seen(|m| m.insert(w.name.clone(), a));
+            }
             (s, history(s, a, finished_ago(w, now)))
         })
         .collect()
+}
+
+/// The agents [`states`] found in this process, so a later pass doesn't probe them again.
+fn seen<T>(f: impl FnOnce(&mut HashMap<String, Agent>) -> T) -> T {
+    static SEEN: std::sync::Mutex<Option<HashMap<String, Agent>>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(HashMap::new))
+}
+
+/// `w`'s agent as [`states`] last found it in this process, else probed now.
+pub(crate) fn seen_agent(w: &Worker) -> Agent {
+    let known = seen(|m| m.get(&w.name).copied());
+    known.unwrap_or_else(|| agent(w))
 }
 
 pub fn ls_brief(r: &Registry) -> io::Result<String> {
@@ -1511,11 +1531,24 @@ impl Watch {
     /// One line per worker whose state changed since the last poll. A worker seen for the first
     /// time is reported only if it needs someone, so a restart doesn't replay old news.
     pub fn step(&mut self, polled: &[(Worker, State)]) -> Vec<String> {
+        self.step_with(polled, &HashMap::new())
+    }
+
+    /// `step`, knowing what automatic closing did: a done worker about to be closed is held back
+    /// until it is, so its line can say so.
+    pub fn step_with(
+        &mut self,
+        polled: &[(Worker, State)],
+        closing: &HashMap<String, Outcome>,
+    ) -> Vec<String> {
         let mut lines = vec![];
         for (w, s) in polled {
             let idle = self.idle.entry(w.name.clone()).or_default();
             *idle = if *s == State::Idle { *idle + 1 } else { 0 };
             if *s == State::Unknown || (*s == State::Idle && *idle < IDLE_POLLS) {
+                continue;
+            }
+            if *s == State::Done && closing.get(&w.name) == Some(&Outcome::Waiting) {
                 continue;
             }
             let before = self.last.insert(w.name.clone(), *s);
@@ -1527,7 +1560,12 @@ impl Watch {
                 Some(b) => b != *s,
             };
             if news {
-                lines.push(change(w, before, *s));
+                lines.push(match s {
+                    State::Done => {
+                        crate::autoclose::done_line(&w.name, &w.report, closing.get(&w.name))
+                    }
+                    _ => change(w, before, *s),
+                });
             }
         }
         lines
@@ -1591,7 +1629,13 @@ pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
             .cloned()
             .zip(states(&all).into_iter().map(|(s, _)| s))
             .collect();
-        for line in w.step(&polled) {
+        let done: Vec<Worker> = polled
+            .iter()
+            .filter(|(_, s)| *s == State::Done)
+            .map(|(w, _)| w.clone())
+            .collect();
+        let closing = crate::autoclose::sweep(r, &done);
+        for line in w.step_with(&polled, &closing) {
             println!("{line}");
         }
         if let Some(all_done) = w.end(names) {
@@ -1856,6 +1900,12 @@ fn remove_worktree(w: &Worker, preserve: bool) -> io::Result<String> {
 /// worktree when that loses nothing (never with `preserve`). The registry entry and the report
 /// stay. A worker that is still running or waiting for the user is refused.
 pub fn close(r: &Registry, name: &str, preserve: bool) -> io::Result<()> {
+    eprintln!("reeve: {}", close_quiet(r, name, preserve)?);
+    Ok(())
+}
+
+/// `close`, returning what became of the worktree instead of printing it.
+pub fn close_quiet(r: &Registry, name: &str, preserve: bool) -> io::Result<String> {
     let w = r.get(name)?;
     let a = agent(&w);
     let s = state_of(&w, now(), || a);
@@ -1872,8 +1922,8 @@ pub fn close(r: &Registry, name: &str, preserve: bool) -> io::Result<()> {
         stdout(cmd, &args)?;
         eprintln!("reeve: closed {name}'s agent");
     }
-    eprintln!("reeve: {}", remove_worktree(&w, preserve)?);
-    Ok(())
+    // `close` prints the worktree line after the agent's, so callers get it back.
+    remove_worktree(&w, preserve)
 }
 
 pub fn report(r: &Registry, name: &str) -> io::Result<String> {
@@ -1916,6 +1966,14 @@ mod tests {
             parent: None,
             pushed: false,
         }
+    }
+
+    #[test]
+    fn an_agent_states_found_is_not_probed_again() {
+        let r = Registry::at(temp("seen"));
+        let w = worker(&r, "seen-by-states", "no-such-pane");
+        seen(|m| m.insert(w.name.clone(), Agent::Idle));
+        assert_eq!(seen_agent(&w), Agent::Idle);
     }
 
     #[test]
@@ -2500,7 +2558,7 @@ mod tests {
         assert_eq!(
             brief(&[("a", State::Running), ("b", State::Done)], 0),
             "reeve: 2 workers: a running, b done (report ready). `reeve ls` shows details; \
-             `reeve report NAME` prints a report, then `reeve close NAME` tidies up. Heavy commands go through `reeve heavy`, in the background."
+             `reeve report NAME` prints a report; a done worker's tab closes by itself. Heavy commands go through `reeve heavy`, in the background."
         );
         let idle = brief(&[("c", State::Idle)], 0);
         assert!(
@@ -2634,7 +2692,7 @@ mod tests {
         assert!(out.contains("follow it with `reeve watch fix-a`"), "{out}");
         assert!(out.contains("Monitor tool"), "{out}");
         assert!(out.contains("re-armed when it expires"), "{out}");
-        assert!(out.contains("`reeve close fix-a`"), "{out}");
+        assert!(out.contains("its tab closes by itself"), "{out}");
         assert!(out.contains("own job"), "{out}");
         assert!(out.contains("in its tab"), "{out}");
         assert!(!out.contains("inbox"), "no parent, no push: {out}");
