@@ -100,9 +100,9 @@ pub fn summarize(
         match state(w) {
             Some(State::Done) => s.workers.done += 1,
             Some(State::Gone) => s.workers.gone += 1,
-            Some(State::Starting | State::Running | State::Idle | State::Blocked) => {
-                s.workers.running += 1
-            }
+            Some(
+                State::Queued | State::Starting | State::Running | State::Idle | State::Blocked,
+            ) => s.workers.running += 1,
             Some(State::Unknown) | None => s.workers.unknown += 1,
         }
     }

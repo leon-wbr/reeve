@@ -35,6 +35,8 @@ A **gone** worker stopped without a report. See what it left (`reeve wait NAME` 
 
 Workers suit long or parallel work; use a subagent for short work.
 
+`queued` in `reeve ls`: no room; `--no-wait` refuses.
+
 ## Handoffs
 
 The hook `reeve setup claude` (or `codex`) installs adds a "Context check" line past the threshold. Finish the step in hand, write your notes and hand off unasked:

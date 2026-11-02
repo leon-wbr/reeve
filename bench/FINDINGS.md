@@ -468,6 +468,30 @@ Arm `heavy-mem` is the baseline arm with #52's build (`reeve: target/release/ree
 - **The memory floor never fired here.** `REEVE_HEAVY_MIN_FREE` reads the real machine's free memory, which stayed above 2 GB. The bench's budget is its own figure, which reeve can't see. So P2 proves the survival half of #52; the floor is covered only by its tests (`below_the_memory_floor_*`). A scenario for it would need jobs that actually take the machine below the floor.
 - **Cost against the weekly limit:** 39% before run 1, 41% after run 3; other sessions shared the plan, and the readings are whole percents.
 
+### Batch P3: the worker cap, ten workers at once ([results/pressure-cap.tsv](results/pressure-cap.tsv))
+
+Ten workers instead of six, so 20 jobs of 600 MB in a 1500 MB budget, with 3 heavy slots as in P1. All three arms run the same binary, built from this branch before #52 (heavy waits for free memory) was merged into bench-real. They differ in `env` only:
+
+- **w10** is the baseline: `REEVE_MAX_WORKERS=0 REEVE_MIN_FREE=0` turns the cap off, so all ten start at once, as in P1.
+- **w10-cap** is the queue alone: `REEVE_MAX_WORKERS=2`, so `reeve run` queues the third to tenth worker and starts each as one of the first two finishes.
+- **w10-cap-close** is the shipped behaviour: the same limit, and before it queues a worker `reeve run` ends the open sessions of finished background workers.
+
+`reeve-bench pressure-score w10 w10-cap w10-cap-close`:
+
+| Arm | n | Jobs | Completed | Lost | Reaper kills | Peak memory MB | Sessions at peak | Minutes to done | Cost $ |
+|---|---|---|---|---|---|---|---|---|---|
+| w10 (cap off) | 3 | 20 | 5 [5–6] | 15 [14–15] | 14 [12–15] | 4351 [4324–4407] | 10 [10–11] | never | 1.98 [1.74–2.01] |
+| w10-cap (queue only) | 2 | 20 | 20 [20–20] | 0 | 0 | 3611 [3560–3662] | 10 | 11.5 | 1.85 [1.84–1.85] |
+| w10-cap-close | 3 | 20 | 20 [20–20] | 0 | 0 | 1790 [1782–1809] | 3 [2–3] | 11.8 [11.7–12.0] | 1.77 [1.65–1.78] |
+
+- **The cap saves the work.** With it off, ten workers start at once and the stand-in reaper kills a median of 14 callers: 15 of 20 jobs are lost, and no run finishes, as in P1. With a limit of two, every job in every run completes and nothing is killed, because two 600 MB jobs fit the budget.
+- **Queueing alone doesn't lower memory.** w10-cap kept ten sessions at its peak, 3.6 GB: finished workers' sessions stay open, and at the end of a run all ten are. Closing them before a new worker queues (w10-cap-close) brings the peak to 1.8 GB with 2–3 sessions at it, half of the baseline's.
+- **Time to done, the trade-off:** about 11.8 minutes for all 20 jobs, to be set against a baseline that never finishes. The slowdown against a machine with room is the queue: 10 workers through 2 slots, each worker running two 60 s jobs, is five waves. This bench has no arm where the uncapped version also completes, so the cost of the queue itself isn't measured here.
+- **w10-cap has n=2.** Its third run wasn't queued: after the first cap run showed ten sessions at the peak, the change in w10-cap-close was built and the remaining budget went to it. Its run 1 is a rerun: the first attempt counted every background session on the machine as live, so none of the ten workers started (0 jobs, $0), and its logs were overwritten.
+- **The limit is a worker count here.** The bench's budget is its own, not the machine's, so the free-memory floor wasn't the limit that bound (`REEVE_MIN_FREE=0.1`); the machine had room throughout. That half of the check is covered by unit tests only.
+- **Cost:** 8 scored runs, $14.6 bench-reported. Weekly usage went from 39% to 42% over the period, shared with other benches; by the $7 per 1% of the November round, this batch is about 2 points.
+- **Binary:** every run used a build from this branch before the rebase onto #52, so `reeve heavy` here does not wait for free memory.
+
 ### Batch S1: two heavy slots or three, n=3 ([results/pressure-slots-n3.tsv](results/pressure-slots-n3.tsv))
 
 Does a third slot pay on a 10-core, 16 GB Mac now that runs past the first need 2 GB free? Arms `slots-2` and `slots-3`: six workers × two 1 GB jobs that hash their memory 50 times (about 24 s alone), the default 2 GB floor, no reaper. The workers are [scripted-claude](pressure/scripted-claude), not models, so the runs measure the machine and the queue only and cost nothing. They ran interleaved on 9 Nov, with about 15 sessions and the machine's own two heavy slots busy beside them. Swap figures are the whole machine's, in 16 KB pages.

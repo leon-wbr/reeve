@@ -440,6 +440,7 @@ mod tests {
             report: format!("/st/reports/{name}.md").into(),
             handle: "ab12".into(),
             starting: false,
+            queued: false,
             error: None,
             parent: None,
             pushed: false,

@@ -85,6 +85,9 @@ fn reeve_with(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> O
         .env("CODEX_HOME", dir.join("codex-home"))
         // No detached `reeve autoclose` outlives a test; a test turns it on with its own env.
         .env("REEVE_AUTO_CLOSE", "0")
+        // The worker cap off: these tests are not about this machine's memory.
+        .env("REEVE_MAX_WORKERS", "0")
+        .env("REEVE_MIN_FREE", "0")
         .env_remove("HERDR_ENV")
         .env_remove("HERDR_PANE_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -575,6 +578,25 @@ fn a_run_without_the_agent_on_path_fails_at_once_and_says_which() {
         assert!(err.contains("isn't on PATH"), "{args:?}: {err}");
     }
     assert_eq!(read(root.join("state/reeve/workers.json")), "");
+}
+
+#[test]
+fn no_wait_refuses_a_worker_when_too_little_memory_is_free_and_force_starts_it() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let full = [("REEVE_MAX_WORKERS", "100"), ("REEVE_MIN_FREE", "1000000")];
+    let args = ["run", "--name", "w", "--bg", "--no-wait", "--", "go"];
+    let o = reeve_with(&root, &project, &args, &full);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(err.contains("not starting worker w"), "{err}");
+    assert!(err.contains("REEVE_MIN_FREE"), "{err}");
+    assert_eq!(read(root.join("state/reeve/workers.json")), "");
+
+    let args = ["run", "--name", "w", "--bg", "--force", "--", "go"];
+    let o = reeve_with(&root, &project, &args, &full);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(read(root.join("state/reeve/workers.json")).contains("\"w\""));
 }
 
 #[test]
@@ -1365,9 +1387,10 @@ fn ls_leaves_out_old_finished_workers_whose_pane_is_gone_but_never_a_live_one() 
         |args: &[&str]| String::from_utf8_lossy(&reeve(&root, &project, args).stdout).into_owned();
     let out = ls(&["ls"]);
     assert!(out.contains("\na ") && !out.contains("\nb "), "{out}");
+    // The count follows the table; the memory line, from the worker cap, comes last.
     assert!(
-        out.trim_end().ends_with(
-            "\n1 older finished worker (agent gone, finished over 12h ago): `reeve ls --all`"
+        out.contains(
+            "\n1 older finished worker (agent gone, finished over 12h ago): `reeve ls --all`\nmemory:"
         ),
         "{out}"
     );
