@@ -425,6 +425,32 @@ Sonnet, `--setting-sources project,local`, auto mode, budget 60K, the fixed driv
 - **reeve costs 2.7x b0, from turns, as in D1:** 42 against 17. Every `reeve heavy` ran in the background and its result came back as a new turn. reeve was 2 minutes faster to done.
 - **Weekly:** 39% before the first D2 run, 42% after it.
 
+### Batch G: handoff guards at a stress budget, n=3 ([results/day-handoff-guards.tsv](results/day-handoff-guards.tsv))
+
+The change: the context check waits until a session has grown 10K past its own first turn; a second `reeve handoff` from the same session returns the first successor; a failed start says to carry on and tell the user. Sonnet, `--setting-sources project,local`, auto mode, the fixed driver. **main** is bench-real c11ac97 (main + #50) as in D2, **guards** is the same code plus the change. Run 2 Nov, 22:28–06:38 UTC, one at a time under the `reeve-bench` lock, 90 s apart so reeve-bench-day2's runs got the lock first. No run showed an API or network error (`invalid` false for all nine).
+
+- **Stress arm `reeve-tight`: budget 28K,** a fresh reeve session's 22.9K start (see above) plus about 5K, where main's hook storms.
+- **Day arm `reeve` at 60K, guards only,** n=3, against D2's reeve rows.
+
+| Arm (28K) | Done | Sessions per run | Handoffs per run | Successors per handoff | Cost $ per run | Cost $ per done run | Min to done |
+|---|---|---|---|---|---|---|---|
+| main | 2/3 | 9 [6–15] | 7 [5–14] | 1.00 [1.00–1.14] | 2.57 [1.35–3.67] | 3.79 | 17.5 [17.2–17.8] |
+| guards | 2/3 | 4 [3–10] | 3 [2–9] | 1.00 [1.00–1.00] | 1.14 [0.80–3.12] | 2.53 | 21.8 [21.3–22.3] |
+
+| Arm (60K, D2 baseline vs guards) | Done | Min to done | Cost $ | Turns | Peak ctx K | Handoffs |
+|---|---|---|---|---|---|---|
+| reeve, main (D2) | 3/3 | 13.2 [12.7–14.7] | 0.81 [0.58–0.98] | 42 [28–48] | 54 [48–57] | 0 |
+| reeve, guards | 2/3 | 15.2 [14.7–15.7] | 0.42 [0.38–0.47] | 22 [19–23] | 41 [40–45] | 0 |
+
+- **Sessions per run halved at the stress budget:** a median of 9 sessions (6–15) with main, 4 (3–10) with guards. The ranges overlap (guards' worst run, 10, is above main's best, 6), so n=3 shows a direction, not a margin.
+- **Successors per handoff did not change.** Every handoff in these runs started one successor, in both arms (main's one 1.14 is run m1: 8 sessions after 7 handoffs). The two-successors-seconds-apart case from D1t did not occur in these six runs; it is covered by the unit test, not by this table.
+- **Done rate is the same, 2/3 against 2/3.** main's miss is m1 (rename missing, timed out at 50 minutes). guards' miss is g3: 1 of 6 items in 50 minutes and 34 turns, its third session repeating "nothing has changed" through three status polls. Its heavy runs waited 0 s and the handoffs all succeeded, and nothing in its transcripts ties the stall to the change, but one run can't rule it out.
+- **Cost:** 5.06 USD for guards' three runs against 7.59 for main's, per done run 2.53 against 3.79. It follows the session count, and guards' g2 (10 sessions, 3.12) cost as much as main's m2 (15 sessions, 3.67).
+- **Slower to done at 28K:** 21.8 minutes against 17.5 minutes. A guards successor works 10K past its start before it hands off instead of handing off at once; two done runs per arm.
+- **The 60K arm shows no handoff effect** (no session reached 60K, so the guards never act); its done rate, 2/3 against 3/3, is rd-reeve-g1 missing the rename, the miss b0 had in D1 and D2. Its lower cost, turns and peak context than D2's reeve rows are not explained by the change, which does not run below 60K, so they are not claimed as a result; the runs were on a differently loaded machine.
+- **Weekly:** 39% before the first run (21:43 UTC), 43% after the last, shared with reeve-bench-day2's runs in the same hours. About $13.9 by the bench's own cost for the nine runs.
+- **Not covered:** a second `reeve handoff` from the same session and a failed successor start (unit-tested only), and Codex.
+
 ## Pressure scenario
 
 [pressure/](pressure/README.md) checks the loss of 1 Nov. Six workers, started with `reeve run`, each run two 600 MB, 60 s jobs through `reeve heavy`, with 3 slots. The bench's memory budget is 1500 MB, so two jobs fit and a third at once doesn't. Past the budget, a stand-in for Claude Code's low-memory reaper kills the newest `reeve heavy` caller's background shell under a session, at most once every 5 s. Memory is `top`'s physical footprint. On this Mac, which was swapping 8 GB that evening, RSS read a 600 MB job as 40 MB. Sonnet, `--setting-sources project,local`, reeve's setup.
