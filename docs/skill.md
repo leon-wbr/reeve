@@ -33,11 +33,13 @@ Reports reach your inbox as `NAME done: …`; also follow each with `reeve watch
 
 A **gone** worker stopped without a report. See what it left (`reeve wait NAME` says where), then restart it under the same name saying where to pick up, or report it lost. `reeve rm NAME` drops it.
 
-Workers suit long or parallel work; for short work you need now, use a subagent.
+Workers suit long or parallel work; for short work, use a subagent.
+
+`queued` in `reeve ls`: no room; `--no-wait` refuses. Close `done*` workers.
 
 ## Handoffs
 
-You don't see your own context usage: the hook `reeve setup claude` (or `codex`) installs adds a "Context check" line past the threshold. Finish the step in hand, write your notes and hand off unasked:
+You don't see your own context usage: the hook `reeve setup claude` (or `codex`) installs adds a "Context check" line past the threshold. Finish the step, write notes and hand off unasked:
 
 ```sh
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
@@ -65,7 +67,7 @@ Runs time out after 30 minutes with a slot (exit 124): start visual/e2e runs nar
 
 ## Sandbox
 
-`reeve run --sandbox [NAME] -- ARGS` runs Claude Code with `--dangerously-skip-permissions` in a Docker container that sees only the workspace. `reeve sandbox ls`, `exec` and `down` manage them.
+`reeve run --sandbox [NAME] -- ARGS` runs Claude Code with `--dangerously-skip-permissions` in a Docker container that sees only the workspace.
 
 ## When reeve gets in the way
 

@@ -436,6 +436,7 @@ mod tests {
             report: "/nonexistent/report.md".into(),
             handle: String::new(),
             starting,
+            queued: false,
             error: None,
             parent: None,
             pushed: false,

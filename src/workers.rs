@@ -92,6 +92,10 @@ pub struct Worker {
     /// Set by `reeve run` until `reeve start`, in the background, has brought the agent up.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starting: bool,
+    /// Set while `reeve run` waits for room: too little memory is free, or too many workers
+    /// are live. `handle` is then the pid of the process that waits and starts the worker.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
     /// Why the agent didn't come up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -119,6 +123,8 @@ pub enum Agent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
+    /// Waiting for room: `reeve run` starts it when memory frees up.
+    Queued,
     Starting,
     Running,
     Idle,
@@ -148,6 +154,11 @@ pub const START_SECS: u64 = 30;
 /// unless it wrote its report anyway; only a started one has an agent worth asking about.
 pub fn state_of(w: &Worker, now: u64, agent: impl FnOnce() -> Agent) -> State {
     match (&w.error, w.starting) {
+        // A waiting process records its pid; until it has, it is just starting up.
+        (None, _) if w.queued => match w.handle.parse::<i32>() {
+            Ok(pid) if !pid_alive(pid) => State::Gone,
+            _ => State::Queued,
+        },
         (Some(_), _) if w.report.is_file() => State::Done,
         (Some(_), _) => State::Gone,
         (None, true) if now.saturating_sub(w.started) < START_SECS => State::Starting,
@@ -159,10 +170,35 @@ pub fn state_of(w: &Worker, now: u64, agent: impl FnOnce() -> Agent) -> State {
     }
 }
 
+/// A worker placeholder for `reeve run` waiting for room to start it.
+pub fn queued(name: &str, cwd: PathBuf, report: PathBuf) -> Worker {
+    Worker {
+        name: name.into(),
+        backend: Backend::Pane,
+        agent: Kind::Claude,
+        cwd,
+        started: now(),
+        report,
+        handle: String::new(),
+        starting: false,
+        queued: true,
+        parent: None,
+        pushed: false,
+        error: None,
+    }
+}
+
+/// Whether a process with this pid exists.
+pub fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
 /// Why a worker without a report is gone, after `worker NAME`.
 pub fn gone_why(w: &Worker) -> String {
     match &w.error {
         Some(e) => format!("failed to start: {e}"),
+        None if w.queued => "was queued, but the process waiting to start it is gone".into(),
         None if w.starting => format!("did not start within {START_SECS}s"),
         None => format!("is gone without writing its report: {}", left_where(w)),
     }
@@ -199,6 +235,7 @@ fn resume_hint(w: &Worker) -> String {
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(match self {
+            State::Queued => "queued",
             State::Starting => "starting",
             State::Running => "running",
             State::Idle => "idle",
@@ -748,7 +785,7 @@ fn herdr<S: AsRef<OsStr>>(args: impl IntoIterator<Item = S>) -> io::Result<Value
     serde_json::from_str(&stdout("herdr", args)?).map_err(io::Error::other)
 }
 
-fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -1004,7 +1041,7 @@ pub fn run(
     {
         return Err(io::Error::other(why));
     }
-    if let Ok(old) = r.get(name) {
+    if let Some(old) = r.get(name).ok().filter(|w| !w.queued) {
         let a = agent(&old);
         if state_of(&old, now(), || a) == State::Starting {
             return Err(io::Error::other(format!(
@@ -1064,6 +1101,7 @@ pub fn run(
         report,
         handle,
         starting: true,
+        queued: false,
         error: None,
         parent,
         pushed: false,
@@ -1208,6 +1246,7 @@ pub fn brief(shown: &[(&str, State)], older: usize) -> String {
         .take(BRIEF_NAMES)
         .map(|(name, s)| {
             let what = match s {
+                State::Queued => "queued (waiting for memory)",
                 State::Starting => "starting",
                 State::Running => "running",
                 State::Idle => "idle without a report",
@@ -1250,11 +1289,17 @@ pub fn brief(shown: &[(&str, State)], older: usize) -> String {
 
 /// States for many workers, asking `claude agents` only once, each with whether it is
 /// finished [`history`]. A worker whose agent was never asked about (it failed to start, or is
-/// still starting) counts as having none. Each Claude worker is also looked up there by name,
-/// and a `registry_mismatch` event is logged where that disagrees with its pane or registered
-/// session. Codex has no such list (`codex agents` is a TUI), so its workers keep their own
-/// probes and log none.
+/// still starting) counts as having none.
 pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
+    probed(all).into_iter().map(|(s, h, _)| (s, h)).collect()
+}
+
+/// Each worker's state, whether it is finished [`history`], and whether its agent is still
+/// there (a finished one may be). Each Claude worker is also looked up in `claude agents` by
+/// name, and a `registry_mismatch` event is logged where that disagrees with its pane or
+/// registered session. Codex has no such list (`codex agents` is a TUI), so its workers keep
+/// their own probes and log none.
+pub(crate) fn probed(all: &[Worker]) -> Vec<(State, bool, bool)> {
     let mut claude: Option<Result<String, String>> = None;
     let now = now();
     all.iter()
@@ -1277,7 +1322,8 @@ pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
                 };
                 a
             });
-            (s, history(s, a, finished_ago(w, now)))
+            let present = !matches!(a, Agent::Absent | Agent::Unknown);
+            (s, history(s, a, finished_ago(w, now)), present)
         })
         .collect()
 }
@@ -1303,7 +1349,7 @@ pub fn brief_order(rows: &mut [(&str, State, u64)]) {
     let rank = |s: &State| match s {
         State::Blocked => 0,
         State::Idle => 1,
-        State::Running | State::Starting | State::Unknown => 2,
+        State::Queued | State::Running | State::Starting | State::Unknown => 2,
         State::Done | State::Gone => 3,
     };
     rows.sort_by_key(|(_, s, started)| (rank(s), std::cmp::Reverse(*started)));
@@ -1340,17 +1386,17 @@ pub fn ls(
     all: bool,
 ) -> io::Result<String> {
     let everyone = r.all()?;
-    let states = states(&everyone);
+    let probed = probed(&everyone);
     let older = if all {
         0
     } else {
-        states.iter().filter(|(_, h)| *h).count()
+        probed.iter().filter(|(_, h, _)| *h).count()
     };
-    let (all, states): (Vec<Worker>, Vec<State>) = everyone
+    let (all, (states, present)): (Vec<Worker>, (Vec<State>, Vec<bool>)) = everyone
         .into_iter()
-        .zip(states)
-        .filter(|(_, (_, h))| all || !h)
-        .map(|(w, (s, _))| (w, s))
+        .zip(probed)
+        .filter(|(_, (_, h, _))| all || !h)
+        .map(|(w, (s, _, p))| (w, (s, p)))
         .unzip();
     let count = |name: &str| unread.get(name).copied().unwrap_or(0);
     let any = all.iter().any(|w| count(&w.name) > 0);
@@ -1378,7 +1424,13 @@ pub fn ls(
         "STATE",
         if any { "UNREAD  " } else { "" }
     );
-    for (w, state) in all.iter().zip(states) {
+    let closable = states
+        .iter()
+        .zip(&present)
+        .filter(|&(s, p)| crate::cap::closable(*s, *p))
+        .count();
+    for ((w, state), present) in all.iter().zip(states).zip(present) {
+        let open = crate::cap::closable(state, present);
         let backend = match w.backend {
             Backend::Pane => "pane",
             Backend::Bg => "bg",
@@ -1386,7 +1438,7 @@ pub fn ls(
         out += &format!(
             "\n{:width$}  {:state_w$}  {:6}  {backend:7}  {:>3}  {}{}",
             w.name,
-            state.to_string(),
+            format!("{state}{}", if open { "*" } else { "" }),
             w.agent.bin(),
             age(now().saturating_sub(w.started)),
             col(count(&w.name)),
@@ -1412,6 +1464,17 @@ pub fn ls(
             RECENT_SECS / 3600
         );
     }
+    let mem = crate::mem::probe();
+    let limits = crate::mem::Limits::from_env(mem.as_ref());
+    out += &format!(
+        "\n{}",
+        crate::cap::ls_line(
+            mem.as_ref(),
+            (!limits.off()).then(|| crate::cap::live(r).0),
+            &limits,
+            closable
+        )
+    );
     Ok(out)
 }
 
@@ -1546,6 +1609,7 @@ impl Watch {
 fn change(w: &Worker, before: Option<State>, s: State) -> String {
     let name = &w.name;
     match s {
+        State::Queued => format!("{name} queued: waiting for memory to free up"),
         State::Starting => format!("{name} starting"),
         State::Running if before == Some(State::Starting) => format!("{name} running"),
         State::Running => format!("{name} running again"),
@@ -1562,7 +1626,9 @@ fn change(w: &Worker, before: Option<State>, s: State) -> String {
             "{name} done: report at {}; read it, then `reeve close {name}`",
             crate::setup::tilde(&w.report)
         ),
-        State::Gone if w.error.is_some() || w.starting => format!("{name} gone: {}", gone_why(w)),
+        State::Gone if w.error.is_some() || w.starting || w.queued => {
+            format!("{name} gone: {}", gone_why(w))
+        }
         State::Gone => format!("{name} gone without a report: {}", left_where(w)),
         State::Unknown => format!("{name} state unknown"),
     }
@@ -1861,7 +1927,7 @@ pub fn close(r: &Registry, name: &str, preserve: bool) -> io::Result<()> {
     let s = state_of(&w, now(), || a);
     if matches!(
         s,
-        State::Starting | State::Running | State::Blocked | State::Unknown
+        State::Queued | State::Starting | State::Running | State::Blocked | State::Unknown
     ) {
         return Err(io::Error::other(format!(
             "worker {name} is {s}; close it once it is done, idle or gone"
@@ -1912,6 +1978,7 @@ mod tests {
             report: r.report_path(name),
             handle: handle.into(),
             starting: false,
+            queued: false,
             error: None,
             parent: None,
             pushed: false,
@@ -3175,6 +3242,7 @@ mod tests {
             report: format!("/st/reports/{name}.md").into(),
             handle: handle.into(),
             starting: false,
+            queued: false,
             error: None,
             parent: None,
             pushed: false,
@@ -3233,6 +3301,7 @@ mod tests {
             report: format!("/st/reports/{name}.md").into(),
             handle: "wH4:p3".into(),
             starting: false,
+            queued: false,
             error: None,
             parent: None,
             pushed: false,

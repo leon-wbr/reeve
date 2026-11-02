@@ -1,0 +1,9 @@
+batch	run	arm	jobs	started	completed	lost	killed	peakMemMb	peakJobsMemMb	sessionsAtPeak	jobsAtPeak	doneAt	end	endedAt	costUsd	sessionCount	heavy_runs	heavy_wait_s	handoffs
+P2	rp-w10-1	w10	20	10	6	14	14	4407	1841	11	3		quiet	373580	1.983	10	6	50.9	0
+P2	rp-w10-2	w10	20	9	5	15	15	4351	1841	10	3		quiet	313057	2.009	10	5	0.5	0
+P2	rp-w10-3	w10	20	6	5	15	12	4324	1842	10	3		quiet	314810	1.736	10	5	0	0
+P2	rp-w10-cap-1	w10-cap	20	20	20	0	0	3662	1228	10	2	691329	all done	692431	1.845	10	20	0	0
+P2	rp-w10-cap-2	w10-cap	20	20	20	0	0	3560	1228	10	2	691796	all done	692198	1.855	10	20	0	0
+P2	rp-w10-cap-close-1	w10-cap-close	20	20	20	0	0	1790	1228	2	2	702213	all done	703933	1.645	10	20	0	0
+P2	rp-w10-cap-close-2	w10-cap-close	20	20	20	0	0	1782	1266	3	2	717649	all done	718257	1.773	10	20	0	0
+P2	rp-w10-cap-close-3	w10-cap-close	20	20	20	0	0	1809	1265	3	2	706545	all done	708420	1.778	10	20	0	0

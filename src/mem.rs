@@ -78,6 +78,11 @@ pub struct Limits {
 }
 
 impl Limits {
+    /// `REEVE_MAX_WORKERS=0` with `REEVE_MIN_FREE=0` turns the cap off.
+    pub fn off(&self) -> bool {
+        self.max_workers == 0 && self.min_free_gb == 0.0
+    }
+
     /// REEVE_MAX_WORKERS and REEVE_MIN_FREE (GB) override what the machine's size suggests:
     /// one worker per GB of installed memory.
     pub fn from_env(mem: Option<&Mem>) -> Limits {
