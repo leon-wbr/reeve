@@ -8,7 +8,7 @@
 - **A slow, shared test suite.** `npm test` takes a minute because its integration test holds the shared test database ([scripts/db.mjs](repo/scripts/db.mjs)). Every checkout on the machine, worktrees included, uses that one database, and a second job fails with "test database busy".
 - **A long job.** `node scripts/rebuild-fixtures.mjs` holds the same database for six minutes.
 - **A mid-run message.** Five minutes in, the user adds an urgent sixth task ([followups.json](followups.json)).
-- **A context budget.** An arm's `contextBudget` sets where a session has to hand off: reeve's own hook (`REEVE_HANDOFF_TOKENS`), or, with `"handoff": "notes"`, the harness's own check, which asks for notes and starts a fresh session on them. A fresh Sonnet session with reeve's setup already holds 30–37K, so a budget near that hands off again and again ([FINDINGS](../FINDINGS.md#day-scenario)).
+- **A context budget.** An arm's `contextBudget` sets where a session has to hand off: reeve's own hook (`REEVE_HANDOFF_TOKENS`), or, with `"handoff": "notes"`, the harness's own check, which asks for notes and starts a fresh session on them. Both arms use 60K. A fresh session starts at 18K (b0) or 23K (reeve) and works at 36–40K, so a budget near that hands off again and again. At 60K no session reached the budget ([FINDINGS](../FINDINGS.md#batch-d2-b0-against-reeve-at-60k-n3-resultsday-sonnet-60ktsv)): to exercise handoffs, use about 45K.
 
 Done means all six [hidden checks](hidden.mjs) pass on main, with the suite green on a private copy of the database. Every item fails if `test/db.json` changed. The fixture counts only if a rebuild finished on the shared database. [solution/](solution/) is a reference solution, which the tests use.
 

@@ -388,7 +388,7 @@ From D1's turn count: the PreToolUse hook set `run_in_background` on every `reev
 
 ### What's next
 
-- **Recalibrate the budget** to 60–80K and rerun b0 and reeve at n=3 before testing any reeve change on this scenario.
+- **Budget: done (D2, 60K).** For a handoff test, use about 45K (see D2).
 - **reeve fixes the day showed:**
   - two handoffs seconds apart start two successors; a second handoff from the same session should be refused;
   - when `reeve handoff` can't start the successor, its message should say to carry on and tell the user, not leave the manual's "stop once it returns" in force;
@@ -410,6 +410,21 @@ Each fix has a test that failed before it:
 
 A fresh one-turn Sonnet session in the day repo, given the take-over prompt, reads 18.4K with b0's setup and 22.9K with reeve's. The D1t successors were at 36–40K once they had read their notes and the manual. Taking the larger start plus about 35K gives 58K. Both arms now hand off at 60K; D1 and D1t ran at 30K.
 
+### Batch D2: b0 against reeve at 60K, n=3 ([results/day-sonnet-60k.tsv](results/day-sonnet-60k.tsv))
+
+Sonnet, `--setting-sources project,local`, auto mode, budget 60K, the fixed driver, reeve at main + #50 (c11ac97). No run showed an API or network error. Run 2 Nov, 21:56–02:48 UTC, one at a time under the `reeve-bench` lock.
+
+| Arm | Done | Min to done | Interventions | Cost $ | Turns | Peak ctx K | Heavy runs | Handoffs |
+|---|---|---|---|---|---|---|---|---|
+| b0 | 2/3 | 15.3 [15.2–15.3] | 1 [1–3] | 0.30 [0.28–0.38] | 17 [14–20] | 34 [34–38] | 0 | 0 |
+| reeve | 3/3 | 13.2 [12.7–14.7] | 1 [1–1] | 0.81 [0.58–0.98] | 42 [28–48] | 54 [48–57] | 8 [8–10] | 0 |
+
+- **This is the baseline** for reeve changes on the day scenario: these arms, this budget, n≥3.
+- **No session reached 60K, so nothing handed off.** reeve's sessions peaked at 48–57K and b0's at 34–38K: the whole day fits in one session. To test handoffs here, set the budget at about 45K or lengthen the day. 45K sits above both arms' working floor (36–40K) and below reeve's peak.
+- **b0's miss is D1's again.** rd-b0-d2-3 never asked for the rename's new name and timed out at 50 minutes after three status polls. reeve did every rename in D1, D1t and D2.
+- **reeve costs 2.7x b0, from turns, as in D1:** 42 against 17. Every `reeve heavy` ran in the background and its result came back as a new turn. reeve was 2 minutes faster to done.
+- **Weekly:** 39% before the first D2 run, 42% after it.
+
 ## Pressure scenario
 
 [pressure/](pressure/README.md) checks the loss of 1 Nov. Six workers, started with `reeve run`, each run two 600 MB, 60 s jobs through `reeve heavy`, with 3 slots. The bench's memory budget is 1500 MB, so two jobs fit and a third at once doesn't. Past the budget, a stand-in for Claude Code's low-memory reaper kills the newest `reeve heavy` caller's background shell under a session, at most once every 5 s. Memory is `top`'s physical footprint. On this Mac, which was swapping 8 GB that evening, RSS read a 600 MB job as 40 MB. Sonnet, `--setting-sources project,local`, reeve's setup.
@@ -424,3 +439,15 @@ A fresh one-turn Sonnet session in the day repo, given the take-over prompt, rea
 - **No run finished every job**, so there is no time to done. Each run ended once no job had started or finished for three minutes.
 - **A first run was set aside**, kept as `logs-invalid/rp-reeve-1-rss`. It measured RSS, its jobs were one repeated byte that macOS compresses, and its workers took the daemon's 30K handoff threshold and handed off 9 times, which cost $2.46.
 - **This is the baseline** for memory-aware heavy changes (reeve-heavy-mem, reeve-worker-cap). An arm's `reeve` field picks the binary and its `env` field sets reeve's knobs.
+
+### Cost of this round (1–2 Nov)
+
+| Time (UTC) | Weekly | Point |
+|---|---|---|
+| 20:28 | 36% | task start |
+| 20:44 | 37% | before the first pressure run |
+| 21:54 | 39% | after P1, set-aside run included |
+| 21:56 | 39% | before D2 |
+| 02:48 | 42% | after D2 |
+
+The bench reported about $9.10: $2.46 for the set-aside pressure run, $3.25 for P1, $3.33 for D2 and $0.07 for the start-context probe. Other workers shared the plan and ran their own bench runs under the same lock that evening, so the 5 points aren't this round's alone.
