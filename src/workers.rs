@@ -3366,6 +3366,7 @@ mod tests {
             error: None,
             parent: None,
             pushed: false,
+            pipeline: None,
         };
         // Herdr hands the id of a closed pane to a later one; the old entry stays registered.
         let all = [mk("stale", 100), mk("successor", 200), mk("older", 50)];
