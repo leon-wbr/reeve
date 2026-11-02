@@ -39,7 +39,7 @@ pub struct Event {
     /// From `reeve run --name` until the new worker's agent is up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_ms: Option<u64>,
-    /// `agent` or `person`.
+    /// `agent`, `person` or `schedule`.
     pub actor: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -77,7 +77,8 @@ const AGENTS: [&str; 8] = [
 ];
 
 /// Who runs reeve, from the variables agent CLIs set for their tools. `AI_AGENT`'s value is
-/// only kept when it names a known agent, so no free-form env value reaches the log.
+/// only kept when it names a known agent, so no free-form env value reaches the log. Without an
+/// agent, `REEVE_ACTOR=schedule` (set by a launchd or cron job) marks a start nobody typed.
 pub fn actor(var: impl Fn(&str) -> Option<String>) -> (&'static str, Option<&'static str>) {
     let set = |k| var(k).is_some_and(|v| !v.is_empty());
     let agent = if set("CLAUDECODE") {
@@ -95,7 +96,14 @@ pub fn actor(var: impl Fn(&str) -> Option<String>) -> (&'static str, Option<&'st
     } else {
         None
     };
-    (if agent.is_some() { "agent" } else { "person" }, agent)
+    let actor = if agent.is_some() {
+        "agent"
+    } else if var("REEVE_ACTOR").as_deref() == Some("schedule") {
+        "schedule"
+    } else {
+        "person"
+    };
+    (actor, agent)
 }
 
 /// Messages carry names and paths, so only a fixed kind is logged.
@@ -225,6 +233,21 @@ mod tests {
         assert_eq!(
             actor(env(&[("AI_AGENT", "Cursor-1.2")])),
             ("agent", Some("cursor"))
+        );
+    }
+
+    #[test]
+    fn a_scheduled_start_is_told_apart_from_a_person() {
+        assert_eq!(
+            actor(env(&[("REEVE_ACTOR", "schedule")])),
+            ("schedule", None)
+        );
+        // Any other value is ignored, so no free-form env value reaches the log.
+        assert_eq!(actor(env(&[("REEVE_ACTOR", "hunter2")])), ("person", None));
+        // An agent is still an agent, even if it inherited the variable.
+        assert_eq!(
+            actor(env(&[("REEVE_ACTOR", "schedule"), ("CLAUDECODE", "1")])),
+            ("agent", Some("claude-code"))
         );
     }
 
