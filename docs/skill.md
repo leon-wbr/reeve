@@ -7,21 +7,22 @@ reeve is a small local CLI that runs coding agents beside your session. Two rule
 
 ## Named workers: work that outlives this session
 
-`reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session and writes its report to `~/.local/state/reeve/reports/NAME.md` for any later session. Pass the project root as `--cwd` for its `.claude/` setup.
+`reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session and writes its report to `~/.local/state/reeve/reports/NAME.md`. Pass the project root as `--cwd` for its `.claude/` setup.
 
 Inside Herdr each worker gets its own tab in its project's workspace, where the user sees and answers it; use `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session (`--bg`, for that case only). `--force` skips reeve's safety checks.
 
 ```sh
 reeve run --name fix-flaky --cwd ~/app -- "Fix the flaky test in tests/api; run it 20 times to confirm."
 reeve run --name review --cwd ~/app -- --model sonnet "Review it."
-reeve ls                 # live workers, and ones finished in the last 12h; --all for all
+reeve ls                 # live workers and ones finished in 12h; --all for all
 reeve waiting            # what waits on you
+reeve usage              # Claude/Codex limits used; --max 90 exits 1 over
 reeve watch fix-flaky    # a line per change, with the next step
-reeve report fix-flaky   # prints the report
+reeve report fix-flaky   # the report
 reeve close fix-flaky    # closes its tab and clean pushed worktree; --preserve keeps it
 ```
 
-The last argument after `--` is the prompt; agent flags such as `--model` go before it. `--worktree` gives it its own git worktree; `--agent codex` runs Codex.
+The last argument after `--` is the prompt; agent flags like `--model` go before it. `--worktree` gives it its own git worktree; `--agent codex` runs Codex.
 
 For unattended work with a clear end, start the prompt with `/goal` and pass `--permission-mode auto` after `--`; name the check, a separate model runs it each turn.
 
@@ -33,7 +34,7 @@ Reports reach your inbox as `NAME done: …`; also follow each with `reeve watch
 
 A **gone** worker stopped without a report. See what it left (`reeve wait NAME` says where), then restart it under the same name saying where to pick up, or report it lost. `reeve rm NAME` drops it.
 
-Workers suit long or parallel work; for short work you need now, use a subagent.
+Workers suit long or parallel work; use a subagent for short work.
 
 ## Handoffs
 
@@ -43,11 +44,11 @@ You don't see your own context usage: the hook `reeve setup claude` (or `codex`)
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It starts the successor as a worker told to read the file. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. `ls` closes the old session once idle, or says why. A message the user sends the old session goes to the successor's inbox; don't relay it.
+It starts the successor, a worker told to read the file. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. `ls` closes the old session once idle, or says why. A message the user sends the old session goes to the successor's inbox; don't relay it.
 
 ## Heavy commands on a shared machine
 
-Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, typecheck or lint, builds and installs. It waits for a slot and free memory, and exits with the command's code. Start it in the background (Claude Code: `run_in_background`; Codex: a background terminal).
+Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), local CI, typecheck or lint, builds and installs. It waits for a slot and free memory and exits with the command's code. Start it in the background (Claude Code: `run_in_background`; Codex: a background terminal).
 
 ```sh
 reeve heavy -- cargo test
@@ -55,7 +56,7 @@ reeve heavy --label e2e -- pnpm test:e2e
 reeve heavy ls           # who runs, waits and why
 ```
 
-You decide what's heavy; when in doubt, queue it. One unit test can skip it. It limits load, not collisions. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
+You decide what's heavy; if in doubt, queue it; one unit test can skip it. It limits load, not collisions. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
 
 Runs time out after 30 minutes with a slot (exit 124): start visual/e2e runs narrow, and raise `--timeout 45m` only for a known full run.
 
@@ -65,7 +66,7 @@ Runs time out after 30 minutes with a slot (exit 124): start visual/e2e runs nar
 
 ## Sandbox
 
-`reeve run --sandbox [NAME] -- ARGS` runs Claude Code with `--dangerously-skip-permissions` in a Docker container that sees only the workspace. `reeve sandbox ls`, `exec` and `down` manage them.
+`reeve run --sandbox [NAME] -- ARGS` runs Claude Code with `--dangerously-skip-permissions` in Docker, seeing only the workspace. `reeve sandbox ls`, `exec`, `down` manage them.
 
 ## When reeve gets in the way
 
