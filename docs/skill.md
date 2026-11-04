@@ -37,13 +37,13 @@ Workers suit long or parallel work; for short work you need now, use a subagent.
 
 ## Handoffs
 
-You don't see your own context usage: the hook `reeve setup claude` (or `codex`) installs adds a "Context check" line past the threshold. Finish the step in hand, write your notes and hand off unasked:
+You don't see your own context usage: the hook `reeve setup claude` (or `codex`) installs adds a "Context check" line past the threshold. Finish the step in hand, write notes and hand off unasked:
 
 ```sh
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It starts the successor as a worker told to read the file. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. `ls` closes the old session once idle, or says why. A message the user sends the old session goes to the successor's inbox; don't relay it.
+It starts the successor, told to read the file. Stop once it succeeds; if it fails, carry on and tell the user. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. `ls` closes the old session once idle, or says why. Messages to the old session reach the successor; don't relay them.
 
 ## Heavy commands on a shared machine
 

@@ -13,6 +13,11 @@ pub const ENV: &str = "REEVE_HANDOFF_TOKENS";
 pub const KEY: &str = "handoff_tokens";
 /// The usage lines of the last turns sit near the end of a transcript.
 const TAIL: u64 = 256 * 1024;
+/// A session's first turn sits near its start.
+const HEAD: u64 = 64 * 1024;
+/// A session is told to hand off only after it has grown this much past its own start context,
+/// so a budget below what a fresh session starts with can't make each successor hand off at once.
+pub const MIN_GROWTH: u64 = 10_000;
 
 /// `$XDG_CONFIG_HOME/reeve/config.json`, by default `~/.config/reeve/config.json`.
 pub fn config_path() -> Option<PathBuf> {
@@ -40,21 +45,25 @@ pub fn threshold(env: Option<&str>, config: Option<&str>) -> u64 {
 /// Claude Code's `usage` lines, or the `token_count` events in a Codex rollout, whose input
 /// tokens already include the cached ones.
 pub fn tokens(tail: &str, back: usize) -> Option<u64> {
-    tail.lines()
-        .rev()
-        .filter(|l| l.contains("\"usage\"") || l.contains("\"token_count\""))
-        .filter_map(|l| {
-            let v: Value = serde_json::from_str(l).ok()?;
-            if let Some(last) = codex_info(&v).map(|i| &i["last_token_usage"]) {
-                return last["input_tokens"].as_u64();
-            }
-            let u = v["message"]["usage"].as_object()?.clone();
-            let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
-            Some(
-                n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"),
-            )
-        })
-        .nth(back)
+    tail.lines().rev().filter_map(line_tokens).nth(back)
+}
+
+fn line_tokens(l: &str) -> Option<u64> {
+    if !(l.contains("\"usage\"") || l.contains("\"token_count\"")) {
+        return None;
+    }
+    let v: Value = serde_json::from_str(l).ok()?;
+    if let Some(last) = codex_info(&v).map(|i| &i["last_token_usage"]) {
+        return last["input_tokens"].as_u64();
+    }
+    let u = v["message"]["usage"].as_object()?.clone();
+    let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+    Some(n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"))
+}
+
+/// Context the session's first turn read, from the head of its transcript.
+pub fn start_tokens(head: &str) -> Option<u64> {
+    head.lines().find_map(line_tokens)
 }
 
 fn codex_info(v: &Value) -> Option<&Value> {
@@ -87,7 +96,8 @@ pub fn text(used: u64, limit: u64) -> String {
         "Context check: this session has used {} tokens, past the {} handoff threshold. Finish \
          the step in hand, write your handoff notes (goal, what's done, what's next, open \
          questions) to a file, run `reeve handoff --name NAME --notes FILE` with a new name for \
-         your successor, and stop once it returns. Don't take on new work.",
+         your successor, and stop once it succeeds. If it fails, carry on with your work and tell \
+         the user the handoff failed. Don't take on new work.",
         k(used),
         k(limit)
     )
@@ -96,11 +106,18 @@ pub fn text(used: u64, limit: u64) -> String {
 /// The notice for a hook payload, given the transcript's tail. A threshold above the share of
 /// the window that the transcript names is lowered to it.
 pub fn notice(payload: &Value, tail: &str, limit: u64) -> Option<String> {
+    notice_from(payload, tail, start_tokens(tail), limit)
+}
+
+/// `notice`, with the context the session started with (its first turn). The threshold is at
+/// least `MIN_GROWTH` above that.
+pub fn notice_from(payload: &Value, tail: &str, start: Option<u64>, limit: u64) -> Option<String> {
     let event = payload["hook_event_name"].as_str()?;
     if event != "UserPromptSubmit" && event != "PostToolUse" {
         return None;
     }
     let limit = window(tail).map_or(limit, |w| limit.min(w * WINDOW_PERCENT / 100));
+    let limit = limit.max(start.map_or(0, |s| s + MIN_GROWTH));
     let used = tokens(tail, 0).filter(|u| *u >= limit)?;
     if event == "PostToolUse" && tokens(tail, 1).unwrap_or(0) >= limit {
         return None;
@@ -110,6 +127,12 @@ pub fn notice(payload: &Value, tail: &str, limit: u64) -> Option<String> {
 
 pub fn output(event: &str, notice: &str) -> Value {
     json!({ "hookSpecificOutput": { "hookEventName": event, "additionalContext": notice } })
+}
+
+fn head_of(path: &Path) -> io::Result<String> {
+    let mut buf = vec![];
+    File::open(path)?.take(HEAD).read_to_end(&mut buf)?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn tail_of(path: &Path) -> io::Result<String> {
@@ -139,12 +162,15 @@ fn hook_with(stdin: impl Read, messages: impl FnOnce(&Value) -> Option<String>) 
         return None;
     }
     let check = || {
-        let tail = tail_of(Path::new(payload["transcript_path"].as_str()?)).ok()?;
+        let path = Path::new(payload["transcript_path"].as_str()?);
+        let tail = tail_of(path).ok()?;
+        let start = head_of(path).ok().and_then(|h| start_tokens(&h));
         let env = std::env::var(ENV).ok();
         let config = config_path().and_then(|p| fs::read_to_string(p).ok());
-        notice(
+        notice_from(
             &payload,
             &tail,
+            start,
             threshold(env.as_deref(), config.as_deref()),
         )
     };
@@ -298,9 +324,41 @@ mod tests {
     fn a_tool_call_is_told_only_when_it_crossed_the_threshold() {
         let p = payload("PostToolUse");
         assert!(notice(&p, &transcript(&[300_000, 360_000]), 350_000).is_some());
-        assert!(notice(&p, &transcript(&[360_000]), 350_000).is_some());
-        assert_eq!(notice(&p, &transcript(&[360_000, 370_000]), 350_000), None);
+        assert!(notice(&p, &transcript(&[100_000, 360_000]), 350_000).is_some());
+        assert_eq!(
+            notice(&p, &transcript(&[100_000, 360_000, 370_000]), 350_000),
+            None
+        );
         assert_eq!(notice(&p, &transcript(&[300_000, 340_000]), 350_000), None);
+    }
+
+    #[test]
+    fn a_budget_below_the_start_context_does_not_tell_a_fresh_session() {
+        let p = payload("UserPromptSubmit");
+        // A successor starts at 36K against a 30K budget: it is not told at once, nor before it
+        // has grown by MIN_GROWTH.
+        assert_eq!(notice(&p, &transcript(&[36_000]), 30_000), None);
+        assert_eq!(notice(&p, &transcript(&[36_000, 40_000]), 30_000), None);
+        let grown = 36_000 + MIN_GROWTH;
+        assert_eq!(notice(&p, &transcript(&[36_000, grown - 1]), 30_000), None);
+        let n = notice(&p, &transcript(&[36_000, grown]), 30_000).unwrap();
+        assert!(
+            n.contains(&format!("past the {} handoff threshold", k(grown))),
+            "{n}"
+        );
+        // A budget above start + MIN_GROWTH stays what it was.
+        assert!(notice(&p, &transcript(&[10_000, 30_000]), 30_000).is_some());
+        assert_eq!(notice(&p, &transcript(&[10_000, 29_999]), 30_000), None);
+        // The start comes from the head of the transcript, not the tail that is read.
+        assert_eq!(start_tokens(&transcript(&[36_000, 50_000])), Some(36_000));
+        assert_eq!(start_tokens(""), None);
+    }
+
+    #[test]
+    fn the_notice_says_to_carry_on_if_the_handoff_fails() {
+        let n = text(412_345, 350_000);
+        assert!(n.contains("fails"), "{n}");
+        assert!(n.contains("tell the user"), "{n}");
     }
 
     #[test]
