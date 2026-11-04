@@ -47,6 +47,9 @@ pub struct Arm {
     pub reeve: Option<String>,
     /// Added to every session's environment: reeve's knobs, such as `REEVE_HEAVY_SLOTS`.
     pub env: Map<String, Value>,
+    /// Plain Claude Code instead of reeve: one session, asked to give each worker's jobs to a
+    /// subagent of its own and run them at once, with no reeve on its PATH.
+    pub vanilla: bool,
     pub note: Option<String>,
 }
 
@@ -64,6 +67,7 @@ impl Default for Arm {
             budget_mb: 1500,
             reeve: None,
             env: Map::new(),
+            vanilla: false,
             note: None,
         }
     }
@@ -194,6 +198,10 @@ impl Proc {
         self.name() == "node" && self.args.contains("job.mjs")
     }
 
+    fn is_shell(&self) -> bool {
+        matches!(self.name(), "bash" | "zsh" | "sh" | "-zsh" | "-bash")
+    }
+
     fn is_heavy_caller(&self) -> bool {
         self.name() == "reeve" && self.args.split_whitespace().nth(1) == Some("heavy")
     }
@@ -288,19 +296,25 @@ pub fn reap_target(all: &[Proc], run: &[Proc]) -> Vec<u32> {
         }
         false
     };
+    let shell_of = |p: &Proc| {
+        all.iter()
+            .find(|q| q.pid == p.ppid && q.is_shell())
+            .map(|q| q.pid)
+    };
+    // Without a heavy caller, a job a session's own shell runs, as plain Claude Code runs it.
     let Some(caller) = run
         .iter()
         .filter(|p| p.is_heavy_caller() && in_session(p))
         .max_by_key(|p| p.pid)
+        .or_else(|| {
+            run.iter()
+                .filter(|p| p.is_job() && shell_of(p).is_some() && in_session(p))
+                .max_by_key(|p| p.pid)
+        })
     else {
         return vec![];
     };
-    let shell = all
-        .iter()
-        .find(|p| {
-            p.pid == caller.ppid && matches!(p.name(), "bash" | "zsh" | "sh" | "-zsh" | "-bash")
-        })
-        .map_or(caller.pid, |p| p.pid);
+    let shell = shell_of(caller).unwrap_or(caller.pid);
     let mut tree = vec![shell];
     let mut i = 0;
     while i < tree.len() {
@@ -414,6 +428,27 @@ pub fn prompt(ids: &[String]) -> String {
     )
 }
 
+/// What the vanilla arm's one session is asked: the same jobs per worker, each worker's given to
+/// a subagent of its own, all at once.
+pub fn vanilla_prompt(workers: &[Vec<String>]) -> String {
+    let tracks: Vec<String> = workers
+        .iter()
+        .enumerate()
+        .map(|(i, ids)| {
+            let cmds: Vec<String> = ids
+                .iter()
+                .map(|id| format!("- `node scripts/job.mjs --id {id}`"))
+                .collect();
+            format!("Worker {}:\n{}", i + 1, cmds.join("\n"))
+        })
+        .collect();
+    format!(
+        "Run these heavy jobs with {n} subagents, one per worker below, started together in one message so the workers run at once. Each subagent runs its worker's jobs one after another and waits for each to finish before the next. Don't rerun a job that fails.\n\n{}\n\nWhen all have run, say for each job whether it finished or failed, with its exit code, and stop.",
+        tracks.join("\n\n"),
+        n = workers.len(),
+    )
+}
+
 /// One run of an arm, named rp-<ARM>-<N>.
 pub fn run(o: &Opts) -> io::Result<i32> {
     let leaks = crate::bench_block::ancestor_instructions(&o.trials);
@@ -514,7 +549,15 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     if !reeve.is_file() {
         return Err(io::Error::other(format!("no reeve at {}", reeve.display())));
     }
-    path.extend(reeve.parent().map(PathBuf::from));
+    if arm.vanilla {
+        // Plain Claude Code on a machine without reeve: the run's bin/ comes first on PATH.
+        write_exe(
+            &bin.join("reeve"),
+            "#!/bin/sh\necho \"reeve: command not found\" >&2\nexit 127\n",
+        )?;
+    } else {
+        path.extend(reeve.parent().map(PathBuf::from));
+    }
     path.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
@@ -585,15 +628,34 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         json!({ "arm": o.arm, "run": run, "params": arm_json(&arm) }),
     );
 
-    let mut ids = vec![];
+    let per_worker: Vec<Vec<String>> = (1..=arm.workers)
+        .map(|w| (1..=arm.jobs).map(|j| format!("w{w}-{j}")).collect())
+        .collect();
+    let ids: Vec<String> = per_worker.concat();
     let mut run_failures = 0;
-    for w in 1..=arm.workers {
-        let mine: Vec<String> = (1..=arm.jobs).map(|j| format!("w{w}-{j}")).collect();
-        let name = format!("{run}-w{w}");
+    let mut front = None;
+    if arm.vanilla {
+        let out = fs::File::create(logs.join("vanilla.json"))?;
+        let err = fs::File::create(logs.join("vanilla.stderr"))?;
+        front = Some(
+            Command::new(bin.join("claude"))
+                .args(["-n", &run, "-p", &vanilla_prompt(&per_worker)])
+                .env_clear()
+                .envs(env.iter().map(|(k, v)| (k, v)))
+                .current_dir(&dir)
+                .stdin(Stdio::null())
+                .stdout(out)
+                .stderr(err)
+                .spawn()?,
+        );
+        log("vanilla", json!({ "workers": arm.workers }));
+    }
+    for (w, mine) in per_worker.iter().enumerate().filter(|_| !arm.vanilla) {
+        let name = format!("{run}-w{}", w + 1);
         let out = Command::new("reeve")
             .args(["run", "--name", &name, "--cwd"])
             .arg(&dir)
-            .args(["--", &prompt(&mine)])
+            .args(["--", &prompt(mine)])
             .env_clear()
             .envs(env.iter().map(|(k, v)| (k, v)))
             .current_dir(&dir)
@@ -605,7 +667,6 @@ pub fn run(o: &Opts) -> io::Result<i32> {
             "worker",
             json!({ "name": name, "ok": ok, "out": String::from_utf8_lossy(&out.stdout).trim(), "err": String::from_utf8_lossy(&out.stderr).trim() }),
         );
-        ids.extend(mine);
     }
 
     let ledger_file = ledger.join("events.jsonl");
@@ -631,6 +692,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     stop.store(true, Ordering::Relaxed);
     let _ = sampling.join();
     stop_bg(&o.claude, &env, &run, &dir);
+    if let Some(mut c) = front {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
 
     let j = jobs(&fs::read_to_string(&ledger_file).unwrap_or_default(), &ids);
     let killed = *kills.lock().unwrap();
@@ -651,6 +716,7 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         "endedAt": ended, "jobs": total, "completed": j.completed, "killed": killed,
         "lost": total - j.completed, "started": j.started,
         "doneAt": if j.completed == total { j.last_done.map(|t| t - t0) } else { None },
+        "lastDoneAt": j.last_done.map(|t| t - t0),
         "peakMemMb": round(p.mem_kb as f64 / 1024.0, 0), "peakAt": peak_t,
         "peakJobsMemMb": round(p.jobs_mem_kb as f64 / 1024.0, 0),
         "sessionsAtPeak": p.sessions, "jobsAtPeak": p.jobs, "procsAtPeak": p.procs,
@@ -709,6 +775,7 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
         "peak mem MB",
         "sessions at peak",
         "min to done",
+        "min to last finish",
         "cost $",
     ];
     let mut rows: Vec<Vec<String>> = vec![header.map(String::from).to_vec()];
@@ -727,6 +794,12 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
             fmt(
                 &rs.iter()
                     .map(|r| r["doneAt"].as_f64().map(|t| t / 60e3))
+                    .collect::<Vec<_>>(),
+                1,
+            ),
+            fmt(
+                &rs.iter()
+                    .map(|r| r["lastDoneAt"].as_f64().map(|t| t / 60e3))
                     .collect::<Vec<_>>(),
                 1,
             ),

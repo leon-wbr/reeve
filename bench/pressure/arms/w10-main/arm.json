@@ -1,0 +1,13 @@
+{
+  "note": "Today's main on w10's load: reeve's setup, ten workers at once, three heavy slots. `reeve` is main's release build, copied to target/main/reeve; main has no worker cap, so it ignores the cap variables.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "reeve": "target/main/reeve",
+  "workers": 10,
+  "jobs": 2,
+  "jobMb": 600,
+  "jobSeconds": 60,
+  "budgetMb": 1500,
+  "env": { "REEVE_HEAVY_SLOTS": "3" }
+}

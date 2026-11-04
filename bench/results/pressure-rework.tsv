@@ -1,0 +1,2 @@
+batch	run	arm	jobs	started	completed	lost	killed	peakMemMb	peakJobsMemMb	sessionsAtPeak	jobsAtPeak	doneAt	lastDoneAt	end	endedAt	costUsd	sessionCount
+P4	rp-w10-b0-1	w10-b0	20	20	6	14	14	6372	6150	1	10		141263	quiet	321906	1.083	1

@@ -19,6 +19,7 @@ The run ends when every job has finished, or when no job has started or finished
 - **Load:** `workers`, `jobs`, `jobMb`, `jobSeconds`, `budgetMb`.
 - **`reeve`:** a reeve binary relative to the repo root, a branch's build for instance. By default it's the one beside `reeve-bench`.
 - **`env`:** added to every session, background ones included, through the run's settings. Use it for reeve's knobs, such as `REEVE_HEAVY_SLOTS`.
+- **`vanilla`:** plain Claude Code instead: one `claude -p` session is asked to run every worker's jobs with a subagent per worker, at once, with no reeve on its PATH (`w10-b0`). With no heavy caller to take, the reaper takes the newest job a session's shell runs. [transcripts.py](transcripts.py) copies a run's transcripts out, redacted, with a tool-call count.
 
 The baseline arm, `reeve`, runs 6 workers × 2 jobs of 600 MB for 60 s each, with 3 heavy slots, on a 1500 MB budget. Two jobs fit and a third at once doesn't.
 

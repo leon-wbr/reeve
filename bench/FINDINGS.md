@@ -475,3 +475,23 @@ Ten workers instead of six, so 20 jobs of 600 MB in a 1500 MB budget, with 3 hea
 - **The limit is a worker count here.** The bench's budget is its own, not the machine's, so the free-memory floor wasn't the limit that bound (`REEVE_MIN_FREE=0.1`); the machine had room throughout. That half of the check is covered by unit tests only.
 - **Cost:** 8 scored runs, $14.6 bench-reported. Weekly usage went from 39% to 42% over the period, shared with other benches; by the $7 per 1% of the November round, this batch is about 2 points.
 - **Binary:** every run used a build from this branch before the rebase onto #52, so `reeve heavy` here does not wait for free memory.
+
+### Batch P4: vanilla, main and the reworked cap, w10's load. Incomplete ([results/pressure-rework.tsv](results/pressure-rework.tsv))
+
+Three arms on w10's load (10 workers × 2 jobs of 600 MB for 60 s, 1500 MB budget): `w10-b0` is plain Claude Code (one session, ten parallel subagents, jobs straight from Bash, no reeve); `w10-main` is main's build; `w10-rework` holds heavy to two slots and the cap to three workers, so one worker always waits ready. A new measure, minutes to last finish, is when the last job finished, completed or not; the old "9.5 vs 15.1 min" read `endedAt`, which includes the three quiet minutes a run that loses a job waits out.
+
+The batch was stopped for usage at 95% weekly, so only vanilla has a run:
+
+| Arm | n | Completed | Reaper kills | Peak MB | Sessions at peak | Min to last finish | Cost $ |
+|---|---|---|---|---|---|---|---|
+| w10-b0 (vanilla) | 1 | 6 of 20 | 14 | 6372 | 1 | 2.4 | 1.08 |
+| w10-main | 0 | | | | | | |
+| w10-rework | 0 | | | | | | |
+| *P3 main, 76310e9* | *1* | *18* | *20* | *4431* | *11* | *≤ 6.5* | *3.00* |
+| *P3 cap 2 (#57 as it was)* | *1* | *19* | *0* | *1834* | *3* | *≤ 12.1* | *1.64* |
+
+- **Vanilla starts all 20 jobs at once** (6.2 GB of jobs) and the reaper takes 14. It is done in 2.4 minutes with 6 jobs, in one process: subagents share their session.
+- **A floor on time:** two 600 MB jobs fit the budget and three don't, so a run with no reaper kills needs 20 × 60 s / 2 = 10 minutes of jobs. Main is faster only by running three at once, over the budget; its jobs survive because #52 runs them outside the killed caller. No arm that keeps #57's zero kills can beat vanilla's or main's time to last finish on this load. What it can beat is time to all 20 done, which neither reaches.
+- **The P3 rows** are #57's own n=1 runs, read from [results/pressure-cap-main-n1.tsv](results/pressure-cap-main-n1.tsv); their last finish is `endedAt` less the three quiet minutes, an upper bound.
+- **A rework run set aside:** `rp-w10-rework-1` started no worker. The new trials dir (`/Users/Shared/reeve-p57`, outside home because `~/.claude/CLAUDE.md` sits above home) wasn't trusted, and `claude --bg` refuses an untrusted workspace. `claude -p` doesn't ask, so vanilla ran.
+- **To resume:** trust the trials dir once (`claude` in `/Users/Shared/reeve-p57`, accept), then `ARMS="w10-rework w10-main" RUNS=1 run.sh`, then all three arms for `RUNS="2 3"`. Each run goes through `reeve heavy --slots 1 --lock reeve-bench --timeout 45m -- reeve-bench pressure ARM N` with `REEVE_BENCH_DIR=/Users/Shared/reeve-p57`.
