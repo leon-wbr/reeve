@@ -1,3 +1,4 @@
+mod autoclose;
 mod background;
 mod build_info;
 pub mod context;
@@ -79,6 +80,11 @@ enum Top {
         /// removed when the agent exits; with NAME it is started if needed and kept running
         #[arg(long, value_name = "NAME", num_args = 0..=1)]
         sandbox: Option<Option<String>>,
+        /// Leave the named worker's tab open when it is done, so you can look at it. By default
+        /// reeve closes a done worker after a grace period (REEVE_CLOSE_GRACE, 120 s;
+        /// REEVE_AUTO_CLOSE=0 turns it off for everyone)
+        #[arg(long, requires = "name")]
+        keep_open: bool,
         /// Start the agent in DIR, usually the project's root, so it loads that project's
         /// CLAUDE.md, .claude/ settings, skills and hooks from the start [default: here]
         #[arg(long, value_name = "DIR")]
@@ -237,6 +243,10 @@ enum Top {
     /// the predecessor; the prompt hook runs this in the background
     #[command(hide = true)]
     Tidy { next: String },
+    /// Close the worker NAME once it is done, as `reeve close` would; `reeve run` starts this in
+    /// the background, so a finished worker is closed with nobody watching
+    #[command(hide = true)]
+    Autoclose { name: String },
 }
 
 #[derive(Subcommand)]
@@ -529,6 +539,24 @@ fn tidy_predecessors(r: &workers::Registry) {
     }
 }
 
+/// Closes the workers that are done and past their grace period, and returns a line for each.
+/// Run it after `ls` has probed every worker, so it probes none again.
+fn sweep_done(r: &workers::Registry) -> Vec<String> {
+    let Ok(all) = r.all() else { return vec![] };
+    let mut closed: Vec<_> = autoclose::sweep(r, &all)
+        .into_iter()
+        .filter_map(|(name, o)| match o {
+            autoclose::Outcome::Closed(wt) => Some(format!(
+                "reeve: closed {name}, which is done{}",
+                autoclose::worktree_note(&wt)
+            )),
+            _ => None,
+        })
+        .collect();
+    closed.sort();
+    closed
+}
+
 pub fn main() -> ExitCode {
     let matches = Cli::command().try_get_matches().unwrap_or_else(|e| {
         log_usage_error(&e);
@@ -586,6 +614,7 @@ pub fn main() -> ExitCode {
             pane,
             agent,
             worktree,
+            keep_open,
             args,
             ..
         } => {
@@ -607,6 +636,11 @@ pub fn main() -> ExitCode {
             let started = moved.and_then(|_| workers()).and_then(|r| {
                 let parent = push::parent(&r, &workers::Caller::from_env());
                 workers::run(&r, &name, agent, backend, &args, parent)?;
+                if keep_open {
+                    std::fs::write(autoclose::keep_open_path(&r, &name), "")?;
+                } else if autoclose::enabled() {
+                    let _ = autoclose::spawn_follow(&name);
+                }
                 r.get(&name)
             });
             if let Ok(w) = &started {
@@ -659,10 +693,16 @@ pub fn main() -> ExitCode {
                         .then(|| waiting::collect(&r).ok())
                         .flatten()
                         .map(|seen| waiting::waiting_section(&seen));
-                    Ok((workers::ls_brief(&r)?, waiting, hint))
+                    let out = workers::ls_brief(&r)?;
+                    let closed = match sweep_done(&r).len() {
+                        0 => None,
+                        1 => Some("reeve: closed 1 done worker.".to_string()),
+                        n => Some(format!("reeve: closed {n} done workers.")),
+                    };
+                    Ok((out, closed, waiting, hint))
                 })
-                .map(|(out, waiting, hint)| {
-                    for l in [Some(out), waiting, hint].into_iter().flatten() {
+                .map(|(out, closed, waiting, hint)| {
+                    for l in [Some(out), closed, waiting, hint].into_iter().flatten() {
                         if !l.is_empty() {
                             println!("{l}");
                         }
@@ -711,9 +751,10 @@ pub fn main() -> ExitCode {
                 let unread = msg::Store::open()
                     .map(|s| inbox::unread_counts(&s, msg::now_secs()))
                     .unwrap_or_default();
-                workers::ls(&r, &remote::ls_rows(), &unread, all)
+                let out = workers::ls(&r, &remote::ls_rows(), &unread, all)?;
+                Ok([out].into_iter().chain(sweep_done(&r)).collect::<Vec<_>>())
             })
-            .map(|out| println!("{out}"))
+            .map(|out| println!("{}", out.join("\n")))
             .map(|_| 0),
         Top::Wait { name, timeout } => {
             ev.worker = Some(name.clone());
@@ -743,6 +784,12 @@ pub fn main() -> ExitCode {
         Top::Tidy { next } => {
             ev.worker = Some(next.clone());
             workers().map(|r| handoff::follow(&r, &next)).map(|_| 0)
+        }
+        Top::Autoclose { name } => {
+            ev.worker = Some(name.clone());
+            workers()
+                .map(|r| autoclose::follow(&r, &name))
+                .map(|_| 0)
         }
         Top::Hook(Hook::Context | Hook::Background) => {
             unreachable!("answered before the event log")

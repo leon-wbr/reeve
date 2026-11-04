@@ -83,6 +83,8 @@ fn reeve_with(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> O
         .env("REEVE_EVENTS", dir.join("events.jsonl"))
         .env("CLAUDE_CONFIG_DIR", dir.join("claude-config"))
         .env("CODEX_HOME", dir.join("codex-home"))
+        // No detached `reeve autoclose` outlives a test; a test turns it on with its own env.
+        .env("REEVE_AUTO_CLOSE", "0")
         .env_remove("HERDR_ENV")
         .env_remove("HERDR_PANE_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -342,7 +344,7 @@ fn a_started_worker_says_how_to_follow_it_in_two_lines() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(err.lines().count(), 2, "{err}");
     assert!(err.contains("follow it with `reeve watch w`"), "{err}");
-    assert!(err.contains("`reeve close w`"), "{err}");
+    assert!(err.contains("its tab closes by itself"), "{err}");
 }
 
 /// Writes a registry of pane workers, each with handle `p-NAME`.
