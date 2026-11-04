@@ -1,0 +1,11 @@
+{
+  "kind": "vanilla",
+  "note": "Vanilla Claude Code, none of the owner's user setup, auto mode; background subagents with worktree isolation, Haiku subagents.",
+  "setup": "arms/b0-iso",
+  "model": "sonnet",
+  "workerModel": "haiku",
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "haiku"
+  },
+  "tag": "v"
+}

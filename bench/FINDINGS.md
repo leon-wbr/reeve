@@ -451,3 +451,20 @@ Sonnet, `--setting-sources project,local`, auto mode, budget 60K, the fixed driv
 | 02:48 | 42% | after D2 |
 
 The bench reported about $9.10: $2.46 for the set-aside pressure run, $3.25 for P1, $3.33 for D2 and $0.07 for the start-context probe. Other workers shared the plan and ran their own bench runs under the same lock that evening, so the 5 points aren't this round's alone.
+
+## Close scenario
+
+[close/](close/README.md) asks whether closing finished workers loses work: a coordinator hands eight tasks to workers that finish with uncommitted, unpushed, git-ignored and still-running work, a late message and a report to deliver. Sonnet coordinator, Haiku workers, `--setting-sources project,local`, auto mode. Per-run rows: [results/close-partial.tsv](results/close-partial.tsv).
+
+### Batch X1, 4 Nov: incomplete, n=1 per arm, stopped for usage
+
+| Arm | Valid runs | Lost work | Not done | Closes by coordinator | Tabs open 10 min after done | Coordinator tokens K | Total $ |
+|---|---|---|---|---|---|---|---|
+| vanilla | 1 | 1 | 0 | 0 | 0 | 440 | 0.56 |
+| reeve main | 1 | 0 | 1 | 0 | 8 | 287 | 0.59 |
+| reeve #61 | 0 (pilot only) | – | – | 1 | 2 | 651 | – |
+
+- **Vanilla loses git-ignored files.** Claude Code removed the scratch worker's Agent worktree as unchanged, and `.claude/notes/scratch.md` went with it. reeve's close keeps such files.
+- **Auto mode denies `reeve send`.** `reeve setup claude` doesn't allow it, so main's coordinator couldn't relay the late message, stopped, never claimed and closed nothing: all 8 workers were still open at the end.
+- **The #61 pilot isn't scored.** The driver then looked only in the run's repo, but `reeve run --worktree` puts worktrees in the trials repo's `.claude/worktrees`. Fixed before the next run. Auto-close closed 6 of 8 workers without the coordinator; the clean, pushed worktrees went and the rest stayed. Two sessions (w-clean-3, w-job) were still open at the end.
+- **Not run:** #61 n=3, and vanilla and main runs 2–3.
