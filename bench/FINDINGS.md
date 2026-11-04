@@ -16,7 +16,7 @@ A candidate wins if it beats B1 and B0 on its target metric without being worse 
 - `reeve-bench run <arm> <n>` makes the scenario repo a worktree of a trusted base repo. It starts the arm's session with `claude -p --input-format stream-json` and sends the asks as the first user turn.
 - A simulated user (`claude -p --safe-mode`, Sonnet) knows only `scenario/key.md` and replies to what the session said. Cross-session messages from workers wake the session.
 - **Interventions** are user messages after the first; a queued answer (C3) also counts. **Done** is a hidden check on the main branch ([check.rs](../crates/reeve-bench/src/bench/check.rs), [hidden.mjs](scenario/hidden.mjs)). **False done** means it claimed done but the check fails. **Unchecked landings** counts commits that reached main without a CI pass. **Cost** is token usage at Sonnet list prices, summed over all transcripts including subagents and workers.
-- Bench sessions run with the owner's user settings in auto mode, plus project settings that turn plugins and `~/work/.mcp.json` servers off. HERDR/ORCH variables are stripped.
+- Bench sessions run with the owner's user settings in auto mode, plus project settings that turn plugins and the owner's shared `.mcp.json` servers off. HERDR/ORCH variables are stripped.
 
 ### Scenario versions
 
@@ -191,7 +191,7 @@ To run the full grid: `reeve-bench block --n 3 --jobs 4`, then `reeve-bench bloc
 
 ### Verdict: A1 (slim block) over A6 (skill stub only), with one open risk
 
-**Decision (Leon): the A1 block ships.** The block stays as `reeve setup claude --claude-md` writes it, PR 3 (drop the block for the skill stub, A6) is not built, and main's `setup::block()` is the A1 text the bench measured. The open risk below was closed on 1 Nov (see [November round](#november-round-1-nov)).
+**Decision (the owner): the A1 block ships.** The block stays as `reeve setup claude --claude-md` writes it, PR 3 (drop the block for the skill stub, A6) is not built, and main's `setup::block()` is the A1 text the bench measured. The open risk below was closed on 1 Nov (see [November round](#november-round-1-nov)).
 
 - **Outcomes tie on Sonnet,** the model with n=3 (orchestrators identical, workers identical).
 - **A1 is cheaper and quicker:** 1.4 fewer turns on Sonnet orchestrators and 2.4 on workers, and 23–47% less cost on Opus. A6 spends the extra turns on reading the skill.
@@ -302,7 +302,7 @@ Readings of `usage --plan` (whole percents of the weekly limit, reset 2026-11-05
   - `reeve-prompt-pipeline`;
   - `tr-3479-onto-main`;
   - `weekend-session-3`;
-  - the owner's own work on a Trustroots PR during N3.
+  - the owner's own work on another project during N3.
 
   `reeve ls` and `herdr agent list` showed no others. The outage (18:50–19:20 Tbilisi) cost a pair and about 20 minutes.
 - **What it buys:** at about $7 per point, the plan's backlog calibration (about $10) is about 1.5% of a week, and a 30-minute parallel arm at n=2 ($20–60) is 3–9%.
@@ -454,7 +454,11 @@ The bench reported about $9.10: $2.46 for the set-aside pressure run, $3.25 for 
 
 ## Usage lookup
 
-How much a coordinator spends finding out how much of its plan is left, and whether it gets it right. [usage/run.py](usage/run.py) reads the truth from the CLIs' own displays before each trial (Claude Code's `/usage`, Codex's `/status`, driven in tmux), then asks a fresh `claude -p --safe-mode` session (Sonnet, auto mode) for the 5-hour and weekly percent used of Claude Code and Codex, as JSON. **vanilla** has no reeve, and nothing from `~/.local/bin`, on PATH. **reeve** has the branch's build on PATH and `reeve --skill` appended to the prompt. **claude-usage** (from U2) is the best existing setup: the `claude-usage` script, which prints the snapshot this machine's statusline writes, alone on PATH with its usage line appended. It covers Claude only. An answer is right within 2 points of the display, or as null where the plan shows no such window (this Claude plan shows no 5-hour window). The arms take turns going first. From U2 each session runs in an empty directory, and its stream-json transcript is kept after [redact.py](redact.py) has taken out the home directory, names, emails and tokens; [calls.py](calls.py) lists a transcript's tool calls.
+How much a coordinator spends finding out how much of its plan is left, and whether it gets it right. [usage/run.py](usage/run.py) reads the truth from the CLIs' own displays before each trial (Claude Code's `/usage`, Codex's `/status`, driven in tmux), then asks a fresh `claude -p --safe-mode` session (Sonnet, auto mode) for the 5-hour and weekly percent used of Claude Code and Codex, as JSON. **vanilla** has no reeve, and nothing from `~/.local/bin`, on PATH. **reeve** has the branch's build on PATH and `reeve --skill` appended to the prompt. **claude-usage** (from U2) is the best existing setup: the `claude-usage` script, which prints the snapshot this machine's statusline writes, alone on PATH with its usage line appended. It covers Claude only. An answer is right within 2 points of the display, or as null where the plan shows no such window (this Claude plan shows no 5-hour window). The arms take turns going first. From U2 each session runs in an empty directory, and its stream-json transcript is kept outside the repo, under `$XDG_STATE_HOME/reeve/bench/transcripts/usage` (`~/.local/state` when unset), after [redact.py](redact.py) has taken out the home directory, names, emails and tokens; [calls.py](calls.py) lists a transcript's tool calls.
+
+**Raw transcripts never go in git, redacted or not.** A vanilla session explores the real `~/.claude` and `~/.codex`, and a deny-list redactor can't know which file names or contents are private. Only the scored TSVs and this write-up are committed. `.gitignore` covers `bench/results/transcripts/` and `bench/results/raw/`, and [scripts/check-public.sh](../scripts/check-public.sh) fails on tracked transcripts, directory listings and personal paths.
+
+**Follow-up (not built):** run the vanilla arm with a sandboxed `HOME` that holds only the fixtures the task needs (a recorded statusline snapshot, a fake Codex session), so it can't list the real `~/.claude` and doesn't benefit from this machine's statusline snapshot.
 
 ### Batch U1: vanilla against reeve usage, n=3 ([results/usage-n3.tsv](results/usage-n3.tsv), 4 Nov)
 

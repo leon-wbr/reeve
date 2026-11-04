@@ -2143,10 +2143,7 @@ mod tests {
 
     #[test]
     fn a_projects_workspace_is_labelled_by_its_dirs_name() {
-        assert_eq!(
-            workspace_label(Path::new("/w/junction-dream")),
-            "junction-dream"
-        );
+        assert_eq!(workspace_label(Path::new("/w/acme-web")), "acme-web");
         assert_eq!(workspace_label(Path::new("/")), "/");
     }
 

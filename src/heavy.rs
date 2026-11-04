@@ -1422,7 +1422,7 @@ mod tests {
 
     #[test]
     fn keys_become_safe_distinct_file_names() {
-        assert_eq!(encode_key("trustroots-e2e_db.1"), "trustroots-e2e_db.1");
+        assert_eq!(encode_key("app-e2e_db.1"), "app-e2e_db.1");
         assert_eq!(encode_key("a/b"), "a%2Fb");
         assert_ne!(encode_key("a/b"), encode_key("a%2Fb"));
     }

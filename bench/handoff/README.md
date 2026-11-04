@@ -5,7 +5,7 @@ Reproduces the 23 Oct observation in [../OBSERVATIONS.md](../OBSERVATIONS.md): l
 A session gets [asks.md](asks.md): four tasks that take 20 minutes to 3 hours ([tasks.json](tasks.json)). Once all four have started, the driver sends the message the context hook sends at 35%. The old session hands off by its arm's rules, and the successor has to bring all four results home in `FINAL.md`.
 
 ```sh
-reeve-bench handoff <arm> <n> [--real]   # one run, rh-<arm>-<n>; logs in ~/work/reeve-trials/logs
+reeve-bench handoff <arm> <n> [--real]   # one run, rh-<arm>-<n>; logs in $REEVE_BENCH_DIR/logs
 reeve-bench handoff-score [arms]         # median [min–max] per arm
 ```
 

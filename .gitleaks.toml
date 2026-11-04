@@ -1,0 +1,13 @@
+# gitleaks with its default rules, plus the fake tokens bench/test_redact.py used before it built
+# them from parts (they stay in history). Run by scripts/ci-local.sh and CI.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "fake fixtures in the redaction test"
+condition = "AND"
+paths = ['''^bench/test_redact\.py$''']
+regexes = [
+    '''^AKIAABCDEFGHIJKLMNOP$''',
+    '''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTYifQ\.c2lnbmF0dXJlLXZhbHVl$''',
+]

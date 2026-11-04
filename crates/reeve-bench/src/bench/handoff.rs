@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-/// The message Leon's context hook sends at the threshold.
+/// The message the owner's context hook sends at the threshold.
 pub const HOOK: &str = "Context check: this session has used 350K tokens, past the 350K handoff \
     threshold. Finish the step in hand, write your handoff (your role file says where), reply with \
     its path and stop. Do not take on new work.";

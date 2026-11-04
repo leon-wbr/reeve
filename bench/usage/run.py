@@ -10,7 +10,9 @@ driven in tmux), then asks a fresh `claude -p` session in each arm the same ques
 - reeve: the same, with reeve on PATH and its manual (`reeve --skill`) appended to the prompt.
 
 It prints one TSV row per run and writes each session's stream-json transcript, redacted by
-../redact.py before it touches the disk, to TRANSCRIPTS/<arm>-<trial>.jsonl.
+../redact.py before it touches the disk, to TRANSCRIPTS/<arm>-<trial>.jsonl. TRANSCRIPTS defaults
+to $XDG_STATE_HOME/reeve/bench/transcripts/usage (~/.local/state when unset), outside the repo:
+raw transcripts never go in git.
 Usage: run.py REEVE_BIN TRIALS [MODEL] [TRANSCRIPTS] > results.tsv
 """
 
@@ -150,11 +152,17 @@ def run_arm(arm, reeve_bin, usage_bin, model, cwd, bindir):
     }
 
 
+def default_transcripts(env=os.environ):
+    """Where transcripts go by default: reeve's state dir, never the repo."""
+    state = env.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(state, "reeve", "bench", "transcripts", "usage")
+
+
 def main():
     reeve_bin, trials = os.path.abspath(sys.argv[1]), int(sys.argv[2])
     model = sys.argv[3] if len(sys.argv) > 3 else "sonnet"
     here = os.path.dirname(os.path.abspath(__file__))
-    transcripts = sys.argv[4] if len(sys.argv) > 4 else os.path.join(here, "..", "results", "transcripts", "usage")
+    transcripts = sys.argv[4] if len(sys.argv) > 4 else default_transcripts()
     os.makedirs(transcripts, exist_ok=True)
     usage_bin = os.environ.get("CLAUDE_USAGE_BIN", os.path.expanduser("~/.local/bin/claude-usage"))
     bindir = tempfile.mkdtemp(prefix="bench-claude-usage-")

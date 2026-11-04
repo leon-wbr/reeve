@@ -16,4 +16,5 @@ When working here:
 - Keep the docs short and plain. Say each thing in one place and link to it from elsewhere.
 - Use conventional commits (`docs:`, `feat:`, `fix:`, `chore:`).
 - Propose changes as a PR that follows [CONTRIBUTING.md](CONTRIBUTING.md).
-- Before merging, run the local gate, `reeve heavy -- scripts/ci-local.sh`; CI checks only fmt and clippy.
+- Before merging, run the local gate, `reeve heavy -- scripts/ci-local.sh`; CI checks only fmt and clippy, plus check-public and gitleaks.
+- This repo is public: raw transcripts, personal paths and client or private-project names never go in it ([CONTRIBUTING.md](CONTRIBUTING.md)).

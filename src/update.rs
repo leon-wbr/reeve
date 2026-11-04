@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn the_build_worktree_follows_the_tip_and_leaves_the_main_tree_alone() {
         let (_root, repo, a, b) = checkout();
-        // Leon's working tree: a feature branch with an edit in progress.
+        // The owner's working tree: a feature branch with an edit in progress.
         g(&repo, &["switch", "-q", "-c", "feature"]);
         std::fs::write(repo.join("wip.txt"), "mine").unwrap();
         let head = g(&repo, &["rev-parse", "HEAD"]);

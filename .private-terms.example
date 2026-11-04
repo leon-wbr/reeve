@@ -1,0 +1,7 @@
+# Copy to .private-terms (gitignored) and list names that must never appear in this public repo:
+# clients, private projects, hostnames, your login. One term per line, matched case-insensitively
+# as a fixed string anywhere in a tracked file. Blank lines and lines starting with # are skipped.
+# scripts/check-public.sh fails on any match.
+#
+# acme-client
+# my-private-repo

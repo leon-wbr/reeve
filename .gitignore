@@ -1,2 +1,7 @@
 /target
 __pycache__/
+# Raw bench transcripts never go in git; bench scripts write them to the state dir.
+/bench/results/transcripts/
+/bench/results/raw/
+# Local names that must never appear in the repo (see .private-terms.example).
+/.private-terms
