@@ -1,5 +1,6 @@
 mod background;
 mod build_info;
+mod cap;
 pub mod context;
 mod doctor;
 pub mod events;
@@ -56,9 +57,14 @@ enum Top {
         /// Refused for a named worker inside Herdr, where it gets its own tab (see --force)
         #[arg(long)]
         bg: bool,
-        /// Skip reeve's safety checks, such as refusing --bg for a named worker inside Herdr
+        /// Skip reeve's safety checks, such as refusing --bg for a named worker inside Herdr,
+        /// and the worker cap
         #[arg(long)]
         force: bool,
+        /// Refuse a named worker when memory is short or too many sessions are live, instead of
+        /// queueing it (see REEVE_MAX_WORKERS and REEVE_MIN_FREE)
+        #[arg(long, requires = "name")]
+        no_wait: bool,
         /// Start a named worker that any session finds with `reeve ls`. It runs in a Herdr pane
         /// in its own tab labelled NAME (not focused) inside Herdr and as a background session
         /// otherwise, and is told to write its report
@@ -586,34 +592,53 @@ pub fn main() -> ExitCode {
             pane,
             agent,
             worktree,
+            force,
+            no_wait,
             args,
             ..
         } => {
             ev.worker = Some(name.clone());
             let backend = workers::Backend::choose(pane, bg, in_herdr());
-            let moved = if worktree {
-                std::env::current_dir()
-                    .and_then(|d| run::worktree(&d, &name))
-                    .and_then(std::env::set_current_dir)
-            } else {
-                Ok(())
+            let opts = cap::Opts {
+                force,
+                no_wait,
+                queued: std::env::var_os("REEVE_QUEUED_RUN").is_some(),
             };
-            if let Some(w) = std::env::current_dir()
-                .ok()
-                .and_then(|d| run::cwd_warning(&d))
-            {
-                eprintln!("reeve: {w}");
+            let argv: Vec<String> = std::env::args().skip(1).collect();
+            // Held until the worker is registered, so runs started together count each other.
+            let gated = workers().and_then(|r| cap::gate(&r, &name, &opts, &argv));
+            let queued = matches!(&gated, Ok((cap::Gate::Queued, _)));
+            if queued {
+                ev.label = Some("queued".into());
+                Ok(0)
+            } else {
+                let moved = if let Err(e) = &gated {
+                    Err(io::Error::other(e.to_string()))
+                } else if worktree {
+                    std::env::current_dir()
+                        .and_then(|d| run::worktree(&d, &name))
+                        .and_then(std::env::set_current_dir)
+                } else {
+                    Ok(())
+                };
+                if let Some(w) = std::env::current_dir()
+                    .ok()
+                    .and_then(|d| run::cwd_warning(&d))
+                {
+                    eprintln!("reeve: {w}");
+                }
+                let started = moved.and_then(|_| workers()).and_then(|r| {
+                    let parent = push::parent(&r, &workers::Caller::from_env());
+                    workers::run(&r, &name, agent, backend, &args, parent)?;
+                    r.get(&name)
+                });
+                if let Ok(w) = &started {
+                    ev.handoff_ms = Some(events::now_ms().saturating_sub(ev.ts));
+                    eprintln!("{}", workers::started(w));
+                }
+                drop(gated);
+                started.map(|_| 0)
             }
-            let started = moved.and_then(|_| workers()).and_then(|r| {
-                let parent = push::parent(&r, &workers::Caller::from_env());
-                workers::run(&r, &name, agent, backend, &args, parent)?;
-                r.get(&name)
-            });
-            if let Ok(w) = &started {
-                ev.handoff_ms = Some(events::now_ms().saturating_sub(ev.ts));
-                eprintln!("{}", workers::started(w));
-            }
-            started.map(|_| 0)
         }
         Top::Run {
             agent: workers::Kind::Codex,
