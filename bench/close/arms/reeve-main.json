@@ -1,0 +1,8 @@
+{
+  "kind": "reeve",
+  "note": "b0-iso plus reeve setup claude --claude-md; reeve workers on Haiku. The binary comes from --bin: main or #61.",
+  "setup": "arms/reeve",
+  "model": "sonnet",
+  "workerModel": "haiku",
+  "tag": "m"
+}

@@ -524,3 +524,20 @@ How much a coordinator spends finding out how much of its plan is left, and whet
 - **Both other arms got Codex's weekly number wrong every time.** With no live source they read `rate_limits` from the newest Codex session log, which was six days old and said 1% where `/status` said 5%. Three of those six runs also gave up on Codex's 5-hour window. claude-usage doesn't cover Codex, so it only saved the search for Claude's snapshot, which vanilla also found, in 5 to 6 commands in all.
 - **U1's vanilla may be contaminated.** Its sessions ran in this checkout. In a smoke run for U2, vanilla found the built `target/release/reeve` there and ran `reeve usage`. From U2 the sessions start in an empty directory.
 - **The Claude number still lags by a point.** `/usage` showed 93% while every arm read 92% from the snapshot, which is within tolerance.
+
+## Close scenario
+
+[close/](close/README.md) asks whether closing finished workers loses work: a coordinator hands eight tasks to workers that finish with uncommitted, unpushed, git-ignored and still-running work, a late message and a report to deliver. Sonnet coordinator, Haiku workers, `--setting-sources project,local`, auto mode. Per-run rows: [results/close-partial.tsv](results/close-partial.tsv).
+
+### Batch X1, 4 Nov: incomplete, n=1 per arm, stopped for usage
+
+| Arm | Valid runs | Lost work | Not done | Closes by coordinator | Tabs open 10 min after done | Coordinator tokens K | Total $ |
+|---|---|---|---|---|---|---|---|
+| vanilla | 1 | 1 | 0 | 0 | 0 | 440 | 0.56 |
+| reeve main | 1 | 0 | 1 | 0 | 8 | 287 | 0.59 |
+| reeve #61 | 0 (pilot only) | – | – | 1 | 2 | 651 | – |
+
+- **Vanilla loses git-ignored files.** Claude Code removed the scratch worker's Agent worktree as unchanged, and `.claude/notes/scratch.md` went with it. reeve's close keeps such files.
+- **Auto mode denies `reeve send`.** `reeve setup claude` doesn't allow it, so main's coordinator couldn't relay the late message, stopped, never claimed and closed nothing: all 8 workers were still open at the end.
+- **The #61 pilot isn't scored.** The driver then looked only in the run's repo, but `reeve run --worktree` puts worktrees in the trials repo's `.claude/worktrees`. Fixed before the next run. Auto-close closed 6 of 8 workers without the coordinator; the clean, pushed worktrees went and the rest stayed. Two sessions (w-clean-3, w-job) were still open at the end.
+- **Not run:** #61 n=3, and vanilla and main runs 2–3.

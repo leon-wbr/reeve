@@ -1,0 +1,4 @@
+batch	run	arm	binary	valid	claimed_min	timeout	lost	not_done	closes_by_coordinator	tabs_open_10m	coordinator_tokens	coordinator_usd	total_usd	note
+X0	rc-reeve-pr61-1-pilot	reeve-pr61	#61 04301c9	no	2.2	False	unknown	unknown	1	2	650792	0.40	0.40+	driver scanned only the run's repo, not the trials repo's .claude/worktrees where reeve puts worker worktrees; auto-close closed 6 of 8 workers; w-clean-3 and w-job stayed open; worker cost not counted
+X1	rc-vanilla-1	vanilla	none	yes	1.0	False	1	0	0	0	440451	0.30	0.56	lost: .claude/notes/scratch.md, git-ignored, removed with its unchanged Agent worktree
+X1	rc-reeve-main-1	reeve-main	main 26ce68a	yes		True	0	1	0	8	287145	0.22	0.59	auto mode denied the coordinator's reeve send (no allow rule); it stopped and never claimed; nothing closed
