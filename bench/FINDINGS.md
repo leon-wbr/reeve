@@ -451,3 +451,31 @@ Sonnet, `--setting-sources project,local`, auto mode, budget 60K, the fixed driv
 | 02:48 | 42% | after D2 |
 
 The bench reported about $9.10: $2.46 for the set-aside pressure run, $3.25 for P1, $3.33 for D2 and $0.07 for the start-context probe. Other workers shared the plan and ran their own bench runs under the same lock that evening, so the 5 points aren't this round's alone.
+
+## Usage lookup
+
+How much a coordinator spends finding out how much of its plan is left, and whether it gets it right. [usage/run.py](usage/run.py) reads the truth from the CLIs' own displays before each trial (Claude Code's `/usage`, Codex's `/status`, driven in tmux), then asks a fresh `claude -p --safe-mode` session (Sonnet, auto mode) for the 5-hour and weekly percent used of Claude Code and Codex, as JSON. **vanilla** has no reeve, and nothing from `~/.local/bin`, on PATH. **reeve** has the branch's build on PATH and `reeve --skill` appended to the prompt. **claude-usage** (from U2) is the best existing setup: the `claude-usage` script, which prints the snapshot this machine's statusline writes, alone on PATH with its usage line appended. It covers Claude only. An answer is right within 2 points of the display, or as null where the plan shows no such window (this Claude plan shows no 5-hour window). The arms take turns going first. From U2 each session runs in an empty directory, and its stream-json transcript is kept after [redact.py](redact.py) has taken out the home directory, names, emails and tokens; [calls.py](calls.py) lists a transcript's tool calls.
+
+### Batch U1: vanilla against reeve usage, n=3 ([results/usage-n3.tsv](results/usage-n3.tsv), 4 Nov)
+
+| Arm | Seconds | Turns | Tokens | Output tokens | Cost $ | Right of 4 |
+|---|---|---|---|---|---|---|
+| vanilla | 45.5 [28.5–56.4] | 6 [4–7] | 114,011 [70,515–119,371] | 887 [549–980] | 0.040 [0.039–0.046] | 4 [3–4] |
+| reeve | 7.5 [7.2–10.1] | 2 [2–2] | 36,554 [36,342–36,603] | 156 [141–185] | 0.007 [0.006–0.032] | 4 [4–4] |
+
+- **reeve answers in one command.** It took 6× less time, 3× fewer turns, 3× fewer tokens and 6× less cost. Most of its 36K tokens are the system prompt with the appended manual. The first reeve run paid for writing that to the cache ($0.032).
+- **Vanilla got there too, slowly.** It missed Claude's weekly number once. The other two times it most likely found the snapshot this machine's statusline writes (`~/.claude/orchestration/usage-now.json`), which a plain install doesn't have. Without it, vanilla Claude Code has no way to read Claude's numbers outside a session, so its two Claude answers can't be counted on.
+- **The Claude number lags by up to a point.** In trial 3 `/usage` showed 91% and both arms answered 90%, because the snapshot is as old as the last statusline refresh. Codex is read live and matched `/status` every time.
+
+### Batch U2: vanilla, claude-usage and reeve usage, n=3 ([results/usage-3arm-n3.tsv](results/usage-3arm-n3.tsv), 4 Nov)
+
+| Arm | Seconds | Turns | Tokens | Output tokens | Cost $ | Right of 4 |
+|---|---|---|---|---|---|---|
+| vanilla | 43.4 [20.7–56.1] | 6 [6–7] | 113,545 [94,736–137,662] | 1,529 [1,298–1,534] | 0.049 [0.046–0.064] | 2 [2–3] |
+| claude-usage | 17.7 [17.1–29.7] | 4 [4–4] | 66,588 [66,581–67,042] | 757 [684–995] | 0.021 [0.021–0.034] | 3 [2–3] |
+| reeve | 10.3 [10.1–11.7] | 2 [2–2] | 34,952 [34,952–35,218] | 109 [109–124] | 0.005 [0.005–0.016] | 4 [4–4] |
+
+- **reeve beats both on every count.** Against claude-usage it took 1.7× less time, half the turns, half the tokens and 4× less cost, and it was the only arm with every number right in every run. Against vanilla the gap is 4× in time, 3× in turns and tokens and 9× in cost.
+- **Both other arms got Codex's weekly number wrong every time.** With no live source they read `rate_limits` from the newest Codex session log, which was six days old and said 1% where `/status` said 5%. Three of those six runs also gave up on Codex's 5-hour window. claude-usage doesn't cover Codex, so it only saved the search for Claude's snapshot, which vanilla also found, in 5 to 6 commands in all.
+- **U1's vanilla may be contaminated.** Its sessions ran in this checkout. In a smoke run for U2, vanilla found the built `target/release/reeve` there and ran `reeve usage`. From U2 the sessions start in an empty directory.
+- **The Claude number still lags by a point.** `/usage` showed 93% while every arm read 92% from the snapshot, which is within tolerance.

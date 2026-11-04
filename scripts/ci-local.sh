@@ -6,4 +6,5 @@ cd "$(dirname "$0")/.."
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+python3 -m unittest discover -s bench -p 'test_*.py'
 echo "ci-local: ok"

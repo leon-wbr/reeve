@@ -1,0 +1,7 @@
+arm	trial	secs	turns	tokens	output_tokens	cost_usd	right_of_4	truth	answer
+vanilla	1	56.4	4	70515	549	0.040246399999999995	3	{"claude":{"five_hour":null,"weekly":90.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":null},"codex":{"five_hour":0.0,"weekly":5.0}}
+reeve	1	10.1	2	36603	185	0.032042799999999996	4	{"claude":{"five_hour":null,"weekly":90.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":90},"codex":{"five_hour":0,"weekly":5}}
+reeve	2	7.5	2	36342	156	0.005958400000000001	4	{"claude":{"five_hour":null,"weekly":90.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":90},"codex":{"five_hour":0,"weekly":5}}
+vanilla	2	28.5	6	114011	887	0.039486799999999996	4	{"claude":{"five_hour":null,"weekly":90.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":90},"codex":{"five_hour":0.0,"weekly":5.0}}
+vanilla	3	45.5	7	119371	980	0.0457288	4	{"claude":{"five_hour":null,"weekly":91.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":90},"codex":{"five_hour":0,"weekly":5}}
+reeve	3	7.2	2	36554	141	0.0067164	4	{"claude":{"five_hour":null,"weekly":91.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":90},"codex":{"five_hour":0,"weekly":5}}

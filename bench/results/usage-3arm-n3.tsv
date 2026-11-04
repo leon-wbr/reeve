@@ -1,0 +1,10 @@
+arm	trial	secs	turns	tokens	output_tokens	cost_usd	right_of_4	truth	answer
+vanilla	1	43.4	7	137662	1534	0.06379080000000001	3	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92},"codex":{"five_hour":0,"weekly":1}}
+claude-usage	1	29.7	4	67042	995	0.033987300000000005	3	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92},"codex":{"five_hour":0,"weekly":1}}
+reeve	1	11.7	2	35218	124	0.0155249	4	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92.0},"codex":{"five_hour":0.0,"weekly":5.0}}
+claude-usage	2	17.7	4	66588	684	0.021027200000000003	2	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92},"codex":{"five_hour":null,"weekly":1}}
+reeve	2	10.1	2	34952	109	0.0051708	4	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92},"codex":{"five_hour":0,"weekly":5}}
+vanilla	2	20.7	6	94736	1298	0.046394099999999994	2	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92},"codex":{"five_hour":null,"weekly":1}}
+reeve	3	10.3	2	34952	109	0.0051708	4	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92},"codex":{"five_hour":0,"weekly":5}}
+vanilla	3	56.1	6	113545	1529	0.048658599999999996	2	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92},"codex":{"five_hour":null,"weekly":1}}
+claude-usage	3	17.1	4	66581	757	0.021437200000000003	3	{"claude":{"five_hour":null,"weekly":93.0},"codex":{"five_hour":0.0,"weekly":5.0}}	{"claude":{"five_hour":null,"weekly":92},"codex":{"five_hour":0,"weekly":1}}

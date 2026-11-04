@@ -17,6 +17,7 @@ pub mod setup;
 mod ssh;
 mod stats;
 mod update;
+pub mod usage;
 mod waiting;
 mod watch;
 pub mod workers;
@@ -184,6 +185,10 @@ enum Top {
     /// days), then what runs and what finished lately. Worked out from reeve's records each
     /// time; nothing is stored
     Waiting,
+    /// How much of the 5-hour and weekly plan limits Claude Code and Codex have used: percent,
+    /// reset time and when each CLI reported it, or `unknown` and why. Codex is asked through
+    /// `codex app-server`; Claude's numbers are what its statusline last got (see `record`)
+    Usage(UsageArgs),
     /// Machines reachable over ssh, each with a plain message box (see docs/remotes.md)
     #[command(subcommand)]
     Remote(RemoteCmd),
@@ -313,6 +318,29 @@ struct InboxArgs {
     /// Include messages already marked done
     #[arg(long)]
     all: bool,
+}
+
+#[derive(clap::Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct UsageArgs {
+    #[command(subcommand)]
+    cmd: Option<UsageCmd>,
+    /// Only this agent
+    #[arg(long, value_enum)]
+    agent: Option<workers::Kind>,
+    #[arg(long)]
+    json: bool,
+    /// Exit 1 when a window that could be read is over PERCENT; unknown ones never are
+    #[arg(long, value_name = "PERCENT")]
+    max: Option<f64>,
+}
+
+#[derive(Subcommand)]
+enum UsageCmd {
+    /// Keep the rate limits from a Claude Code statusline payload on stdin, for `reeve usage`.
+    /// Call it from your statusline command, e.g. `echo "$input" | reeve usage record`. It
+    /// prints nothing. The file is REEVE_CLAUDE_USAGE, else ~/.local/state/reeve/usage/claude.json
+    Record,
 }
 
 #[derive(Subcommand)]
@@ -553,6 +581,19 @@ pub fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    // Runs on every statusline refresh, so it stays out of the event log, and never fails it.
+    if let Some(Top::Usage(UsageArgs {
+        cmd: Some(UsageCmd::Record),
+        ..
+    })) = cli.command
+    {
+        let kept =
+            usage::claude_path().and_then(|p| usage::record(io::stdin(), &p, msg::now_secs()));
+        if let Err(e) = kept {
+            eprintln!("reeve usage record: {e}");
+        }
+        return ExitCode::SUCCESS;
+    }
     let workers = || workers::Registry::default_dir().map(workers::Registry::at);
     let Some(command) = cli.command else {
         print!("{SKILL}");
@@ -744,9 +785,16 @@ pub fn main() -> ExitCode {
             ev.worker = Some(next.clone());
             workers().map(|r| handoff::follow(&r, &next)).map(|_| 0)
         }
-        Top::Hook(Hook::Context | Hook::Background) => {
+        Top::Hook(Hook::Context | Hook::Background)
+        | Top::Usage(UsageArgs {
+            cmd: Some(UsageCmd::Record),
+            ..
+        }) => {
             unreachable!("answered before the event log")
         }
+        Top::Usage(UsageArgs {
+            agent, json, max, ..
+        }) => usage::main(agent, json, max),
         Top::Report { name } => {
             ev.worker = Some(name.clone());
             workers()
@@ -1016,6 +1064,7 @@ mod tests {
             "blocked",
             "Context check",
             "reeve waiting",
+            "reeve usage",
             "Inside Herdr each worker gets its own tab",
             "not Herdr's agent commands",
             "(`--bg`, for that case only)",
