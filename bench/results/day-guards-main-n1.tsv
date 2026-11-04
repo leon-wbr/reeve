@@ -1,3 +1,4 @@
 batch	run	arm	binary	budget_k	done	items	min_to_done	sessions	handoffs	cost_usd	turns	peak_ctx_k	timeout	note
 G2	rd-tight-main-1	tight-main	main 76310e9	28	False	0		2	1	0.593	31	39	True	the successor sat blocked for 39 minutes until the 50-minute cap
 G2	rd-tight-pr58-1	tight-pr58	guards f6aadf3	28	True	6	45.1	2	1	0.885	29	64	False
+G3	rd-b0-tight-1	b0-tight	vanilla (main 26ce68a on PATH, unused)	28	True	6	17.3	3	2	0.53	31	False	notes handoffs; incomplete batch, stopped for usage

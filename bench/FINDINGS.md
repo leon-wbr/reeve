@@ -463,6 +463,19 @@ The change: the context check waits until a session has grown 10K past its own f
 - **Weekly:** 39% before the first run (21:43 UTC), 43% after the last, shared with reeve-bench-day2's runs in the same hours. About $13.9 by the bench's own cost for the nine runs.
 - **Not covered:** a second `reeve handoff` from the same session and a failed successor start (unit-tested only), and Codex.
 
+### Batch G3, 4 Nov: vanilla at the 28K stress budget, incomplete (n=1)
+
+Arm `b0-tight`: b0 with the harness's notes handoff at 28K, the budget `reeve-tight` uses. One run, then the batch stopped for usage. Row in [results/day-guards-main-n1.tsv](results/day-guards-main-n1.tsv).
+
+| Arm (28K) | Runs | Done | Min to done | Sessions | Handoffs | Cost $ | Peak ctx K |
+|---|---|---|---|---|---|---|---|
+| b0-tight | 1 | 1/1 | 17.3 | 3 | 2 | 0.53 | 31 |
+| reeve-tight, main 76310e9 (G2) | 1 | 0/1 | – | 2 | 1 | 0.59 | 39 |
+| reeve-tight, guards f6aadf3 (G2) | 1 | 1/1 | 45.1 | 2 | 1 | 0.89 | 64 |
+
+- At n=1, vanilla finished the day faster and cheaper than either reeve arm at this budget. n=1 can't rank them.
+- **Not run:** reeve-tight on main and on this branch, n=3 each, and b0-tight runs 2–3.
+
 ## Pressure scenario
 
 [pressure/](pressure/README.md) checks the loss of 1 Nov. Six workers, started with `reeve run`, each run two 600 MB, 60 s jobs through `reeve heavy`, with 3 slots. The bench's memory budget is 1500 MB, so two jobs fit and a third at once doesn't. Past the budget, a stand-in for Claude Code's low-memory reaper kills the newest `reeve heavy` caller's background shell under a session, at most once every 5 s. Memory is `top`'s physical footprint. On this Mac, which was swapping 8 GB that evening, RSS read a 600 MB job as 40 MB. Sonnet, `--setting-sources project,local`, reeve's setup.
