@@ -1,0 +1,12 @@
+{
+  "note": "Vanilla Claude Code on w10's load: one session without reeve (b0-iso setup, auto mode, no reeve on PATH) is asked to run the ten workers' jobs with ten subagents at once. Jobs run straight from the subagents' Bash, so the reaper takes the newest job's shell.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/b0-iso",
+  "vanilla": true,
+  "workers": 10,
+  "jobs": 2,
+  "jobMb": 600,
+  "jobSeconds": 60,
+  "budgetMb": 1500
+}
