@@ -1,0 +1,8 @@
+{
+  "note": "Vanilla Claude Code (b0) at reeve-tight's stress budget: past 28K of context the harness asks for notes and starts a fresh session on them, as b0 does at 60K.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/b0-iso",
+  "contextBudget": 28000,
+  "handoff": "notes"
+}

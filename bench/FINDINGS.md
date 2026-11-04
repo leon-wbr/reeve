@@ -477,3 +477,16 @@ The change: the context check waits until a session has grown 10K past its own f
 | 02:48 | 42% | after D2 |
 
 The bench reported about $9.10: $2.46 for the set-aside pressure run, $3.25 for P1, $3.33 for D2 and $0.07 for the start-context probe. Other workers shared the plan and ran their own bench runs under the same lock that evening, so the 5 points aren't this round's alone.
+
+### Batch G3, 4 Nov: vanilla at the 28K stress budget, incomplete (n=1)
+
+Arm `b0-tight`: b0 with the harness's notes handoff at 28K, the budget `reeve-tight` uses. One run, then the batch stopped for usage. Row in [results/day-guards-main-n1.tsv](results/day-guards-main-n1.tsv).
+
+| Arm (28K) | Runs | Done | Min to done | Sessions | Handoffs | Cost $ | Peak ctx K |
+|---|---|---|---|---|---|---|---|
+| b0-tight | 1 | 1/1 | 17.3 | 3 | 2 | 0.53 | 31 |
+| reeve-tight, main 76310e9 (G2) | 1 | 0/1 | – | 2 | 1 | 0.59 | 39 |
+| reeve-tight, guards f6aadf3 (G2) | 1 | 1/1 | 45.1 | 2 | 1 | 0.89 | 64 |
+
+- At n=1, vanilla finished the day faster and cheaper than either reeve arm at this budget. n=1 can't rank them.
+- **Not run:** reeve-tight on main and on this branch, n=3 each, and b0-tight runs 2–3.
