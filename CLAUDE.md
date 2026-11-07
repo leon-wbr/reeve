@@ -8,7 +8,7 @@ Before changing anything, read [PHILOSOPHY.md](PHILOSOPHY.md). The principles th
 - keep everything around the core optional and swappable;
 - stay local by default;
 - let done be defined per project;
-- show that a new capability beats the best setup it's measured against ([docs/metrics.md](docs/metrics.md)).
+- show that a new capability beats both plain Claude Code and the best existing setup, measured on a metric in [docs/metrics.md](docs/metrics.md); add the metric or scenario if none fits (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 When working here:
 
