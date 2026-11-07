@@ -9,6 +9,7 @@ mod heavy;
 mod inbox;
 pub mod mem;
 mod msg;
+pub mod pipeline;
 mod push;
 mod remote;
 mod run;
@@ -72,6 +73,11 @@ enum Top {
         /// The agent CLI to run. A codex worker outside Herdr is a detached `codex exec`
         #[arg(long, value_enum, default_value_t = workers::Kind::Claude, conflicts_with = "sandbox")]
         agent: workers::Kind,
+        /// Run the named worker as a pipeline: the preset's agent steps one after another, each
+        /// given the prompt and the previous step's output, the last writing the report. Runs
+        /// detached, inside Herdr too; `reeve pipelines` lists the presets
+        #[arg(long, value_name = "PRESET", requires = "name", conflicts_with_all = ["pane", "bg"])]
+        pipeline: Option<String>,
         /// Start the named worker in its own git worktree, REPO/.claude/worktrees/NAME on branch
         /// worktree-NAME, made from HEAD unless it is there already
         #[arg(long, requires = "name")]
@@ -90,6 +96,12 @@ enum Top {
         #[arg(last = true)]
         args: Vec<String>,
     },
+    /// List the pipeline presets for `reeve run --pipeline`: built in, and from
+    /// ~/.config/reeve/pipelines.json
+    Pipelines,
+    /// Run a pipeline worker's steps; `reeve run --pipeline` runs this in the background
+    #[command(hide = true)]
+    PipelineRun { name: String },
     /// List named workers and whether each is running, done or gone; finished ones whose agent
     /// is gone drop out 12 hours after they finish
     Ls {
@@ -627,6 +639,7 @@ pub fn main() -> ExitCode {
             pane,
             agent,
             worktree,
+            pipeline,
             args,
             ..
         } => {
@@ -647,7 +660,10 @@ pub fn main() -> ExitCode {
             }
             let started = moved.and_then(|_| workers()).and_then(|r| {
                 let parent = push::parent(&r, &workers::Caller::from_env());
-                workers::run(&r, &name, agent, backend, &args, parent)?;
+                match &pipeline {
+                    Some(p) => workers::run_pipeline(&r, &name, agent, p, &args, parent)?,
+                    None => workers::run(&r, &name, agent, backend, &args, parent)?,
+                }
                 r.get(&name)
             });
             if let Ok(w) = &started {
@@ -745,6 +761,12 @@ pub fn main() -> ExitCode {
                 })
                 .map(|_| 0)
         }
+        Top::Pipelines => pipeline::load()
+            .map(|all| println!("{}", pipeline::list(&all)))
+            .map(|_| 0),
+        Top::PipelineRun { name } => workers()
+            .and_then(|r| pipeline::drive(&r, &name))
+            .map(|_| 0),
         Top::Ls { brief: false, all } => workers()
             .and_then(|r| {
                 tidy_predecessors(&r);

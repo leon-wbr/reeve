@@ -4,6 +4,7 @@
 pub mod check;
 pub mod day;
 pub mod handoff;
+pub mod pipeline;
 pub mod pressure;
 pub mod run;
 pub mod score;

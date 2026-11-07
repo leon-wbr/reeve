@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const TOTAL_MS: i64 = 40 * 60_000;
+pub(super) const TOTAL_MS: i64 = 40 * 60_000;
 const REPLY_DELAY_MS: i64 = 4 * 60_000;
 const POLL_AFTER_MS: i64 = 6 * 60_000;
 const CLAIM_GRACE_MS: i64 = 5 * 60_000;
@@ -52,17 +52,20 @@ pub fn unchecked(chain: &str, passed: impl Fn(&str) -> bool) -> usize {
         .count()
 }
 
-struct Bench {
-    run: String,
+pub(super) struct Bench {
+    pub(super) run: String,
     base: String,
-    dir: String,
-    logs: PathBuf,
-    env: Vec<(OsString, OsString)>,
-    t0: i64,
+    pub(super) dir: String,
+    pub(super) logs: PathBuf,
+    pub(super) env: Vec<(OsString, OsString)>,
+    pub(super) t0: i64,
 }
 
 impl Bench {
-    fn git<S: AsRef<OsStr>>(&self, args: impl IntoIterator<Item = S>) -> io::Result<String> {
+    pub(super) fn git<S: AsRef<OsStr>>(
+        &self,
+        args: impl IntoIterator<Item = S>,
+    ) -> io::Result<String> {
         let o = Command::new("git")
             .args(args)
             .stdin(Stdio::null())
@@ -81,7 +84,7 @@ impl Bench {
         c
     }
 
-    fn log(&self, event: &str, data: &Value) {
+    pub(super) fn log(&self, event: &str, data: &Value) {
         let mut m = Map::new();
         m.insert("t".into(), json!(clock() - self.t0));
         m.insert("event".into(), event.into());
@@ -390,7 +393,55 @@ pub(super) fn bench_env() -> io::Result<Vec<(OsString, OsString)>> {
     Ok(env)
 }
 
-pub fn run(arm: &str, n: &str) -> io::Result<i32> {
+/// The scenario as the simulated user knows it: the asks, the key and the timed follow-ups.
+pub(super) struct Scenario {
+    pub(super) asks: String,
+    pub(super) key: String,
+    pub(super) followups: Vec<Value>,
+}
+
+impl Scenario {
+    fn load(here: &Path) -> io::Result<Scenario> {
+        let followups_file = here.join("scenario/followups.json");
+        Ok(Scenario {
+            asks: fs::read_to_string(here.join("scenario/asks.md"))?
+                .trim()
+                .to_string(),
+            key: fs::read_to_string(here.join("scenario/key.md"))?,
+            followups: if followups_file.exists() {
+                serde_json::from_str(&fs::read_to_string(followups_file)?)
+                    .map_err(io::Error::other)?
+            } else {
+                vec![]
+            },
+        })
+    }
+}
+
+/// The scenario's starting record of a run.
+pub(super) fn new_result(arm: &str, run: &str) -> Value {
+    json!({
+        "arm": arm, "run": run, "interventions": [], "claims": [], "falseDone": null,
+        "neverClaimed": false, "doneAt": null, "itemsAt": {}, "blockedMs": {}, "timeout": false,
+    })
+}
+
+/// Records when each item, and the whole scenario, first passed the done-check.
+pub(super) fn note_check(b: &Bench, result: &mut Value, c: &Value, at: i64) {
+    for k in ITEMS {
+        if c["items"][k] == true && falsy(&result["itemsAt"][k]) {
+            result["itemsAt"][k] = json!(at);
+        }
+    }
+    if c["done"] == true && falsy(&result["doneAt"]) {
+        result["doneAt"] = json!(at);
+        b.log("done-check", c);
+    }
+}
+
+/// Sets up the scenario repo for an arm as a worktree of the base repo, runs the arm's setup,
+/// and returns the bench.
+fn prepare(arm: &str, n: &str) -> io::Result<Bench> {
     let here = root();
     let base = std::env::var_os("REEVE_BENCH_BASE")
         .map(PathBuf::from)
@@ -410,7 +461,7 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         "XDG_STATE_HOME".into(),
         trials.join("logs").join(&run).join("state").into(),
     ));
-    let mut b = Bench {
+    let b = Bench {
         logs: trials.join("logs").join(&run),
         base: base.to_string_lossy().into_owned(),
         dir: dir.to_string_lossy().into_owned(),
@@ -456,6 +507,18 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
         if !ok {
             return Err(io::Error::other("arm setup failed"));
         }
+    }
+    Ok(b)
+}
+
+pub fn run(arm: &str, n: &str) -> io::Result<i32> {
+    let mut b = prepare(arm, n)?;
+    let here = root();
+    let arm_dir = here.join("arms").join(arm);
+    let (run, dir) = (b.run.clone(), PathBuf::from(&b.dir));
+    let scenario = Scenario::load(&here)?;
+    if let Ok(preset) = fs::read_to_string(arm_dir.join("pipeline")) {
+        return super::pipeline::run(b, arm, preset.trim(), scenario);
     }
 
     let comm_name = format!("{run}-comm");
@@ -507,26 +570,15 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
     let p = b.logs.join("comm.stderr");
     thread::spawn(move || read_stderr(err, p));
 
-    let asks = fs::read_to_string(here.join("scenario/asks.md"))?
-        .trim()
-        .to_string();
-    let key = fs::read_to_string(here.join("scenario/key.md"))?;
-    let followups_file = here.join("scenario/followups.json");
-    let mut followups: Vec<Value> = if followups_file.exists() {
-        serde_json::from_str(&fs::read_to_string(followups_file)?).map_err(io::Error::other)?
-    } else {
-        vec![]
-    };
+    let (asks, key) = (scenario.asks.clone(), scenario.key.clone());
+    let mut followups = scenario.followups.clone();
     let mut history: Vec<(&'static str, String)> = vec![];
     b.t0 = clock();
     let t0 = b.t0;
     say(&mut stdin, &state, &mut history, &asks);
     b.log("start", &json!({ "arm": arm, "run": run }));
 
-    let mut result = json!({
-        "arm": arm, "run": run, "interventions": [], "claims": [], "falseDone": null,
-        "neverClaimed": false, "doneAt": null, "itemsAt": {}, "blockedMs": {}, "timeout": false,
-    });
+    let mut result = new_result(arm, &run);
     let mut seen: Vec<(String, Value)> = vec![];
     let remember = |seen: &mut Vec<(String, Value)>, agents: Vec<Value>| {
         for a in agents {
@@ -550,15 +602,7 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
                 Ok(c) => c,
                 Err(e) => break Some(e.to_string()),
             };
-            for k in ITEMS {
-                if c["items"][k] == true && falsy(&result["itemsAt"][k]) {
-                    result["itemsAt"][k] = json!(now - t0);
-                }
-            }
-            if c["done"] == true && falsy(&result["doneAt"]) {
-                result["doneAt"] = json!(now - t0);
-                b.log("done-check", &c);
-            }
+            note_check(&b, &mut result, &c, now - t0);
             if now - last_blocked > 30_000 {
                 let agents = b.agents();
                 for a in agents.iter().filter(|a| a["state"] == "blocked") {
@@ -625,7 +669,7 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
                 0
             },
             env: &b.env,
-            cwd: &trials,
+            cwd: &trials(),
             bin: OsStr::new("claude"),
             model: "sonnet",
         };
@@ -695,6 +739,13 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
     if let Some(id) = comm_session {
         sessions.push(json!({ "name": comm_name, "sessionId": id, "kind": "comm" }));
     }
+    finish(&b, result, sessions)
+}
+
+/// Scores a finished run from its sessions (`name`, `kind`, `sessionId`), records its repo, log
+/// and result, prints the summary line and removes the run.
+pub(super) fn finish(b: &Bench, mut result: Value, sessions: Vec<Value>) -> io::Result<i32> {
+    let run = &b.run;
     let sessions: Vec<Value> = sessions
         .iter()
         .map(|s| {
@@ -720,7 +771,7 @@ pub fn run(arm: &str, n: &str) -> io::Result<i32> {
     result["costUsd"] = round(cost, 3);
     result["uncheckedLandings"] = b.unchecked_landings()?.into();
     let bundle = b.logs.join("repo.bundle").to_string_lossy().into_owned();
-    let _ = b.git(["-C", &b.dir, "bundle", "create", &bundle, &run]);
+    let _ = b.git(["-C", &b.dir, "bundle", "create", &bundle, run]);
     let graph = b.git([
         "-C",
         &b.dir,
