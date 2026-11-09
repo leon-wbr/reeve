@@ -16,7 +16,7 @@ reeve run --name fix-flaky --cwd ~/app -- "Fix the flaky test in tests/api; run 
 reeve run --name review --cwd ~/app -- --model sonnet "Review it."
 reeve ls                 # live workers and ones finished in 12h; --all for all
 reeve waiting            # what waits on you
-reeve usage              # Claude/Codex limits used; --max 90 exits 1 over
+reeve usage              # limits; --max 90 [--window session|all] exits 1 over
 reeve watch fix-flaky    # a line per change, with the next step
 reeve report fix-flaky   # the report
 reeve close fix-flaky    # closes its tab and clean pushed worktree; --preserve keeps it
