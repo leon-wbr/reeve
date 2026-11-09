@@ -5,6 +5,7 @@ pub mod check;
 pub mod day;
 pub mod handoff;
 pub mod pressure;
+pub mod replay;
 pub mod run;
 pub mod score;
 mod sim;

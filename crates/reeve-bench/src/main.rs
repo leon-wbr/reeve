@@ -20,6 +20,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Replay the heavy runs in reeve's event log through the queue's rule, first come first
+    /// served and with express slots for short runs, at each slot count
+    HeavyReplay {
+        /// The last this many days
+        #[arg(long, default_value_t = 7)]
+        days: u64,
+        /// Slot counts to replay at
+        #[arg(long = "slots", value_name = "N", default_values_t = [2])]
+        slots: Vec<usize>,
+        /// Express slots for runs expected to be short
+        #[arg(long, default_value_t = 1)]
+        express: usize,
+        /// The event log [default: reeve's, as `reeve stats` reads it]
+        #[arg(long)]
+        events: Option<PathBuf>,
+    },
     /// Fresh `claude -p` sessions on four cases (long, short, successor, missing), with the
     /// choice each one made
     Entry {
@@ -176,6 +192,30 @@ fn pressure_opts(arm: String, n: String) -> std::io::Result<bench::pressure::Opt
     })
 }
 
+fn heavy_replay(
+    days: u64,
+    slots: &[usize],
+    express: usize,
+    events: Option<PathBuf>,
+) -> std::io::Result<i32> {
+    let path = match events {
+        Some(p) => p,
+        None => reeve::events::path()?,
+    };
+    let events: Vec<reeve::events::Event> = std::fs::read_to_string(&path)?
+        .lines()
+        .filter(|l| l.contains("\"heavy_run_ms\""))
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let all = bench::replay::jobs(&events);
+    let from = reeve::events::now_ms().saturating_sub(days * 86_400_000);
+    print!(
+        "{}",
+        bench::replay::report(&all, from, days, slots, express)
+    );
+    Ok(0)
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -223,6 +263,12 @@ fn main() -> ExitCode {
             };
             bench_block::main(&opts)
         }
+        Cmd::HeavyReplay {
+            days,
+            slots,
+            express,
+            events,
+        } => heavy_replay(days, &slots, express, events),
         Cmd::Run { arm, n } => bench::run::run(&arm, &n),
         Cmd::Day {
             arm,

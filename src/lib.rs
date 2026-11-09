@@ -14,6 +14,7 @@ mod push;
 mod remote;
 mod run;
 mod sandbox;
+pub mod sched;
 pub mod setup;
 mod ssh;
 mod stats;

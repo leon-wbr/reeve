@@ -13,6 +13,7 @@ fn heavy(state: &Path, args: &[&str]) -> Command {
         .env_remove("REEVE_HEAVY_SLOTS")
         .env_remove("REEVE_HEAVY_TIMEOUT")
         .env_remove("REEVE_HEAVY_MIN_FREE")
+        .env_remove("REEVE_HEAVY_EXPRESS")
         // No worker registry and no inbox outside the test's dir.
         .env("XDG_STATE_HOME", state.join("xdg"))
         .env("REEVE_HOME", state.join("home"))
@@ -208,6 +209,59 @@ fn waiters_say_how_many_are_ahead_and_ls_shows_them_in_order() {
     let first = waiters.pop().unwrap().wait_with_output().unwrap();
     assert!(first.status.success() && second.status.success());
     assert!(String::from_utf8_lossy(&second.stderr).contains("1 ahead"));
+}
+
+#[test]
+fn a_run_whose_label_was_quick_lately_takes_the_express_slot() {
+    let d = tempfile::tempdir().unwrap();
+    for _ in 0..3 {
+        assert!(
+            run(d.path(), &["--label", "quick", "--", "true"])
+                .status
+                .success()
+        );
+    }
+    let holder = hold(d.path(), "holder");
+    let quick = heavy(
+        d.path(),
+        &["--slots", "1", "--label", "quick", "--", "true"],
+    )
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    let o = finish(quick, 10);
+    assert!(o.status.success());
+    assert!(
+        o.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    // A label with no history waits for the holder, and so does a quick one with express off.
+    let new = heavy(d.path(), &["--slots", "1", "--label", "new", "--", "true"])
+        .spawn()
+        .unwrap();
+    wait_for("the new label to queue", || files(d.path(), "queue") == 1);
+    let off = heavy(
+        d.path(),
+        &[
+            "--slots",
+            "1",
+            "--express",
+            "0",
+            "--label",
+            "quick",
+            "--",
+            "true",
+        ],
+    )
+    .spawn()
+    .unwrap();
+    wait_for("the quick one to queue", || files(d.path(), "queue") == 2);
+    let ls = stdout(&run(d.path(), &["ls"]));
+    assert!(ls.contains("short: its last 4 runs took at most"), "{ls}");
+    stop(holder);
+    assert!(finish(new, 10).status.success());
+    assert!(finish(off, 10).status.success());
 }
 
 #[test]
