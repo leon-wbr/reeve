@@ -345,15 +345,28 @@ fn pass_on(r: &Registry, next: &str, from: Option<&str>, file: &Path) {
     if let Some(w) = from.and_then(|f| r.get(f).ok())
         && !w.report.exists()
     {
-        let _ = fs::write(
-            &w.report,
-            format!(
-                "partial\nHanded off to {next}, which carries on and reports when done.\n\n\
-                 Handoff notes: {}\n",
-                file.display()
-            ),
-        );
+        let _ = fs::write(&w.report, note(next, file));
     }
+}
+
+const NOTE_PREFIX: &str = "Handed off to ";
+const NOTE_SUFFIX: &str = ", which carries on and reports when done.";
+
+/// The report a predecessor gets when it wrote none. It says `partial` so whoever started it
+/// hears the work went elsewhere; `reeve waiting` reads it with `handed_off_to`.
+pub fn note(next: &str, file: &Path) -> String {
+    format!(
+        "partial\n{NOTE_PREFIX}{next}{NOTE_SUFFIX}\n\nHandoff notes: {}\n",
+        file.display()
+    )
+}
+
+/// The successor named by a `note`'s summary line, or `None` for any other report.
+pub fn handed_off_to(summary: &str) -> Option<&str> {
+    summary
+        .strip_prefix(NOTE_PREFIX)?
+        .strip_suffix(NOTE_SUFFIX)
+        .filter(|n| !n.is_empty() && !n.contains(char::is_whitespace))
 }
 
 /// Writes the handoff for `next` and starts it; the calling session should stop afterwards.
