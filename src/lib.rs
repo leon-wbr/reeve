@@ -330,9 +330,13 @@ struct UsageArgs {
     agent: Option<workers::Kind>,
     #[arg(long)]
     json: bool,
-    /// Exit 1 when a window that could be read is over PERCENT; unknown ones never are
-    #[arg(long, value_name = "PERCENT")]
-    max: Option<f64>,
+    /// Exit 1 when a checked window is over PERCENT; unknown ones never are. Repeatable, with an
+    /// optional provider prefix: --max claude=65 --max codex=90. A bare number applies to all
+    #[arg(long, value_name = "[AGENT=]PERCENT", value_parser = usage::Limit::parse)]
+    max: Vec<usage::Limit>,
+    /// Which windows --max checks; session is the 5-hour one, skipped for providers without it
+    #[arg(long, value_enum, default_value = "weekly")]
+    window: usage::WindowSel,
 }
 
 #[derive(Subcommand)]
@@ -793,8 +797,12 @@ pub fn main() -> ExitCode {
             unreachable!("answered before the event log")
         }
         Top::Usage(UsageArgs {
-            agent, json, max, ..
-        }) => usage::main(agent, json, max),
+            agent,
+            json,
+            max,
+            window,
+            ..
+        }) => usage::main(agent, json, &max, window),
         Top::Report { name } => {
             ev.worker = Some(name.clone());
             workers()

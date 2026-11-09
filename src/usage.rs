@@ -1,4 +1,4 @@
-//! `reeve usage`: how much of the 5-hour and weekly plan limits Claude Code and Codex have used,
+//! `reeve usage`: how much of the plan limits (weekly, and 5-hour where there is one) Claude Code and Codex have used,
 //! read from what each CLI already exposes. Claude Code hands its statusline command the
 //! `rate_limits` it got with its last answer; `reeve usage record` keeps a copy. Codex answers
 //! `account/rateLimits/read` in `codex app-server`.
@@ -17,24 +17,98 @@ use std::time::Duration;
 pub const STALE_SECS: u64 = 15 * 60;
 const CODEX_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// One plan window a provider reports: `session` (the 5-hour one) or `weekly`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum Window {
-    Known {
-        percent: f64,
-        /// When the window resets, UTC.
-        resets_at: Option<String>,
-    },
-    Unknown {
-        unknown: String,
-    },
+pub struct Window {
+    pub window: &'static str,
+    pub percent: Option<f64>,
+    /// When the window resets, UTC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+    /// Why the percent can't be given, e.g. the window reset since the last read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unknown: Option<String>,
+}
+
+impl Window {
+    fn known(window: &'static str, percent: f64, resets_at: Option<String>) -> Window {
+        Window {
+            window,
+            percent: Some(percent),
+            resets_at,
+            unknown: None,
+        }
+    }
+
+    fn unknown(window: &'static str, why: String) -> Window {
+        Window {
+            window,
+            percent: None,
+            resets_at: None,
+            unknown: Some(why),
+        }
+    }
+
+    /// `(short label, long name)` for lines and messages.
+    fn labels(&self) -> (&'static str, &'static str) {
+        match self.window {
+            "session" => ("5h", "5-hour"),
+            _ => ("week", "weekly"),
+        }
+    }
+}
+
+/// Which windows `--max` checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum WindowSel {
+    Weekly,
+    /// The 5-hour window; providers without one are skipped.
+    Session,
+    All,
+}
+
+impl WindowSel {
+    fn includes(self, window: &str) -> bool {
+        match self {
+            WindowSel::All => true,
+            WindowSel::Weekly => window == "weekly",
+            WindowSel::Session => window == "session",
+        }
+    }
+}
+
+/// A `--max` value: `65` for every provider, or `claude=65` for one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Limit {
+    pub agent: Option<Kind>,
+    pub percent: f64,
+}
+
+impl Limit {
+    pub fn parse(s: &str) -> Result<Limit, String> {
+        let (agent, num) = match s.split_once('=') {
+            Some((a, n)) => {
+                let k = <Kind as clap::ValueEnum>::from_str(a, true)
+                    .map_err(|_| format!("unknown provider '{a}' in '{s}'; use claude or codex"))?;
+                (Some(k), n)
+            }
+            None => (None, s),
+        };
+        let percent = num
+            .parse::<f64>()
+            .map_err(|_| format!("'{num}' is not a percentage"))?;
+        Ok(Limit { agent, percent })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Reading {
     pub agent: &'static str,
-    pub five_hour: Window,
-    pub weekly: Window,
+    /// Only the windows the provider has.
+    pub windows: Vec<Window>,
+    /// Why nothing could be read at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unknown: Option<String>,
     /// When the CLI last reported these numbers, UTC.
     pub read_at: Option<String>,
     /// The read is older than `STALE_SECS`.
@@ -44,24 +118,14 @@ pub struct Reading {
 
 impl Reading {
     fn unknown(agent: &'static str, source: &str, why: &str) -> Reading {
-        let w = Window::Unknown {
-            unknown: why.into(),
-        };
         Reading {
             agent,
-            five_hour: w.clone(),
-            weekly: w,
+            windows: vec![],
+            unknown: Some(why.into()),
             read_at: None,
             stale: false,
             source: source.into(),
         }
-    }
-
-    fn windows(&self) -> [(&'static str, &'static str, &Window); 2] {
-        [
-            ("5h", "5-hour", &self.five_hour),
-            ("week", "weekly", &self.weekly),
-        ]
     }
 }
 
@@ -103,34 +167,34 @@ pub fn record(stdin: impl Read, path: &Path, now: u64) -> io::Result<()> {
 pub fn claude_from(snap: &Value, now: u64, source: &str) -> Reading {
     let at = snap["at"].as_str().and_then(parse_utc);
     let ago = at.map(|a| crate::msg::age(now.saturating_sub(a)));
-    let window = |key: &str, label: &str| {
+    let window = |key: &str, name: &'static str| {
         let w = &snap[key];
-        let Some(percent) = w["used_percentage"].as_f64() else {
-            return Window::Unknown {
-                unknown: format!("Claude Code's last statusline payload had no {label} window"),
-            };
-        };
+        let percent = w["used_percentage"].as_f64()?;
         let resets = w["resets_at"].as_u64();
-        match resets {
-            Some(r) if r <= now => Window::Unknown {
-                unknown: format!(
+        Some(match resets {
+            Some(r) if r <= now => Window::unknown(
+                name,
+                format!(
                     "the window reset at {} after the last read{}",
                     fmt_utc(r),
                     ago.as_ref()
                         .map(|a| format!(" {a} ago"))
                         .unwrap_or_default()
                 ),
-            },
-            _ => Window::Known {
-                percent,
-                resets_at: resets.map(fmt_utc),
-            },
-        }
+            ),
+            _ => Window::known(name, percent, resets.map(fmt_utc)),
+        })
     };
     Reading {
         agent: "claude",
-        five_hour: window("five_hour", "5-hour"),
-        weekly: window("seven_day", "weekly"),
+        windows: [
+            window("five_hour", "session"),
+            window("seven_day", "weekly"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        unknown: None,
         read_at: at.map(fmt_utc),
         stale: at.is_none_or(|a| now.saturating_sub(a) > STALE_SECS),
         source: source.into(),
@@ -162,25 +226,25 @@ pub fn claude(now: u64) -> Reading {
 /// Codex's numbers from an `account/rateLimits/read` result, read at `now`.
 pub fn codex_from(result: &Value, now: u64) -> Reading {
     let limits = &result["rateLimits"];
-    let window = |mins: u64, label: &str| {
+    let window = |mins: u64, name: &'static str| {
         let w = ["primary", "secondary"]
             .iter()
             .map(|k| &limits[*k])
             .find(|w| w["windowDurationMins"].as_u64() == Some(mins));
-        match w.and_then(|w| Some((w["usedPercent"].as_f64()?, w))) {
-            Some((percent, w)) => Window::Known {
-                percent,
-                resets_at: w["resetsAt"].as_u64().map(fmt_utc),
-            },
-            None => Window::Unknown {
-                unknown: format!("Codex reported no {label} window"),
-            },
-        }
+        let (percent, w) = w.and_then(|w| Some((w["usedPercent"].as_f64()?, w)))?;
+        Some(Window::known(
+            name,
+            percent,
+            w["resetsAt"].as_u64().map(fmt_utc),
+        ))
     };
     Reading {
         agent: "codex",
-        five_hour: window(300, "5-hour"),
-        weekly: window(10_080, "weekly"),
+        windows: [window(300, "session"), window(10_080, "weekly")]
+            .into_iter()
+            .flatten()
+            .collect(),
+        unknown: None,
         read_at: Some(fmt_utc(now)),
         stale: false,
         source: "codex app-server, account/rateLimits/read".into(),
@@ -283,28 +347,30 @@ fn left(secs: u64) -> String {
     }
 }
 
-/// One line per agent: `claude  5h 34% (resets in 2h10m)  week 89% (resets in 1d4h)  read 2m ago`.
+/// One line per agent: `claude  week 89% (resets in 1d4h)  read 2m ago`; a provider shows only
+/// the windows it has.
 pub fn render(r: &Reading, now: u64) -> String {
     let head = format!("{:<6}  ", r.agent);
-    if let (Window::Unknown { unknown: a }, Window::Unknown { unknown: b }) =
-        (&r.five_hour, &r.weekly)
-        && a == b
-    {
-        return format!("{head}unknown: {a}");
+    if let Some(why) = &r.unknown {
+        return format!("{head}unknown: {why}");
     }
     let parts: Vec<String> = r
-        .windows()
+        .windows
         .iter()
-        .map(|(short, _, w)| match w {
-            Window::Known { percent, resets_at } => {
-                let resets = resets_at
-                    .as_deref()
-                    .and_then(parse_utc)
-                    .map(|t| format!(" (resets in {})", left(t.saturating_sub(now))))
-                    .unwrap_or_default();
-                format!("{short} {}{resets}", pct(*percent))
+        .map(|w| {
+            let short = w.labels().0;
+            match w.percent {
+                Some(percent) => {
+                    let resets = w
+                        .resets_at
+                        .as_deref()
+                        .and_then(parse_utc)
+                        .map(|t| format!(" (resets in {})", left(t.saturating_sub(now))))
+                        .unwrap_or_default();
+                    format!("{short} {}{resets}", pct(percent))
+                }
+                None => format!("{short} unknown ({})", w.unknown.as_deref().unwrap_or("")),
             }
-            Window::Unknown { unknown } => format!("{short} unknown ({unknown})"),
         })
         .collect();
     let read = match r.read_at.as_deref().and_then(parse_utc) {
@@ -320,24 +386,41 @@ pub fn render(r: &Reading, now: u64) -> String {
     format!("{head}{}  {read}{stale}", parts.join("  "))
 }
 
-/// Each window a reading knows that is over `max` percent, as `codex weekly 40% is over 30%`.
-pub fn over(readings: &[Reading], max: f64) -> Vec<String> {
+/// Each selected window a reading knows that is over its limit, as `codex weekly 40% is over
+/// 30%`. A limit with a provider prefix beats a bare one; a provider without the window is skipped.
+pub fn over(readings: &[Reading], limits: &[Limit], sel: WindowSel) -> Vec<String> {
     readings
         .iter()
-        .flat_map(|r| r.windows().map(move |(_, long, w)| (r.agent, long, w)))
-        .filter_map(|(agent, long, w)| match w {
-            Window::Known { percent, .. } if *percent > max => Some(format!(
-                "{agent} {long} {} is over {}",
-                pct(*percent),
-                pct(max)
-            )),
-            _ => None,
+        .flat_map(|r| {
+            let kind = if r.agent == "claude" {
+                Kind::Claude
+            } else {
+                Kind::Codex
+            };
+            let max = limits
+                .iter()
+                .rev()
+                .find(|l| l.agent == Some(kind))
+                .or_else(|| limits.iter().rev().find(|l| l.agent.is_none()))
+                .map(|l| l.percent);
+            r.windows.iter().filter_map(move |w| {
+                let (percent, max) = (w.percent?, max?);
+                (sel.includes(w.window) && percent > max).then(|| {
+                    format!(
+                        "{} {} {} is over {}",
+                        r.agent,
+                        w.labels().1,
+                        pct(percent),
+                        pct(max)
+                    )
+                })
+            })
         })
         .collect()
 }
 
-/// `reeve usage`: prints the readings, and with `max` exits 1 when a known window is over it.
-pub fn main(agent: Option<Kind>, json: bool, max: Option<f64>) -> io::Result<i32> {
+/// `reeve usage`: prints the readings, and with `max` exits 1 when a selected window is over it.
+pub fn main(agent: Option<Kind>, json: bool, max: &[Limit], window: WindowSel) -> io::Result<i32> {
     let now = crate::msg::now_secs();
     let readings = read(agent, now);
     if json {
@@ -347,7 +430,7 @@ pub fn main(agent: Option<Kind>, json: bool, max: Option<f64>) -> io::Result<i32
             println!("{}", render(r, now));
         }
     }
-    let over = max.map(|m| over(&readings, m)).unwrap_or_default();
+    let over = over(&readings, max, window);
     for o in &over {
         eprintln!("reeve: {o}");
     }
@@ -399,23 +482,19 @@ mod tests {
         assert_eq!(v["at"], fmt_utc(NOW));
     }
 
+    fn known(r: &Reading, name: &str) -> Option<f64> {
+        r.windows.iter().find(|w| w.window == name)?.percent
+    }
+
     #[test]
-    fn claude_reads_both_windows_and_says_which_one_it_lacks() {
+    fn claude_reports_only_the_windows_it_has() {
         let r = claude_from(&snap(None, Some((89, NOW + 90_000)), NOW - 120), NOW, "s");
-        assert_eq!(
-            r.weekly,
-            Window::Known {
-                percent: 89.0,
-                resets_at: Some(fmt_utc(NOW + 90_000))
-            }
-        );
-        assert!(
-            matches!(&r.five_hour, Window::Unknown { unknown } if unknown.contains("no 5-hour window"))
-        );
+        assert_eq!(r.windows.len(), 1);
+        assert_eq!(known(&r, "weekly"), Some(89.0));
         assert!(!r.stale);
         assert_eq!(
             render(&r, NOW),
-            "claude  5h unknown (Claude Code's last statusline payload had no 5-hour window)  week 89% (resets in 1d1h)  read 2m ago"
+            "claude  week 89% (resets in 1d1h)  read 2m ago"
         );
     }
 
@@ -424,8 +503,11 @@ mod tests {
         let s = snap(Some((70, NOW - 60)), Some((40, NOW + 7200)), NOW - 3 * 3600);
         let r = claude_from(&s, NOW, "s");
         assert!(r.stale);
+        let five = r.windows.iter().find(|w| w.window == "session").unwrap();
         assert!(
-            matches!(&r.five_hour, Window::Unknown { unknown } if unknown.contains("reset at") && unknown.contains("3h ago"))
+            five.unknown
+                .as_ref()
+                .is_some_and(|u| u.contains("reset at") && u.contains("3h ago"))
         );
         let line = render(&r, NOW);
         assert!(line.contains("week 40% (resets in 2h00m)"), "{line}");
@@ -447,39 +529,83 @@ mod tests {
             "codex   5h 1.5% (resets in 1m)  week 5% (resets in 10m)  read now"
         );
         let none = codex_from(&json!({"rateLimits": {"primary": null}}), NOW);
-        assert!(
-            matches!(&none.weekly, Window::Unknown { unknown } if unknown == "Codex reported no weekly window")
-        );
+        assert!(none.windows.is_empty());
     }
 
     #[test]
-    fn a_reading_with_one_reason_for_both_windows_is_one_unknown() {
+    fn a_reading_that_failed_is_one_unknown() {
         let r = Reading::unknown("codex", "s", "codex is not on PATH");
         assert_eq!(render(&r, NOW), "codex   unknown: codex is not on PATH");
     }
 
-    #[test]
-    fn over_names_each_known_window_above_max() {
-        let r = codex_from(
-            &json!({"rateLimits": {
-                "primary": {"usedPercent": 81, "windowDurationMins": 300},
-                "secondary": {"usedPercent": 80, "windowDurationMins": 10080},
-            }}),
-            NOW,
-        );
-        assert_eq!(
-            over(std::slice::from_ref(&r), 80.0),
-            ["codex 5-hour 81% is over 80%"]
-        );
-        assert!(over(&[r, Reading::unknown("claude", "s", "x")], 90.0).is_empty());
+    fn both() -> Vec<Reading> {
+        vec![
+            claude_from(&snap(None, Some((63, NOW + 9000)), NOW), NOW, "s"),
+            codex_from(
+                &json!({"rateLimits": {
+                    "primary": {"usedPercent": 87, "windowDurationMins": 300},
+                    "secondary": {"usedPercent": 10, "windowDurationMins": 10080},
+                }}),
+                NOW,
+            ),
+        ]
+    }
+
+    fn lim(s: &str) -> Limit {
+        Limit::parse(s).unwrap()
     }
 
     #[test]
-    fn json_has_percent_or_unknown_per_window() {
+    fn a_busy_codex_session_window_does_not_fail_a_weekly_max() {
+        let r = both();
+        assert!(over(&r, &[lim("65")], WindowSel::Weekly).is_empty());
+        assert_eq!(
+            over(&r, &[lim("65")], WindowSel::Session),
+            ["codex 5-hour 87% is over 65%"]
+        );
+        assert_eq!(
+            over(&r, &[lim("65")], WindowSel::All),
+            ["codex 5-hour 87% is over 65%"]
+        );
+    }
+
+    #[test]
+    fn over_names_provider_and_window_and_skips_providers_without_the_window() {
+        let r = both();
+        assert_eq!(
+            over(&r, &[lim("60")], WindowSel::Weekly),
+            ["claude weekly 63% is over 60%"]
+        );
+        // Claude has no session window: only Codex can be over.
+        assert_eq!(
+            over(&r, &[lim("50")], WindowSel::Session),
+            ["codex 5-hour 87% is over 50%"]
+        );
+    }
+
+    #[test]
+    fn max_takes_a_provider_prefix_and_the_prefix_beats_a_bare_number() {
+        let r = both();
+        assert!(over(&r, &[lim("claude=65"), lim("codex=90")], WindowSel::All).is_empty());
+        assert_eq!(
+            over(&r, &[lim("claude=50"), lim("codex=90")], WindowSel::All),
+            ["claude weekly 63% is over 50%"]
+        );
+        assert_eq!(
+            over(&r, &[lim("5"), lim("claude=70")], WindowSel::Weekly),
+            ["codex weekly 10% is over 5%"]
+        );
+        assert!(Limit::parse("gemini=5").is_err());
+        assert!(Limit::parse("claude=x").is_err());
+    }
+
+    #[test]
+    fn json_is_a_list_of_windows_per_provider() {
         let r = claude_from(&snap(None, Some((89, NOW + 60)), NOW), NOW, "s");
         let v = serde_json::to_value(&r).unwrap();
-        assert_eq!(v["weekly"]["percent"], 89.0);
-        assert!(v["five_hour"]["unknown"].is_string());
+        assert_eq!(v["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(v["windows"][0]["window"], "weekly");
+        assert_eq!(v["windows"][0]["percent"], 89.0);
         assert_eq!(v["stale"], false);
     }
 }
