@@ -103,10 +103,20 @@ fn record_then_usage_prints_a_line_per_agent_and_json_for_scripts() {
 
     let j = reeve(t.path(), &["usage", "--json"], None);
     let v: Value = serde_json::from_slice(&j.stdout).unwrap();
+    let percent = |agent: &Value, window: &str| {
+        agent["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["window"] == window)
+            .map(|w| w["percent"].clone())
+            .unwrap_or(Value::Null)
+    };
     assert_eq!(v[0]["agent"], "claude");
-    assert_eq!(v[0]["five_hour"]["percent"], 34.0);
+    assert_eq!(percent(&v[0], "session"), 34.0);
+    assert_eq!(percent(&v[0], "weekly"), 89.0);
     assert_eq!(v[1]["agent"], "codex");
-    assert_eq!(v[1]["weekly"]["percent"], 40.0);
+    assert_eq!(percent(&v[1], "weekly"), 40.0);
     assert!(v[1]["read_at"].as_str().unwrap().ends_with('Z'));
 }
 
