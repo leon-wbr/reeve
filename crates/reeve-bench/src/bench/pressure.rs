@@ -41,6 +41,9 @@ pub struct Arm {
     pub jobs: usize,
     pub job_mb: u64,
     pub job_seconds: u64,
+    /// When set, a job hashes its whole memory this many times instead of waiting `jobSeconds`:
+    /// fixed work that takes longer once the machine pages its memory out.
+    pub job_passes: u64,
     /// The memory the machine has for the run's jobs, in MB: past it, the reaper kills.
     pub budget_mb: u64,
     /// The reeve to run, relative to the repo root; by default the one beside reeve-bench.
@@ -61,6 +64,7 @@ impl Default for Arm {
             jobs: 2,
             job_mb: 600,
             job_seconds: 60,
+            job_passes: 0,
             budget_mb: 1500,
             reeve: None,
             env: Map::new(),
@@ -111,13 +115,15 @@ pub struct Jobs {
     /// When the last event happened, and when the last job finished.
     pub last_t: Option<i64>,
     pub last_done: Option<i64>,
+    /// How long each finished run took, start to done, in ms.
+    pub run_ms: Vec<i64>,
 }
 
 /// The ledger's events against the jobs `ids`: a job is completed once one of its runs finished.
 pub fn jobs(ledger: &str, ids: &[String]) -> Jobs {
     let mut j = Jobs::default();
     let mut done = HashSet::new();
-    let mut running: HashSet<i64> = HashSet::new();
+    let mut running: HashMap<i64, i64> = HashMap::new();
     for e in ledger
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -127,10 +133,12 @@ pub fn jobs(ledger: &str, ids: &[String]) -> Jobs {
         match e["event"].as_str() {
             Some("start") => {
                 j.started += 1;
-                running.insert(pid);
+                running.insert(pid, e["t"].as_i64().unwrap_or(0));
             }
             Some("done") => {
-                running.remove(&pid);
+                if let (Some(t0), Some(t)) = (running.remove(&pid), e["t"].as_i64()) {
+                    j.run_ms.push(t - t0);
+                }
                 if ids.contains(&js_str(e.get("id"))) {
                     done.insert(js_str(e.get("id")));
                 }
@@ -249,6 +257,8 @@ pub fn in_run(procs: &[Proc], lsof: &str, dir: &Path, skip: u32) -> Vec<Proc> {
 /// One sample of the run's processes.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Sample {
+    /// The machine's free memory, as `kern.memorystatus_level` (0-100), when it could be read.
+    pub free_pct: Option<u8>,
     pub mem_kb: u64,
     /// What the heavy jobs hold.
     pub jobs_mem_kb: u64,
@@ -347,6 +357,26 @@ struct Sampler {
     stop: Arc<AtomicBool>,
     peak: Arc<Mutex<(i64, Sample)>>,
     kills: Arc<Mutex<usize>>,
+    /// The lowest free memory seen, as `kern.memorystatus_level`.
+    min_free: Arc<Mutex<Option<u8>>>,
+}
+
+/// The machine's swap-ins and swap-outs so far, in pages, from `vm_stat`; None off macOS.
+pub fn swaps(vm_stat: &str) -> Option<(u64, u64)> {
+    let get = |key: &str| {
+        vm_stat.lines().find_map(|l| {
+            l.strip_prefix(key)?
+                .trim()
+                .trim_end_matches('.')
+                .parse::<u64>()
+                .ok()
+        })
+    };
+    Some((get("Swapins:")?, get("Swapouts:")?))
+}
+
+fn swaps_now() -> Option<(u64, u64)> {
+    swaps(&output(&mut Command::new("vm_stat")))
 }
 
 /// Samples the run's processes every `every` until `stop`, keeping the peak and every sample,
@@ -367,16 +397,26 @@ fn sampler(s: Sampler) {
         footprints(&mut all, &fp);
         let lsof = output(Command::new("lsof").args(["-n", "-P", "-d", "cwd", "-Fpn"]));
         let run = in_run(&all, &lsof, &dir, me);
-        let x = sample(&run);
+        let mut x = sample(&run);
+        x.free_pct = reeve::mem::probe().map(|m| m.free_pct);
         let t = clock() - s.t0;
         let _ = append(
             &s.logs.join("samples.tsv"),
             format!(
-                "{t}\t{}\t{}\t{}\t{}\t{}\n",
-                x.mem_kb, x.jobs_mem_kb, x.sessions, x.jobs, x.procs
+                "{t}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                x.mem_kb,
+                x.jobs_mem_kb,
+                x.sessions,
+                x.jobs,
+                x.procs,
+                x.free_pct.map_or_else(String::new, |p| p.to_string())
             )
             .as_bytes(),
         );
+        if let Some(f) = x.free_pct {
+            let mut m = s.min_free.lock().unwrap();
+            *m = Some(m.map_or(f, |m: u8| m.min(f)));
+        }
         if s.budget_kb > 0 && x.jobs_mem_kb > s.budget_kb && t - last_kill >= 5_000 {
             let tree = reap_target(&all, &run);
             if !tree.is_empty() {
@@ -473,6 +513,7 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     )?;
     let cfg = json!({
         "ledger": ledger.display().to_string(), "mb": arm.job_mb, "seconds": arm.job_seconds,
+        "passes": arm.job_passes,
     });
     fs::write(dir.join("job.json"), format!("{cfg:#}\n"))?;
     git!("-C", dir, "add", "-A")?;
@@ -567,6 +608,8 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     let stop = Arc::new(AtomicBool::new(false));
     let peak = Arc::new(Mutex::new((0i64, Sample::default())));
     let kills = Arc::new(Mutex::new(0usize));
+    let min_free = Arc::new(Mutex::new(None));
+    let swaps_before = swaps_now();
     let sampling = {
         let s = Sampler {
             dir: dir.clone(),
@@ -577,6 +620,7 @@ pub fn run(o: &Opts) -> io::Result<i32> {
             stop: stop.clone(),
             peak: peak.clone(),
             kills: kills.clone(),
+            min_free: min_free.clone(),
         };
         thread::spawn(move || sampler(s))
     };
@@ -634,6 +678,15 @@ pub fn run(o: &Opts) -> io::Result<i32> {
 
     let j = jobs(&fs::read_to_string(&ledger_file).unwrap_or_default(), &ids);
     let killed = *kills.lock().unwrap();
+    // The whole machine's paging while the run went: other work on it counts too.
+    let (swapins, swapouts) = match (swaps_before, swaps_now()) {
+        (Some(a), Some(b)) => (Some(b.0.saturating_sub(a.0)), Some(b.1.saturating_sub(a.1))),
+        _ => (None, None),
+    };
+    let mut run_ms = j.run_ms.clone();
+    run_ms.sort_unstable();
+    let job_median = run_ms.get(run_ms.len() / 2).copied();
+    let job_max = run_ms.last().copied();
     let (peak_t, p) = peak.lock().unwrap().clone();
     let mut usage = Usage::default();
     let mut seen = HashSet::new();
@@ -654,6 +707,8 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         "peakMemMb": round(p.mem_kb as f64 / 1024.0, 0), "peakAt": peak_t,
         "peakJobsMemMb": round(p.jobs_mem_kb as f64 / 1024.0, 0),
         "sessionsAtPeak": p.sessions, "jobsAtPeak": p.jobs, "procsAtPeak": p.procs,
+        "jobMedianMs": job_median, "jobMaxMs": job_max, "swapins": swapins, "swapouts": swapouts,
+        "minFreePct": *min_free.lock().unwrap(),
         "runFailures": run_failures, "usage": usage.json(), "costUsd": round(usage.cost, 3),
         "sessionCount": sessions, "reeve": reeve,
     });
@@ -681,7 +736,8 @@ fn arm_json(arm: &Arm) -> Value {
     json!({
         "model": arm.model, "effort": arm.effort, "settingSources": arm.setting_sources,
         "setup": arm.setup, "workers": arm.workers, "jobs": arm.jobs, "jobMb": arm.job_mb,
-        "jobSeconds": arm.job_seconds, "budgetMb": arm.budget_mb, "env": arm.env,
+        "jobSeconds": arm.job_seconds, "jobPasses": arm.job_passes, "budgetMb": arm.budget_mb,
+        "env": arm.env,
         "reeve": arm.reeve.clone().unwrap_or_else(|| "built-in".into()),
     })
 }
@@ -709,12 +765,25 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
         "peak mem MB",
         "sessions at peak",
         "min to done",
+        "job s",
+        "longest job s",
+        "swapins",
+        "swapouts",
+        "min free %",
         "cost $",
     ];
     let mut rows: Vec<Vec<String>> = vec![header.map(String::from).to_vec()];
     for arm in arms.iter().filter(|a| only.is_empty() || only.contains(a)) {
         let rs: Vec<&Value> = runs.iter().filter(|r| r["arm"] == arm.as_str()).collect();
         let col = |k: &str, d| fmt(&rs.iter().map(|r| r[k].as_f64()).collect::<Vec<_>>(), d);
+        let secs = |k: &str| {
+            fmt(
+                &rs.iter()
+                    .map(|r| r[k].as_f64().map(|ms| ms / 1000.0))
+                    .collect::<Vec<_>>(),
+                0,
+            )
+        };
         rows.push(vec![
             arm.clone(),
             rs.len().to_string(),
@@ -730,6 +799,11 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
                     .collect::<Vec<_>>(),
                 1,
             ),
+            secs("jobMedianMs"),
+            secs("jobMaxMs"),
+            col("swapins", 0),
+            col("swapouts", 0),
+            col("minFreePct", 0),
             col("costUsd", 2),
         ]);
     }

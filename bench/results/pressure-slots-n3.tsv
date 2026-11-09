@@ -1,0 +1,7 @@
+batch	run	arm	slots	jobs	completed	lost	doneAt	jobMedianMs	jobMaxMs	swapins	swapouts	minFreePct	peakJobsMemMb	jobsAtPeak	costUsd
+S1	rp-slots-2-1	slots-2	2	12	12	0	165878	24226	33138	12367	0	35	2032	2	0
+S1	rp-slots-2-2	slots-2	2	12	12	0	139760	22448	24184	18426	0	39	2032	2	0
+S1	rp-slots-2-3	slots-2	2	12	12	0	215117	26561	82740	293891	240057	31	2032	2	0
+S1	rp-slots-3-1	slots-3	3	12	12	0	120956	29906	33932	32861	102616	33	3048	3	0
+S1	rp-slots-3-2	slots-3	3	12	12	0	155667	49667	52658	107928	178096	31	3046	3	0
+S1	rp-slots-3-3	slots-3	3	12	12	0	158648	47450	55002	88123	164324	31	3047	3	0

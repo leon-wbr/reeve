@@ -1,0 +1,12 @@
+{
+  "note": "Does a third heavy slot thrash a 16 GB Mac? Six workers each run two 1 GB jobs that hash their memory 50 times (about 45 s alone), with 3 slots and the default 2 GB memory floor. No reaper: the real machine is the limit, and the run records its swapping.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "workers": 6,
+  "jobs": 2,
+  "jobMb": 1000,
+  "jobPasses": 50,
+  "budgetMb": 0,
+  "env": { "REEVE_HEAVY_SLOTS": "3" }
+}
