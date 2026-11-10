@@ -1,0 +1,17 @@
+day	sessions	hours	wakes/h	quiet wakes/h	batched wakes/h	idle wakes	cost Mu	quiet
+20760	18	36.5	13.8	9.8	11.2	260	72.2	70.8
+20761	5	23.3	14.5	4.6	7.1	190	37.1	33.9
+20762	23	35.2	13.0	5.1	6.9	250	78.4	73.5
+20763	2	31.6	7.3	3.6	5.3	98	26.2	25.0
+20764	6	19.7	8.6	7.0	7.7	65	30.7	30.6
+20765	5	13.2	13.6	9.2	10.9	86	30.2	29.5
+20766	12	23.4	33.0	8.8	10.2	460	64.8	57.4
+all	71	182.9	14.5	6.7	8.3	1409	48.5/day	45.8/day
+after/before wakes: median 0.50, range 0.27-0.82, n=7 days
+after/before cost_quiet: median 0.96, range 0.89-1.00, n=7 days
+wakes/h from background command: 1.08 -> 1.08
+wakes/h from monitor expired or ended: 2.74 -> 2.74
+wakes/h from monitor: inbox: 0.62 -> 0.62
+wakes/h from monitor: other: 0.85 -> 0.85
+wakes/h from monitor: reeve watch: 9.05 -> 1.26
+wakes/h from other notification: 0.13 -> 0.13

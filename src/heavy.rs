@@ -50,6 +50,10 @@ pub struct Entry {
     /// The detached job this entry belongs to, under `jobs/`; missing for a run in a terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
+    /// The named worker that started it, so `reeve watch` knows an idle worker is waiting on
+    /// its own job; missing outside a worker or for a run in a terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
 }
 
 /// A ticket or slot file, locked for as long as its owner lives. An unlocked file belongs to a
@@ -253,6 +257,16 @@ impl Queue {
 
     pub fn running(&self) -> Vec<Entry> {
         live(&self.slots_dir())
+    }
+
+    /// The named workers with a job running, queued or waiting for a lock: an idle one of
+    /// these waits on its own job, which isn't news for whoever follows it.
+    pub fn busy_workers(&self) -> std::collections::HashSet<String> {
+        [self.running(), self.waiting(), self.lock_waiting()]
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.worker)
+            .collect()
     }
 
     /// Takes a slot for the ticket's owner if it is first in line, a slot is free, and, when
@@ -711,6 +725,7 @@ fn entry(pid: u32, label: String, lock: Option<String>, job: Option<String>) -> 
         lock,
         limit_ms: None,
         job,
+        worker: None,
     }
 }
 
@@ -767,8 +782,8 @@ fn submit(q: &Queue, job: &Job) -> io::Result<(PathBuf, File)> {
 
 /// The detached runner: waits for the job's turn, runs it, and records how it ended. It logs the
 /// run's event, and if nobody was following when it ended, tells the worker that started it.
-/// The worker is looked up only then, as that can mean asking the agent CLI; the runner has the
-/// caller's environment to look it up from.
+/// The worker is looked up here, not by the caller, as that can mean asking the agent CLI; the
+/// runner has the caller's environment to look it up from.
 fn runner(q: &Queue, dir: &Path, worker: impl FnOnce() -> Option<String>) -> io::Result<i32> {
     let job: Job = read_json(&dir.join("job.json"))
         .ok_or_else(|| io::Error::other(format!("no job in {}", dir.display())))?;
@@ -791,12 +806,18 @@ fn runner(q: &Queue, dir: &Path, worker: impl FnOnce() -> Option<String>) -> io:
         min_free_gb: job.min_free_gb,
         probe: &mem::probe,
     };
-    let me = entry(
-        std::process::id(),
-        job.label.clone(),
-        job.lock.clone(),
-        Some(id.clone()),
-    );
+    // Looked up before the run, in this detached runner, so the caller never waits on it and
+    // `reeve watch` can tell the worker waits on its own job.
+    let worker = worker();
+    let me = Entry {
+        worker: worker.clone(),
+        ..entry(
+            std::process::id(),
+            job.label.clone(),
+            job.lock.clone(),
+            Some(id.clone()),
+        )
+    };
     let limit = job.limit_ms.map(Duration::from_millis);
     let code = run(q, me, &job.cmd, &gate, limit, false, &mut ev).unwrap_or_else(|err| {
         eprintln!("reeve heavy: {err}");
@@ -804,7 +825,7 @@ fn runner(q: &Queue, dir: &Path, worker: impl FnOnce() -> Option<String>) -> io:
     });
     let followed = File::open(dir.join("follow.lock"))
         .is_ok_and(|f| matches!(f.try_lock(), Err(TryLockError::WouldBlock)));
-    let worker = if followed { None } else { worker() };
+    let worker = if followed { None } else { worker };
     ev.heavy_unfollowed = (!followed).then_some(true);
     ev.worker = worker.clone();
     ev.finish(code, None);
@@ -1272,6 +1293,7 @@ mod tests {
             lock: None,
             limit_ms: None,
             job: None,
+            worker: None,
         }
     }
 
@@ -1354,6 +1376,24 @@ mod tests {
         assert_eq!(labels(q.running()), ["next"]);
         assert_eq!(count(q.slots_dir()), 1);
         assert_eq!(count(q.queue_dir()), 0);
+    }
+
+    #[test]
+    fn a_worker_is_busy_while_a_job_of_its_own_runs_or_waits() {
+        let (_d, q) = queue();
+        let mine = |pid, w: &str| Entry {
+            worker: Some(w.into()),
+            ..entry(pid, "t", pid.into())
+        };
+        let mut t = q.enqueue(&mine(1, "runs")).unwrap();
+        let _s = slot(q.try_claim(&mut t, &gate(1)).unwrap());
+        let _w = q.enqueue(&mine(2, "waits")).unwrap();
+        let _l = q.wait_for_lock(&mine(3, "locked")).unwrap();
+        let _n = q.enqueue(&entry(4, "nobody's", 4)).unwrap();
+        crash(q.enqueue(&mine(5, "crashed")).unwrap());
+        let mut busy: Vec<String> = q.busy_workers().into_iter().collect();
+        busy.sort();
+        assert_eq!(busy, ["locked", "runs", "waits"]);
     }
 
     #[test]
