@@ -107,12 +107,24 @@ enum Top {
         #[arg(long)]
         timeout: Option<u64>,
     },
-    /// Print a line on stdout each time a named worker becomes blocked, idle, gone or done, for
+    /// Print a line on stdout each time a named worker is done, blocked or gone, or has sat idle
+    /// without a report and without a `reeve heavy` job of its own for --stall minutes, for
     /// Claude Code's Monitor tool or a background shell. Without names it follows every worker
     /// and never exits; with names it exits once each is done (0) or gone (1)
     Watch {
         #[arg(value_name = "NAME")]
         names: Vec<String>,
+        /// Minutes a worker may sit idle without a report before the watch says so
+        #[arg(
+            long,
+            value_name = "MIN",
+            default_value_t = 10,
+            conflicts_with = "verbose"
+        )]
+        stall: u64,
+        /// Also print starts, every return to work and each short idle, as before
+        #[arg(long)]
+        verbose: bool,
     },
     /// Print a named worker's report
     Report { name: String },
@@ -766,8 +778,15 @@ pub fn main() -> ExitCode {
                 .and_then(|r| workers::wait(&r, &name, timeout))
                 .map(|_| 0)
         }
-        Top::Watch { names } => workers()
-            .and_then(|r| workers::watch(&r, &names))
+        Top::Watch {
+            names,
+            stall,
+            verbose,
+        } => workers()
+            .and_then(|r| {
+                let stall = (!verbose).then(|| std::time::Duration::from_secs(stall * 60));
+                workers::watch(&r, &names, stall)
+            })
             .map(|all_done| i32::from(!all_done)),
         Top::Rm { name } => {
             ev.worker = Some(name.clone());

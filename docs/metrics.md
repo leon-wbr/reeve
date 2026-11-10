@@ -69,6 +69,7 @@ These come from everyday use, not the benchmark. They're measured locally, and n
 | **Sessions per item** | Sessions started per item, and who restarted them | median 1 |
 | **Rule outcomes** | Per automation: fired, succeeded, failed, overridden | overridden < 2% |
 | **Throughput** | Items done per working day | tracked, no target |
+| **Orchestrator wake-ups** | Turns of an orchestrator session started by a notification (a Monitor line, a background command ending), per hour, and its cost per day; `reeve-bench wake --since DATE` replays your own transcripts and prints totals only | tracked, lower |
 
 ## Starting point
 

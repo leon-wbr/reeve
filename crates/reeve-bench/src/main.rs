@@ -5,6 +5,7 @@
 mod bench;
 mod bench_block;
 mod bench_entry;
+mod bench_wake;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -90,6 +91,20 @@ enum Cmd {
     PressureScore { arms: Vec<String> },
     /// Done-check a branch of a repo and print it as JSON
     Check { repo: PathBuf, branch: String },
+    /// Replay your orchestrator sessions from local Claude Code transcripts: wake-ups per hour
+    /// and cost per day as they ran and with the quiet `reeve watch`. Prints
+    /// totals only
+    Wake {
+        /// Where Claude Code keeps transcripts [default: ~/.claude/projects]
+        #[arg(long)]
+        projects: Option<PathBuf>,
+        /// Only requests from this UTC date on, as YYYY-MM-DD
+        #[arg(long)]
+        since: String,
+        /// The quiet watch's --stall, in minutes
+        #[arg(long, default_value_t = 10)]
+        stall: u64,
+    },
     /// One run of the handoff scenario (bench/handoff/arms/<ARM>), named rh-<ARM>-<N>
     Handoff {
         arm: String,
@@ -245,6 +260,18 @@ fn main() -> ExitCode {
         Cmd::Check { repo, branch } => bench::check::check(&repo, &branch)
             .map(|c| println!("{c}"))
             .map(|_| 0),
+        Cmd::Wake {
+            projects,
+            since,
+            stall,
+        } => match bench_wake::parse_ts(&format!("{since}T00:00:00Z")) {
+            None => Err(std::io::Error::other("--since takes YYYY-MM-DD")),
+            Some(since_ms) => bench_wake::main(&bench_wake::Opts {
+                projects: projects.unwrap_or_else(|| bench::home().join(".claude/projects")),
+                since_ms,
+                stall: std::time::Duration::from_secs(stall * 60),
+            }),
+        },
     };
     match result {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),

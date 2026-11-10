@@ -1160,9 +1160,10 @@ pub fn started(w: &Worker) -> String {
     format!(
         "reeve: worker {name} is starting; its report goes to {}\n\
          reeve: {push}follow it with `reeve watch {name}` (Claude Code: the Monitor tool, timeout_ms \
-         1800000, re-armed when it expires; elsewhere a background shell). A line per change \
-         says what to do: done, read the report, then `reeve close {name}`; idle, read {}: \
-         nothing if it waits on its own job, else nudge it with `reeve send {name} \"TEXT\"`, \
+         1800000, re-armed when it expires; elsewhere a background shell). It prints a line only \
+         when something needs you, saying what to do: done, read the report, then `reeve close \
+         {name}`; idle for a while, read {}: nothing if it waits on its own job, else nudge it \
+         with `reeve send {name} \"TEXT\"`, \
          let it carry on, or ask the user; blocked, answer it {} if you can, else ask the user.",
         crate::setup::tilde(&w.report),
         look_where(w),
@@ -1496,9 +1497,18 @@ pub struct Watch {
     /// Following workers by name: one already done or gone when first seen is news too, so a
     /// watch re-armed after Monitor's timeout still reports what ended meanwhile.
     named: bool,
+    /// Quiet: only what needs the follower (done, blocked, gone), and idle once it has lasted
+    /// this many ms with no job of its own. Each line wakes an agent that follows the watch,
+    /// and starts, progress and short idles ask nothing of it.
+    stall_ms: Option<u64>,
     last: std::collections::HashMap<String, State>,
     idle: std::collections::HashMap<String, u32>,
+    /// Quiet: since when each worker has sat idle with no job of its own, in ms.
+    idle_since: std::collections::HashMap<String, u64>,
 }
+
+/// How long a quiet watch lets a worker sit idle without a report before it says so.
+pub const STALL: Duration = Duration::from_secs(10 * 60);
 
 impl Watch {
     pub fn named() -> Watch {
@@ -1508,26 +1518,65 @@ impl Watch {
         }
     }
 
-    /// One line per worker whose state changed since the last poll. A worker seen for the first
-    /// time is reported only if it needs someone, so a restart doesn't replay old news.
+    /// The quiet form, which reports an idle worker once it has sat idle for `stall`.
+    pub fn quiet(self, stall: Duration) -> Watch {
+        Watch {
+            stall_ms: Some(stall.as_millis() as u64),
+            ..self
+        }
+    }
+
+    /// `step_at` for workers with no job of their own, at no particular time.
     pub fn step(&mut self, polled: &[(Worker, State)]) -> Vec<String> {
+        let polled: Vec<_> = polled.iter().map(|(w, s)| (w.clone(), *s, false)).collect();
+        self.step_at(0, &polled)
+    }
+
+    /// One line per worker whose state changed since the last poll, at `now` ms. Each worker
+    /// comes with whether a `reeve heavy` job of its own runs or waits. A worker seen for the
+    /// first time is reported only if it needs someone, so a restart doesn't replay old news.
+    pub fn step_at(&mut self, now: u64, polled: &[(Worker, State, bool)]) -> Vec<String> {
         let mut lines = vec![];
-        for (w, s) in polled {
+        for (w, s, busy) in polled {
+            let mut s = *s;
             let idle = self.idle.entry(w.name.clone()).or_default();
-            *idle = if *s == State::Idle { *idle + 1 } else { 0 };
-            if *s == State::Unknown || (*s == State::Idle && *idle < IDLE_POLLS) {
+            *idle = if s == State::Idle { *idle + 1 } else { 0 };
+            if s == State::Unknown
+                || (self.stall_ms.is_none() && s == State::Idle && *idle < IDLE_POLLS)
+            {
                 continue;
             }
-            let before = self.last.insert(w.name.clone(), *s);
+            let mut stalled = None;
+            if let Some(stall) = self.stall_ms {
+                if s == State::Idle && *busy {
+                    // Waiting on its own job is working, as far as its follower is concerned.
+                    s = State::Running;
+                }
+                if s == State::Idle {
+                    let since = *self.idle_since.entry(w.name.clone()).or_insert(now);
+                    if now.saturating_sub(since) < stall {
+                        continue;
+                    }
+                    stalled = Some((now - since) / 60_000);
+                } else {
+                    self.idle_since.remove(&w.name);
+                }
+            }
+            let before = self.last.insert(w.name.clone(), s);
+            let progress = matches!(s, State::Starting | State::Running);
             let news = match before {
+                _ if progress && self.stall_ms.is_some() => false,
                 None => {
                     matches!(s, State::Blocked | State::Idle)
                         || (self.named && matches!(s, State::Done | State::Gone))
                 }
-                Some(b) => b != *s,
+                Some(b) => b != s,
             };
             if news {
-                lines.push(change(w, before, *s));
+                lines.push(match stalled {
+                    Some(min) => idle_for(w, min),
+                    None => change(w, before, s),
+                });
             }
         }
         lines
@@ -1541,6 +1590,16 @@ impl Watch {
         (!names.is_empty() && states.iter().all(fin))
             .then(|| states.iter().all(|s| *s == Some(&State::Done)))
     }
+}
+
+/// A quiet watch's idle line: it has lasted, with no job of its own running.
+fn idle_for(w: &Worker, min: u64) -> String {
+    let name = &w.name;
+    format!(
+        "{name} idle without a report for {min} min and no `reeve heavy` job of its own: read \
+         {}; nudge it with `reeve send {name} \"TEXT\"`, let it carry on, or ask the user",
+        look_where(w)
+    )
 }
 
 fn change(w: &Worker, before: Option<State>, s: State) -> String {
@@ -1569,8 +1628,9 @@ fn change(w: &Worker, before: Option<State>, s: State) -> String {
 }
 
 /// Prints a line on stdout for each change in the named workers, or in all of them. With names
-/// it returns once each is done or gone: true if all are done.
-pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
+/// it returns once each is done or gone: true if all are done. `stall` makes it quiet (see
+/// `Watch`); `None` prints every change.
+pub fn watch(r: &Registry, names: &[String], stall: Option<Duration>) -> io::Result<bool> {
     for n in names {
         r.get(n)?;
     }
@@ -1579,6 +1639,10 @@ pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
     } else {
         Watch::named()
     };
+    if let Some(stall) = stall {
+        w = w.quiet(stall);
+    }
+    let jobs = crate::heavy::Queue::at(crate::heavy::Queue::default_root());
     loop {
         let all: Vec<Worker> = r
             .all()?
@@ -1586,12 +1650,21 @@ pub fn watch(r: &Registry, names: &[String]) -> io::Result<bool> {
             .filter(|w| names.is_empty() || names.contains(&w.name))
             .collect();
         crate::push::quietly();
+        let busy = if stall.is_some() {
+            jobs.busy_workers()
+        } else {
+            Default::default()
+        };
         let polled: Vec<_> = all
             .iter()
             .cloned()
-            .zip(states(&all).into_iter().map(|(s, _)| s))
+            .zip(states(&all))
+            .map(|(w, (s, _))| {
+                let b = busy.contains(&w.name);
+                (w, s, b)
+            })
             .collect();
-        for line in w.step(&polled) {
+        for line in w.step_at(crate::events::now_ms(), &polled) {
             println!("{line}");
         }
         if let Some(all_done) = w.end(names) {
@@ -2725,6 +2798,98 @@ mod tests {
         assert!(gone[0].starts_with("a gone without a report"), "{gone:?}");
     }
 
+    const MIN: u64 = 60_000;
+
+    fn quiet() -> Watch {
+        Watch::default().quiet(STALL)
+    }
+
+    fn at(w: &mut Watch, t: u64, ws: &[(&Worker, State, bool)]) -> Vec<String> {
+        let ws: Vec<_> = ws.iter().map(|(w, s, b)| ((*w).clone(), *s, *b)).collect();
+        w.step_at(t, &ws)
+    }
+
+    #[test]
+    fn a_quiet_watch_says_nothing_about_starts_or_progress() {
+        let r = Registry::at(temp("quiet"));
+        let a = worker(&r, "a", "w1:p1");
+        let mut w = quiet();
+        for s in [State::Starting, State::Running, State::Unknown] {
+            assert!(at(&mut w, 0, &[(&a, s, false)]).is_empty(), "{s}");
+        }
+        let blocked = at(&mut w, 0, &[(&a, State::Blocked, false)]);
+        assert!(blocked[0].starts_with("a blocked"), "{blocked:?}");
+        assert!(at(&mut w, 0, &[(&a, State::Running, false)]).is_empty());
+        // Blocked again after running is news again.
+        assert_eq!(at(&mut w, 0, &[(&a, State::Blocked, false)]).len(), 1);
+        let done = at(&mut w, 0, &[(&a, State::Done, false)]);
+        assert!(done[0].starts_with("a done: report at "), "{done:?}");
+        let gone = at(&mut quiet(), 0, &[(&a, State::Gone, false)]);
+        assert!(gone.is_empty(), "no old news: {gone:?}");
+    }
+
+    #[test]
+    fn a_quiet_watch_reports_idle_once_it_has_stalled() {
+        let r = Registry::at(temp("quiet-idle"));
+        let a = worker(&r, "a", "w1:p1");
+        let mut w = quiet();
+        let stall = STALL.as_millis() as u64;
+        for t in [0, MIN, 2 * MIN, stall - 1] {
+            assert!(at(&mut w, t, &[(&a, State::Idle, false)]).is_empty(), "{t}");
+        }
+        let idle = at(&mut w, stall + MIN, &[(&a, State::Idle, false)]);
+        assert_eq!(idle.len(), 1, "{idle:?}");
+        assert!(
+            idle[0].starts_with("a idle without a report for 11 min"),
+            "{idle:?}"
+        );
+        assert!(idle[0].contains("reeve send a"), "{idle:?}");
+        assert!(at(&mut w, 3 * stall, &[(&a, State::Idle, false)]).is_empty());
+        // A turn between idles starts the clock again.
+        assert!(at(&mut w, 3 * stall, &[(&a, State::Running, false)]).is_empty());
+        let t0 = 4 * stall;
+        assert!(at(&mut w, t0, &[(&a, State::Idle, false)]).is_empty());
+        assert!(at(&mut w, t0 + stall - 1, &[(&a, State::Idle, false)]).is_empty());
+        assert_eq!(at(&mut w, t0 + stall, &[(&a, State::Idle, false)]).len(), 1);
+    }
+
+    #[test]
+    fn a_quiet_watch_never_reports_a_worker_waiting_on_its_own_job() {
+        let r = Registry::at(temp("quiet-busy"));
+        let a = worker(&r, "a", "w1:p1");
+        let mut w = quiet();
+        let stall = STALL.as_millis() as u64;
+        for t in (0..=3 * stall).step_by(MIN as usize) {
+            assert!(at(&mut w, t, &[(&a, State::Idle, true)]).is_empty(), "{t}");
+        }
+        // Its job ended and it still sits idle: the clock starts now.
+        let t0 = 3 * stall + MIN;
+        assert!(at(&mut w, t0, &[(&a, State::Idle, false)]).is_empty());
+        assert_eq!(at(&mut w, t0 + stall, &[(&a, State::Idle, false)]).len(), 1);
+    }
+
+    #[test]
+    fn a_quiet_named_watch_still_ends_once_each_is_done_or_gone() {
+        let r = Registry::at(temp("quiet-end"));
+        let a = worker(&r, "a", "w1:p1");
+        let b = worker(&r, "b", "w1:p2");
+        let names = s(&["a", "b"]);
+        let mut w = Watch::named().quiet(STALL);
+        let first = at(
+            &mut w,
+            0,
+            &[(&a, State::Done, false), (&b, State::Running, false)],
+        );
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(w.end(&names), None);
+        at(
+            &mut w,
+            0,
+            &[(&a, State::Done, false), (&b, State::Gone, false)],
+        );
+        assert_eq!(w.end(&names), Some(false));
+    }
+
     #[test]
     fn watch_follows_a_start_through_to_running_or_its_failure() {
         let r = Registry::at(temp("watch-start"));
@@ -2848,7 +3013,7 @@ mod tests {
         assert!(!idle.contains("claude logs"), "{idle}");
         let started = started(&exec);
         assert!(
-            started.contains("idle, read ") && started.contains("c.jsonl"),
+            started.contains("idle for a while, read ") && started.contains("c.jsonl"),
             "{started}"
         );
         assert!(!started.contains("claude attach"), "{started}");
