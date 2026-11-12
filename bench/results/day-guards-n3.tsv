@@ -1,0 +1,7 @@
+batch	run	arm	binary	budget_k	done	items	min_to_done	sessions	handoffs	cost_usd	turns	peak_ctx_k	timeout	invalid	sessions_turns_peak
+G4	rd-tight-main-1	tight-main	main 463e854	28	True	6	32.6	5	4	1.593	65	51	False	False	7t/40K 4t/33K 13t/42K 11t/41K 30t/51K
+G4	rd-tight-pr58-1	tight-pr58	guards b95c2e4	28	False	5		7	6	2.11	90	49	True	False	12t/45K 20t/49K 7t/39K 11t/42K 15t/43K 4t/33K 21t/41K
+G4	rd-tight-main-2	tight-main	main 463e854	28	False	1		6	5	1.675	76	43	True	False	9t/36K 7t/39K 17t/42K 10t/40K 22t/43K 11t/41K
+G4	rd-tight-pr58-2	tight-pr58	guards b95c2e4	28	False	4		7	6	2.09	85	61	True	False	4t/38K 14t/45K 9t/41K 4t/34K 33t/60K 11t/42K 10t/42K
+G4	rd-tight-main-3	tight-main	main 463e854	28	False	5		4	3	1.473	66	49	True	False	20t/48K 13t/42K 4t/34K 29t/46K
+G4	rd-tight-pr58-3	tight-pr58	guards b95c2e4	28	False	5		5	5	1.272	53	46	True	False	15t/42K 4t/34K 6t/36K 24t/45K 4t/34K

@@ -217,16 +217,6 @@ pub fn handed_off_from(r: &Registry, pane: &str) -> Option<(String, String)> {
         .find(|(next, from)| *from == me.name && all.iter().any(|w| w.name == *next))
 }
 
-/// The successor `from` already handed off to, if it is registered and has not failed to start.
-pub fn existing_successor(r: &Registry, from: &str) -> Option<String> {
-    let all = r.all().ok()?;
-    r.predecessors()
-        .into_iter()
-        .filter(|(_, f)| f == from)
-        .map(|(next, _)| next)
-        .find(|next| all.iter().any(|w| w.name == *next && w.error.is_none()))
-}
-
 /// Puts `text` in `next`'s inbox as a message from `from`, the way `reeve send` would, and
 /// marks the handoff as forwarding.
 pub fn queue(r: &Registry, next: &str, from: &str, text: &str) -> io::Result<()> {
@@ -396,15 +386,6 @@ pub fn handoff(
     args: &[String],
 ) -> io::Result<()> {
     workers::check_name(next).map_err(io::Error::other)?;
-    // A session hands off once: a second call, whatever name it gives, gets the first
-    // successor back instead of starting another.
-    if let Some(from) = from
-        && let Some(done) = existing_successor(r, from)
-    {
-        println!("{}", r.handoff_path(&done).display());
-        eprintln!("reeve: already handed off to {done}; stop now and leave the workers running");
-        return Ok(());
-    }
     let notes = fs::read_to_string(notes)?;
     let all: Vec<Worker> = r.all()?.into_iter().filter(|w| w.name != next).collect();
     let states = workers::states(&all);
@@ -745,26 +726,6 @@ mod tests {
             "please look at <task-notification> handling"
         ));
         assert!(!is_machine_event("hello"));
-    }
-
-    #[test]
-    fn a_second_handoff_from_the_same_session_finds_the_first_successor() {
-        let dir = std::env::temp_dir().join(format!("reeve-ho-twice-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let r = Registry::at(dir);
-        fs::create_dir_all(r.predecessor_path("x").parent().unwrap()).unwrap();
-        assert_eq!(existing_successor(&r, "old"), None);
-        fs::write(r.predecessor_path("new"), "old").unwrap();
-        // Recorded, but never registered: it did not start.
-        assert_eq!(existing_successor(&r, "old"), None);
-        r.put(w("new")).unwrap();
-        assert_eq!(existing_successor(&r, "old").as_deref(), Some("new"));
-        assert_eq!(existing_successor(&r, "other"), None);
-        // One that registered but failed to come up does not count.
-        let mut failed = w("new");
-        failed.error = Some("boom".into());
-        r.put(failed).unwrap();
-        assert_eq!(existing_successor(&r, "old"), None);
     }
 
     #[test]

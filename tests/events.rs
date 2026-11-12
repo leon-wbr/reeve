@@ -389,14 +389,12 @@ fn the_context_hook_answers_from_the_transcript_and_stays_out_of_the_log() {
     use std::io::Write;
     let d = tempfile::tempdir().unwrap();
     let transcript = d.path().join("t.jsonl");
-    let usage = r#"{"message":{"usage":{"input_tokens":5,"cache_read_input_tokens":20000}}}"#;
-    // A session that has grown since its first, small turn.
-    let first = r#"{"message":{"usage":{"input_tokens":5,"cache_read_input_tokens":100}}}"#;
-    std::fs::write(&transcript, format!("{first}\n{usage}")).unwrap();
+    let usage = r#"{"message":{"usage":{"input_tokens":5,"cache_read_input_tokens":2000}}}"#;
+    std::fs::write(&transcript, usage).unwrap();
     std::fs::create_dir_all(d.path().join("cfg/reeve")).unwrap();
     std::fs::write(
         d.path().join("cfg/reeve/config.json"),
-        r#"{"handoff_tokens": 12000}"#,
+        r#"{"handoff_tokens": 1000}"#,
     )
     .unwrap();
     let hook = |payload: &str, env: Option<&str>| {
@@ -429,10 +427,10 @@ fn the_context_hook_answers_from_the_transcript_and_stays_out_of_the_log() {
         .as_str()
         .unwrap();
     assert!(
-        notice.contains("20K tokens, past the 12K handoff threshold"),
+        notice.contains("2K tokens, past the 1K handoff threshold"),
         "{notice}"
     );
-    assert_eq!(stdout(&hook(&prompt, Some("50000"))), "");
+    assert_eq!(stdout(&hook(&prompt, Some("5000"))), "");
     let bad = hook("not json", None);
     assert!(bad.status.success());
     assert_eq!(stdout(&bad), "");

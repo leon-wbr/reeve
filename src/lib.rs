@@ -136,7 +136,7 @@ enum Top {
     /// Print a named worker's report
     Report { name: String },
     /// Hand off to a successor: write a handoff file from your notes and the named workers, and
-    /// start the successor as a named worker told to read it. Stop once it succeeds. A second handoff from the same session returns its existing successor
+    /// start the successor as a named worker told to read it. Stop once it succeeds; if it fails, carry on
     Handoff {
         /// The successor's worker name
         #[arg(long)]

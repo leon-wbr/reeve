@@ -476,6 +476,20 @@ Arm `b0-tight`: b0 with the harness's notes handoff at 28K, the budget `reeve-ti
 - At n=1, vanilla finished the day faster and cheaper than either reeve arm at this budget. n=1 can't rank them.
 - **Not run:** reeve-tight on main and on this branch, n=3 each, and b0-tight runs 2–3.
 
+### Batch G4, 12 Nov: handoff guards against main at 28K, n=3 ([results/day-guards-n3.tsv](results/day-guards-n3.tsv))
+
+`reeve-tight` (Sonnet, 28K) with main 463e854's reeve against the guards at b95c2e4, the same driver for both, run as arms `tight-main` and `tight-pr58` (copies of `reeve-tight` under their own run names, binary picked with `REEVE_BENCH_REEVE`). Six runs interleaved (main, guards, …), one at a time under the `reeve-bench` lock, 10:53–16:18 UTC, on a machine busy with other sessions' heavy jobs. None invalid.
+
+| Arm (28K, n=3) | Done | Items of 6 | Sessions per run | Handoffs per run | Peak ctx K | Cost $ per run |
+|---|---|---|---|---|---|---|
+| main | 1/3 | 5 [1–6] | 5 [4–6] | 4 [3–5] | 49 [43–51] | 1.59 [1.47–1.68] |
+| guards | 0/3 | 5 [4–5] | 7 [5–7] | 6 [5–6] | 49 [46–61] | 2.09 [1.27–2.11] |
+
+- **The guards don't cut sessions on today's main:** 7 against 5 per run. Batch G's storm is gone: no main session handed off at once. Every one ran at least 4 turns and reached 33–51K, so the 10K-past-start rule has nothing to stop.
+- **No run made a second handoff from one session or failed to start a successor**, so those guards weren't exercised either.
+- **Verdict:** the growth rule and the second-handoff guard are dropped; the PR keeps only the message that a failed start means carry on and tell the user.
+- **Weekly:** 4% before the first run, 14% after the last.
+
 ## Pressure scenario
 
 [pressure/](pressure/README.md) checks the loss of 1 Nov. Six workers, started with `reeve run`, each run two 600 MB, 60 s jobs through `reeve heavy`, with 3 slots. The bench's memory budget is 1500 MB, so two jobs fit and a third at once doesn't. Past the budget, a stand-in for Claude Code's low-memory reaper kills the newest `reeve heavy` caller's background shell under a session, at most once every 5 s. Memory is `top`'s physical footprint. On this Mac, which was swapping 8 GB that evening, RSS read a 600 MB job as 40 MB. Sonnet, `--setting-sources project,local`, reeve's setup.
