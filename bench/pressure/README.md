@@ -18,7 +18,8 @@ The run ends when every job has finished, or when no job has started or finished
 `arms/<ARM>/arm.json` holds every parameter of a run:
 
 - **Sessions:** `model`, `effort`, `settingSources`, `setup` (as in the [day scenario](../day/README.md#arms)).
-- **Load:** `workers`, `jobs`, `jobMb`, `jobSeconds`, `budgetMb`.
+- **Load:** `workers`, `jobs`, `jobMb`, `jobSeconds`, `jobPasses`, `budgetMb`. `shortJobs` short jobs (ids like `w1-s1`, `shortPasses` passes each) take turns with each worker's `jobs`; scripted workers label them `job-short` and the rest `job-long`.
+- **`history`:** label → ms. Five heavy runs per label of that length are written to the run's event log before it starts, so `reeve heavy` knows which labels are short. The run's own counts leave them out.
 - **`reeve`:** a reeve binary relative to the repo root, a branch's build for instance. By default it's the one beside `reeve-bench`.
 - **`env`:** added to every session, background ones included, through the run's settings. Use it for reeve's knobs, such as `REEVE_HEAVY_SLOTS`.
 

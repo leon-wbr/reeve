@@ -1,6 +1,7 @@
 #!/bin/bash
 # A scripted stand-in for `claude` in the pressure scenario: each worker runs the jobs its prompt
-# names, one after another, through `reeve heavy`, with no model behind it. It measures the
+# names, one after another, through `reeve heavy` labelled `job-short` or `job-long`, with no
+# model behind it. It measures the
 # machine and reeve's queue without a model's latency, cost or trust prompt:
 #   REEVE_BENCH_CLAUDE=bench/pressure/scripted-claude reeve-bench pressure ARM N
 case "$1" in
@@ -12,7 +13,8 @@ prompt="${@: -1}"
 ids=$(printf '%s' "$prompt" | grep -o 'job.mjs --id [A-Za-z0-9-]*' | awk '{print $3}')
 (
   for id in $ids; do
-    reeve heavy -- node scripts/job.mjs --id "$id" >/dev/null 2>&1
+    case "$id" in *-s*) label=job-short ;; *) label=job-long ;; esac
+    reeve heavy --label "$label" -- node scripts/job.mjs --id "$id" >/dev/null 2>&1
   done
 ) </dev/null >/dev/null 2>&1 &
 echo "backgrounded · s$$ · scripted worker"

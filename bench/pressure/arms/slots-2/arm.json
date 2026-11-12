@@ -8,5 +8,5 @@
   "jobMb": 1000,
   "jobPasses": 50,
   "budgetMb": 0,
-  "env": { "REEVE_HEAVY_SLOTS": "2" }
+  "env": { "REEVE_HEAVY_SLOTS": "2", "REEVE_HEAVY_EXPRESS": "0" }
 }

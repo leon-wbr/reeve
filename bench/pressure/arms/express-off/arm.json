@@ -1,0 +1,15 @@
+{
+  "note": "Does the express slot bring back #68's swapping? Six workers each run a short 1 GB job, a long 1 GB job (150 hashing passes, over a minute alone) and another short one (4 passes), with 2 slots, the default 2 GB floor and no express slot, as on main. The run's event log is seeded with each label's history. No reaper: the real machine is the limit.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "workers": 6,
+  "jobs": 1,
+  "jobMb": 1000,
+  "jobPasses": 150,
+  "shortJobs": 2,
+  "shortPasses": 4,
+  "history": { "job-short": 5000, "job-long": 300000 },
+  "budgetMb": 0,
+  "env": { "REEVE_HEAVY_SLOTS": "2", "REEVE_HEAVY_EXPRESS": "0" }
+}
