@@ -121,7 +121,7 @@ impl std::fmt::Display for Wait {
 
 #[derive(Debug, PartialEq)]
 pub enum Claim {
-    Slot(Held),
+    Slot(Box<Held>),
     Wait(Wait),
 }
 
@@ -346,7 +346,7 @@ impl Queue {
             },
         )?;
         let _ = fs::remove_file(&ticket.path);
-        Ok(Claim::Slot(slot))
+        Ok(Claim::Slot(Box::new(slot)))
     }
 
     /// Rewrites a slot, e.g. to record the command's process group.
@@ -1110,7 +1110,7 @@ fn run(
             Claim::Slot(slot) => {
                 ev.heavy_wait_ms = Some(queued.elapsed().as_millis() as u64);
                 let _ = fs::remove_file(q.why_dir().join(me.pid.to_string()));
-                break slot;
+                break *slot;
             }
             Claim::Wait(w) => {
                 let why = w.to_string();
@@ -1418,7 +1418,7 @@ mod tests {
 
     fn slot(c: Claim) -> Held {
         match c {
-            Claim::Slot(s) => s,
+            Claim::Slot(s) => *s,
             other => panic!("expected a slot, got {other:?}"),
         }
     }
