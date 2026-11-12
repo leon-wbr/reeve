@@ -9,5 +9,5 @@
   "jobSeconds": 60,
   "budgetMb": 1500,
   "reeve": "target/release/reeve",
-  "env": { "REEVE_HEAVY_SLOTS": "3" }
+  "env": { "REEVE_HEAVY_SLOTS": "3", "REEVE_HEAVY_MIN_FREE": "2" }
 }

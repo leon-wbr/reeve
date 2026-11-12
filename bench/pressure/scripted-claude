@@ -1,0 +1,18 @@
+#!/bin/bash
+# A scripted stand-in for `claude` in the pressure scenario: each worker runs the jobs its prompt
+# names, one after another, through `reeve heavy`, with no model behind it. It measures the
+# machine and reeve's queue without a model's latency, cost or trust prompt:
+#   REEVE_BENCH_CLAUDE=bench/pressure/scripted-claude reeve-bench pressure ARM N
+case "$1" in
+  agents) echo '[]'; exit 0 ;;
+  stop|kill|rm) exit 0 ;;
+esac
+[ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
+prompt="${@: -1}"
+ids=$(printf '%s' "$prompt" | grep -o 'job.mjs --id [A-Za-z0-9-]*' | awk '{print $3}')
+(
+  for id in $ids; do
+    reeve heavy -- node scripts/job.mjs --id "$id" >/dev/null 2>&1
+  done
+) </dev/null >/dev/null 2>&1 &
+echo "backgrounded · s$$ · scripted worker"

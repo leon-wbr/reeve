@@ -440,6 +440,35 @@ Sonnet, `--setting-sources project,local`, auto mode, budget 60K, the fixed driv
 - **A first run was set aside**, kept as `logs-invalid/rp-reeve-1-rss`. It measured RSS, its jobs were one repeated byte that macOS compresses, and its workers took the daemon's 30K handoff threshold and handed off 9 times, which cost $2.46.
 - **This is the baseline** for memory-aware heavy changes (reeve-heavy-mem, reeve-worker-cap). An arm's `reeve` field picks the binary and its `env` field sets reeve's knobs.
 
+### Batch P2: jobs that outlive their caller (#52), n=3 ([results/pressure-heavy-mem-n3.tsv](results/pressure-heavy-mem-n3.tsv))
+
+Arm `heavy-mem` is the baseline arm with #52's build (`reeve: target/release/reeve`) and `REEVE_HEAVY_MIN_FREE=2` pinned in its env. Same scenario, model, slots and budget as P1; P1 is the baseline.
+
+| Arm | Jobs | Completed | Lost | Reaper kills | Peak memory MB | Sessions at peak | Min to done | Cost $ |
+|---|---|---|---|---|---|---|---|---|
+| reeve (P1) | 12 | 4 [2–5] | 8 [7–10] | 8 [6–8] | 3284 [3223–3299] | 6 | – (no run finished) | 1.08 [0.91–1.25] |
+| heavy-mem | 12 | **12 [12–12]** | **0 [0–0]** | 15 [10–16] | 3446 [3414–3508] | 6 | **4.2 [4.2–6.5]** | 2.12 [1.75–2.14] |
+
+- **No job is lost.** The reaper stand-in still killed the newest caller's shell, 10–16 times a run, and 34 of the 36 jobs ended with nobody following them (`heavy_unfollowed`). Each ran on in its detached runner, and its worker learned the outcome from its inbox. Every run finished all 12 jobs; no P1 run finished, and P1's runs ended after 5–9.5 min once nothing had happened for three minutes.
+- **No job ran twice.** 12 starts for 12 jobs in every run, so workers didn't rerun a job whose shell died.
+- **Peak memory is 5% higher** (3446 against 3284 MB median). The jobs' own peak is the same, 1842 MB with 3 jobs, so the difference is in sessions and reeve processes: callers and runners, and sessions working rather than idle. Like P1's, it stays over the 1500 MB budget, because three slots admit three 600 MB jobs.
+- **Cost is about double per run, and lower per job:** $2.12 for 12 jobs is $0.18 a job against P1's $1.08 for 4, $0.27 a job. The workers did all their work instead of stopping early.
+- **The memory floor never fired here.** `REEVE_HEAVY_MIN_FREE` reads the real machine's free memory, which stayed above 2 GB. The bench's budget is its own figure, which reeve can't see. So P2 proves the survival half of #52; the floor is covered only by its tests (`below_the_memory_floor_*`). A scenario for it would need jobs that actually take the machine below the floor.
+- **Cost against the weekly limit:** 39% before run 1, 41% after run 3; other sessions shared the plan, and the readings are whole percents.
+
+### Batch S1: two heavy slots or three, n=3 ([results/pressure-slots-n3.tsv](results/pressure-slots-n3.tsv))
+
+Does a third slot pay on a 10-core, 16 GB Mac now that runs past the first need 2 GB free? Arms `slots-2` and `slots-3`: six workers × two 1 GB jobs that hash their memory 50 times (about 24 s alone), the default 2 GB floor, no reaper. The workers are [scripted-claude](pressure/scripted-claude), not models, so the runs measure the machine and the queue only and cost nothing. They ran interleaved on 9 Nov, with about 15 sessions and the machine's own two heavy slots busy beside them. Swap figures are the whole machine's, in 16 KB pages.
+
+| Slots | Min to done | Job s, median | Longest job s | Swap-outs | Lowest free % |
+|---|---|---|---|---|---|
+| 2 | 2.8 [2.3–3.6] | 24 [22–27] | 33 [24–83] | 0 [0–240057] | 35 [31–39] |
+| 3 | 2.6 [2.0–2.6] | 47 [30–50] | 53 [34–55] | 164324 [102616–178096] | 31 [31–33] |
+
+- **A third slot thrashes.** With three jobs at once, each took about twice as long, and the machine swapped out 1.6–2.8 GB per run. Two of the three 2-slot runs swapped out nothing; the third swapped while the machine's other work peaked (its longest job, 83 s, ran then). The third job's work is lost to paging: the run ends about as late as with two.
+- **The floor doesn't see it.** Free memory never read below 31% (about 5 GB) in any run, well above the 2 GB floor, so the floor let the third job in every time. `kern.memorystatus_level` counts memory the OS can reclaim by compressing and swapping, which is the paging that slowed the jobs.
+- **So the default stays at a quarter of the cores**, 2 here. The replay that gave 3 slots 88% less waiting (`reeve-bench heavy-replay`) doesn't model memory; this batch is why that figure doesn't hold here.
+
 ### Cost of this round (1–2 Nov)
 
 | Time (UTC) | Weekly | Point |

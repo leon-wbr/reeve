@@ -20,9 +20,42 @@ fn the_ledger_counts_a_job_done_once() {
             started: 3,
             live: 1,
             last_t: Some(31),
-            last_done: Some(30)
+            last_done: Some(30),
+            run_ms: vec![10, 9],
         }
     );
+}
+
+#[test]
+fn swaps_come_from_vm_stat() {
+    let vm = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
+Pages free:                                    25224.\n\
+Swapins:                                    65825992.\n\
+Swapouts:                                   72404662.\n";
+    assert_eq!(swaps(vm), Some((65825992, 72404662)));
+    assert_eq!(swaps("Pages free: 1."), None);
+}
+
+#[test]
+fn a_job_with_passes_works_through_its_memory_and_logs_how_long() {
+    let t = tempfile::tempdir().unwrap();
+    let (dir, ledger) = (t.path().join("repo"), t.path().join("ledger"));
+    copy_dir(&super::super::root().join("pressure/repo"), &dir).unwrap();
+    let cfg = json!({ "ledger": ledger, "mb": 8, "seconds": 600, "passes": 3 });
+    fs::write(dir.join("job.json"), cfg.to_string()).unwrap();
+    let ok = Command::new("node")
+        .arg(dir.join("scripts/job.mjs"))
+        .args(["--id", "a"])
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let log = fs::read_to_string(ledger.join("events.jsonl")).unwrap();
+    let done: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(done["event"], "done");
+    // It didn't wait the ten minutes `seconds` asks for.
+    assert!(done["workMs"].as_i64().unwrap() < 60_000, "{done}");
+    assert_eq!(jobs(&log, &["a".to_string()]).completed, 1);
 }
 
 const PS: &str = "100 1 1000 /opt/claude/claude --bg\n\
@@ -53,7 +86,8 @@ fn a_sample_sums_the_processes_in_the_run_and_their_children() {
             jobs_mem_kb: 600_000,
             sessions: 2,
             jobs: 1,
-            procs: 7
+            procs: 7,
+            free_pct: None,
         }
     );
 }
@@ -250,6 +284,33 @@ fn a_fake_run_starts_the_workers_measures_the_jobs_and_is_scored() {
 }
 
 #[test]
+fn the_slot_arms_differ_only_in_their_slots() {
+    let arm = |name: &str| -> Arm {
+        let p = super::super::root()
+            .join("pressure/arms")
+            .join(name)
+            .join("arm.json");
+        serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap()
+    };
+    let (two, three) = (arm("slots-2"), arm("slots-3"));
+    assert_eq!(two.env["REEVE_HEAVY_SLOTS"], "2");
+    assert_eq!(three.env["REEVE_HEAVY_SLOTS"], "3");
+    assert_eq!(two.budget_mb, 0, "no reaper: the real machine is the limit");
+    assert!(two.job_passes > 0);
+    let same = |a: &Arm| {
+        (
+            a.workers,
+            a.jobs,
+            a.job_mb,
+            a.job_passes,
+            a.budget_mb,
+            a.reeve.clone(),
+        )
+    };
+    assert_eq!(same(&two), same(&three));
+}
+
+#[test]
 fn the_arm_in_the_repo_parses() {
     let text =
         fs::read_to_string(super::super::root().join("pressure/arms/reeve/arm.json")).unwrap();
@@ -263,4 +324,38 @@ fn the_arm_in_the_repo_parses() {
         a.env["REEVE_HEAVY_SLOTS"], "3",
         "three slots, so the reaper has work"
     );
+}
+
+#[test]
+fn the_scripted_claude_runs_each_workers_jobs_through_reeve_heavy() {
+    let t = tempfile::tempdir().unwrap();
+    let bin = t.path().join("fakes");
+    fs::create_dir_all(&bin).unwrap();
+    write_exe(&bin.join("reeve"), FAKE_REEVE).unwrap();
+    let arm = r#"{ "workers": 2, "jobs": 2, "jobMb": 8, "jobPasses": 2, "budgetMb": 0 }"#;
+    let o = Opts {
+        arm: "scripted".into(),
+        n: "1".into(),
+        root: super::super::root(),
+        trials: t.path().join("trials"),
+        claude: super::super::root().join("pressure/scripted-claude"),
+        reeve: bin.join("reeve"),
+        home: t.path().join("home"),
+        tick_ms: 100,
+        // Its workers start their jobs in the background, after `claude --bg` returns.
+        quiet_ms: 15_000,
+        total_ms: 60_000,
+        sample_ms: 200,
+        extra_env: vec![],
+        arm_json: Some(arm.into()),
+    };
+    assert_eq!(run(&o).unwrap(), 0);
+    let r: Value = serde_json::from_str(
+        &fs::read_to_string(o.trials.join("logs/rp-scripted-1/result.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(r["end"], "all done", "{r:#}");
+    assert_eq!(r["completed"].as_u64(), Some(4), "{r:#}");
+    assert!(r["jobMedianMs"].as_i64().is_some(), "{r:#}");
+    assert_eq!(r["costUsd"].as_f64(), Some(0.0), "no model: {r:#}");
 }
