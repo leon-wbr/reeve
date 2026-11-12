@@ -257,6 +257,7 @@ mod tests {
             report: format!("/st/reports/{name}.md").into(),
             handle: "w1:p1".into(),
             starting: false,
+            queued: false,
             error: None,
             parent: None,
             pushed: false,
