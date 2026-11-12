@@ -1,0 +1,7 @@
+batch	run	arm	express	jobs	completed	lost	doneAt	jobMedianMs	jobMaxMs	longJobMedianMs	shortJobMedianMs	heavyWaitS	heavyMaxWaitS	swapins	swapouts	minFreePct	peakJobsMemMb	jobsAtPeak	costUsd
+S2	rp-express-off-1	express-off	0	18	18	0	205890	2066	64466	62942	2021	806.8	128.1	3645	0	62	2031	2	0
+S2	rp-express-off-2	express-off	0	18	18	0	215315	2358	68884	67320	1978	842.9	137	4244	0	42	2031	2	0
+S2	rp-express-off-3	express-off	0	18	18	0	214314	1936	67501	66394	1911	841	133.8	397	0	35	2032	2	0
+S2	rp-express-on-1	express-on	1	18	18	0	203868	2520	65131	64216	1937	423.3	129.4	1870	0	48	3087	3	0
+S2	rp-express-on-2	express-on	1	18	18	0	206200	2654	67047	64882	1929	426.1	132.3	174	0	41	3046	3	0
+S2	rp-express-on-3	express-on	1	18	18	0	204544	2584	66553	64278	2334	421.8	130.2	434	0	38	3046	3	0
