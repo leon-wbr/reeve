@@ -347,7 +347,7 @@ pub fn quiet_replay(wakes: &[Wake], stall: Duration) -> (Vec<bool>, Vec<u64>) {
         }
         let polled: Vec<(Worker, State, bool)> =
             state.iter().map(|(n, s)| (worker(n), *s, false)).collect();
-        if !quiet.step_at(t, &polled).is_empty() {
+        if !quiet.step_at(t, &polled, &Default::default()).is_empty() {
             emitted.push(t);
         }
         // Step to the next line, or one tick on while something may yet stall.
