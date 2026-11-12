@@ -1,4 +1,4 @@
-//! `reeve handoff`: writes a handoff file that lists the session's named workers, and starts the
+//! `reeve handoff`: writes a handoff file that lists the live named workers, and starts the
 //! successor as a named worker whose launch prompt points at that file. A message the user sends
 //! the predecessor after that goes to the successor's inbox, like any `reeve send`, and the
 //! predecessor is closed.
@@ -12,15 +12,20 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-pub fn doc(notes: &str, workers: &[(Worker, State)]) -> String {
+/// Lists each worker with its state, all but finished [`workers::history`], which one line counts.
+pub fn doc(notes: &str, workers: &[(Worker, (State, bool))]) -> String {
     let mut d = notes.trim_end().to_string();
     d += "\n\n## Workers\n\n";
     if workers.is_empty() {
         d += "No named workers.\n";
         return d;
     }
-    for (w, s) in workers {
+    for (w, (s, _)) in workers.iter().filter(|(_, (_, h))| !h) {
         d += &format!("- {}: {s}, report at {}\n", w.name, w.report.display());
+    }
+    let older = workers.iter().filter(|(_, (_, h))| *h).count();
+    if older > 0 {
+        d += &format!("- {older} older finished workers: `reeve ls --all`\n");
     }
     d += "\nThey keep running without the previous session. `reeve ls` shows them, `reeve wait NAME` \
           blocks until one has written its report and `reeve report NAME` prints it. Don't restart \
@@ -382,15 +387,9 @@ pub fn handoff(
 ) -> io::Result<()> {
     workers::check_name(next).map_err(io::Error::other)?;
     let notes = fs::read_to_string(notes)?;
-    let all: Vec<(Worker, State)> = r
-        .all()?
-        .into_iter()
-        .filter(|w| w.name != next)
-        .map(|w| {
-            let s = workers::state(&w);
-            (w, s)
-        })
-        .collect();
+    let all: Vec<Worker> = r.all()?.into_iter().filter(|w| w.name != next).collect();
+    let states = workers::states(&all);
+    let all: Vec<_> = all.into_iter().zip(states).collect();
     let file = r.handoff_path(next);
     fs::create_dir_all(file.parent().expect("handoffs dir"))?;
     fs::write(&file, doc(&notes, &all))?;
@@ -448,16 +447,37 @@ mod tests {
     }
 
     #[test]
-    fn the_handoff_keeps_the_notes_and_lists_every_worker_with_its_report() {
+    fn the_handoff_keeps_the_notes_and_lists_each_live_worker_with_its_report() {
         let d = doc(
             "Goal: ship it.\n",
-            &[(w("fix-a"), State::Running), (w("fix-b"), State::Done)],
+            &[
+                (w("fix-a"), (State::Running, false)),
+                (w("fix-b"), (State::Done, false)),
+            ],
         );
         assert!(d.starts_with("Goal: ship it.\n"));
         assert!(d.contains("- fix-a: running, report at /st/reports/fix-a.md"));
         assert!(d.contains("- fix-b: done, report at /st/reports/fix-b.md"));
         assert!(d.contains("reeve wait"));
         assert!(d.contains("reeve report"));
+    }
+
+    #[test]
+    fn the_handoff_leaves_finished_history_to_reeve_ls_all() {
+        let d = doc(
+            "Goal.",
+            &[
+                (w("fix-a"), (State::Idle, false)),
+                (w("past-1"), (State::Done, true)),
+                (w("past-2"), (State::Gone, true)),
+            ],
+        );
+        assert!(d.contains("- fix-a: idle"));
+        assert!(!d.contains("past-"), "{d}");
+        assert!(
+            d.contains("2 older finished workers: `reeve ls --all`"),
+            "{d}"
+        );
     }
 
     #[test]
