@@ -323,6 +323,18 @@ Measured on a copy of the live `workers.json` under its own `XDG_STATE_HOME`, ma
 
 The brief was already capped at 1,000 characters. It now spends those characters on workers someone has to act on. 79 of the 95 still listed are done: they finished in the last 12 hours or still have their pane open, waiting for `reeve close`.
 
+## The handoff lists only live workers (12 Nov)
+
+`reeve handoff` listed every worker in the registry under the notes' Workers heading, so handoff files grew from 18 KB to 104 KB over two weeks, nearly all of it that list, and every successor read it first. The change applies `reeve ls`'s finished-history rule to the handoff: it lists running, idle, blocked and starting workers, and finished ones whose report is under 12 hours old or whose pane or session is still there, then one line counting the rest with a pointer to `reeve ls --all`.
+
+Measured on a copy of the live `workers.json` (1,068 workers) with a real 5.4 KB set of handoff notes, rendering both lists from the same states, n=3 ([results/handoff-live.tsv](results/handoff-live.tsv)). Runs differ by 3 bytes, where one worker's state changed. No agent sessions ran. Plain Claude Code has no handoff file, so main is the baseline.
+
+| | main | branch |
+|---|---|---|
+| handoff bytes (≈ tokens) | 106,120 (≈26,500) | **6,756 (≈1,700), −94%** |
+| handoff lines | 1,105 | **50** |
+| workers listed | 1,068 | 12 (+ "1,056 older finished") |
+
 ## Day scenario
 
 The six-ask scenario never needed reeve's workers, heavy queue or handoffs, so [day/](day/README.md) is a working day in one repo: five backlog tasks, an urgent sixth at minute 5, a 60 s suite and a 6-minute fixture rebuild on one shared test database, a scripted user, and a context budget that forces handoffs. All runs: Sonnet, `--setting-sources project,local`, auto mode, budget 30K, n=3 per arm. Per-run rows are in [results/day-sonnet-30k.tsv](results/day-sonnet-30k.tsv). No run showed an API or network error, so none is invalid on that count.
