@@ -72,11 +72,19 @@ fn names(mut ws: Vec<&Seen>, label: impl Fn(&Seen) -> String) -> String {
 /// What waits on the user, newest first, or nothing when nothing does.
 pub fn waiting_section(workers: &[Seen]) -> String {
     let recent = |w: &Seen| w.age < WINDOW_SECS;
+    // A session that handed off waits on nothing while its successor is listed: the successor
+    // is the one to watch, and shows up here itself if it is blocked, failed or gone.
+    let handed_off = |w: &Seen| {
+        w.status == "partial"
+            && crate::handoff::handed_off_to(&w.summary)
+                .is_some_and(|next| workers.iter().any(|o| o.name == next))
+    };
     let mut entries: Vec<(u64, String)> = Vec::new();
     for w in workers {
         let when = workers::age(w.age);
         let line = match w.state {
             State::Blocked => format!("{} blocked, {when}: answer it {}", w.name, w.answer),
+            State::Done if handed_off(w) => continue,
             State::Done if recent(w) && (w.status == "partial" || w.status == "failed") => {
                 format!("{} {}, {when}: {}", w.name, w.status, w.summary)
             }
@@ -243,6 +251,52 @@ mod tests {
              Running (2): d, e idle\n\
              Done in the last 2 days (1): f. `reeve report NAME` prints a report."
         );
+    }
+
+    const NOTE: &str = "partial\nHanded off to next-2, which carries on and reports when done.\n\nHandoff notes: /x.md\n";
+
+    #[test]
+    fn a_session_that_handed_off_does_not_wait_while_its_successor_is_listed() {
+        let out = render(&[
+            seen("old", State::Done, 60, NOTE),
+            seen("next-2", State::Running, 30, ""),
+        ]);
+        assert_eq!(out, "Running (1): next-2");
+    }
+
+    #[test]
+    fn a_failed_or_gone_successor_waits_as_its_own_entry() {
+        let out = render(&[
+            seen("old", State::Done, 60, NOTE),
+            seen("next-2", State::Gone, 30, ""),
+        ]);
+        assert_eq!(
+            out,
+            "Waiting on you (1):\n- next-2 gone without a report, 30s"
+        );
+        let out = render(&[
+            seen("old", State::Done, 60, NOTE),
+            seen("next-2", State::Done, 30, "failed\nno disk"),
+        ]);
+        assert_eq!(out, "Waiting on you (1):\n- next-2 failed, 30s: no disk");
+    }
+
+    #[test]
+    fn a_handoff_whose_successor_is_not_listed_still_waits() {
+        let out = waiting_section(&[seen("old", State::Done, 60, NOTE)]);
+        assert!(
+            out.contains("old partial, 1m: Handed off to next-2"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_note_the_handoff_writes_is_the_one_waiting_recognises() {
+        let note = crate::handoff::note("n-2", Path::new("/x.md"));
+        let (status, summary) = parse_report(&note);
+        assert_eq!(status, "partial");
+        assert_eq!(crate::handoff::handed_off_to(&summary), Some("n-2"));
+        assert_eq!(crate::handoff::handed_off_to("The PR needs opening."), None);
     }
 
     #[test]
