@@ -652,6 +652,8 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         ids.extend(mine);
     }
 
+    // Quiet counts from here: starting the workers can take seconds on a loaded machine.
+    let launched = clock();
     let ledger_file = ledger.join("events.jsonl");
     let (end, timeout) = loop {
         thread::sleep(Duration::from_millis(o.tick_ms));
@@ -660,10 +662,10 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         if j.completed == ids.len() {
             break ("all done", false);
         }
-        let last = j.last_t.unwrap_or(t0);
+        let last = j.last_t.unwrap_or(launched);
         if live_jobs(&ledger.join("live")) == 0
             && now - last >= o.quiet_ms
-            && now - t0 >= o.quiet_ms
+            && now - launched >= o.quiet_ms
         {
             break ("quiet", false);
         }
