@@ -374,7 +374,9 @@ pub const BLOCK_START: &str = "<!-- reeve setup claude: start -->";
 pub const BLOCK_END: &str = "<!-- reeve setup claude: end -->";
 
 pub fn block() -> String {
-    format!("{BLOCK_START}\n## reeve\n\n{USES}{BLOCK_END}")
+    format!(
+        "{BLOCK_START}\n## reeve\n\nreeve is installed. Use the `reeve` skill for heavy commands, long or parallel work and handoffs.\n{BLOCK_END}"
+    )
 }
 
 /// Where setup's block sits in CLAUDE.md, end marker included.
@@ -1027,18 +1029,24 @@ mod tests {
     }
 
     #[test]
-    fn the_block_names_the_uses_and_points_at_the_manual() {
-        let b = block();
-        for part in [
-            "reeve is installed",
-            "test suites, e2e, builds and installs",
-            "named workers",
-            "Context check",
-            "`reeve --skill`",
-        ] {
-            assert!(b.contains(part), "{part}");
-        }
-        assert!(b.len() / 4 <= 100, "{}", b.len() / 4);
+    fn the_block_only_says_reeve_is_there_and_names_its_skill() {
+        assert_eq!(
+            block(),
+            format!(
+                "{BLOCK_START}\n## reeve\n\nreeve is installed. Use the `reeve` skill for heavy commands, long or parallel work and handoffs.\n{BLOCK_END}"
+            )
+        );
+        assert!(block().len() / 4 <= 50, "{}", block().len() / 4);
+    }
+
+    #[test]
+    fn the_first_version_of_the_block_is_replaced_by_the_current_one() {
+        let v1 = "<!-- reeve setup claude: start -->\n## reeve\n\nreeve is installed on this machine. Use it for:\n\n- heavy commands: test suites, e2e, builds and installs;\n- long or parallel work, as named workers;\n- handing off to a successor when a \"Context check\" says so.\n\nRun `reeve --skill` before any of these; it prints the current manual with the exact commands.\n<!-- reeve setup claude: end -->";
+        let text = format!("# Mine\n\n{v1}\n\nafter\n");
+        assert_eq!(block_state(Some(&text)), Ok(Piece::Stale));
+        let new = add_block(&text).unwrap();
+        assert_eq!(new, format!("# Mine\n\n{}\n\nafter\n", block()));
+        assert_eq!(block_state(Some(&new)), Ok(Piece::Ok));
     }
 
     #[test]
