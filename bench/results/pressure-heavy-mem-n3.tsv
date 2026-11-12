@@ -1,0 +1,4 @@
+batch	run	arm	jobs	started	completed	lost	killed	peakMemMb	peakJobsMemMb	sessionsAtPeak	jobsAtPeak	doneAt	end	endedAt	costUsd	sessionCount	heavy_runs	heavy_wait_s	handoffs	heavy_unfollowed
+P2	rp-heavy-mem-1	heavy-mem	12	12	12	0	16	3508	1842	6	3	252776	all done	254086	2.115	6	12	759.2	0	12
+P2	rp-heavy-mem-2	heavy-mem	12	12	12	0	10	3414	1842	6	3	389516	all done	391197	1.747	6	12	358.7	0	10
+P2	rp-heavy-mem-3	heavy-mem	12	12	12	0	15	3446	1842	6	3	250187	all done	251895	2.136	6	12	688.1	0	12
