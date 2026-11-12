@@ -46,6 +46,13 @@ pub struct Arm {
     pub job_passes: u64,
     /// The memory the machine has for the run's jobs, in MB: past it, the reaper kills.
     pub budget_mb: u64,
+    /// Short jobs each worker runs besides its `jobs`, taking turns with them: same memory,
+    /// `shortPasses` passes. Scripted workers label them `job-short`, the others `job-long`.
+    pub short_jobs: usize,
+    pub short_passes: u64,
+    /// Heavy runs seeded into the run's event log before it starts, five per label, each taking
+    /// the given ms: the history `reeve heavy` judges a label's expected run time by.
+    pub history: Map<String, Value>,
     /// The reeve to run, relative to the repo root; by default the one beside reeve-bench.
     pub reeve: Option<String>,
     /// Added to every session's environment: reeve's knobs, such as `REEVE_HEAVY_SLOTS`.
@@ -66,6 +73,9 @@ impl Default for Arm {
             job_seconds: 60,
             job_passes: 0,
             budget_mb: 1500,
+            short_jobs: 0,
+            short_passes: 0,
+            history: Map::new(),
             reeve: None,
             env: Map::new(),
             note: None,
@@ -115,15 +125,22 @@ pub struct Jobs {
     /// When the last event happened, and when the last job finished.
     pub last_t: Option<i64>,
     pub last_done: Option<i64>,
-    /// How long each finished run took, start to done, in ms.
+    /// How long each finished run took, start to done, in ms, all and split by kind.
     pub run_ms: Vec<i64>,
+    pub short_ms: Vec<i64>,
+    pub long_ms: Vec<i64>,
+}
+
+/// A short job's id: `w1-s2`.
+fn is_short(id: &str) -> bool {
+    id.contains("-s")
 }
 
 /// The ledger's events against the jobs `ids`: a job is completed once one of its runs finished.
 pub fn jobs(ledger: &str, ids: &[String]) -> Jobs {
     let mut j = Jobs::default();
     let mut done = HashSet::new();
-    let mut running: HashMap<i64, i64> = HashMap::new();
+    let mut running: HashMap<i64, (i64, String)> = HashMap::new();
     for e in ledger
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -133,11 +150,16 @@ pub fn jobs(ledger: &str, ids: &[String]) -> Jobs {
         match e["event"].as_str() {
             Some("start") => {
                 j.started += 1;
-                running.insert(pid, e["t"].as_i64().unwrap_or(0));
+                running.insert(pid, (e["t"].as_i64().unwrap_or(0), js_str(e.get("id"))));
             }
             Some("done") => {
-                if let (Some(t0), Some(t)) = (running.remove(&pid), e["t"].as_i64()) {
+                if let (Some((t0, id)), Some(t)) = (running.remove(&pid), e["t"].as_i64()) {
                     j.run_ms.push(t - t0);
+                    if is_short(&id) {
+                        j.short_ms.push(t - t0);
+                    } else {
+                        j.long_ms.push(t - t0);
+                    }
                 }
                 if ids.contains(&js_str(e.get("id"))) {
                     done.insert(js_str(e.get("id")));
@@ -454,6 +476,9 @@ pub fn prompt(ids: &[String]) -> String {
     )
 }
 
+/// The `version` of the heavy runs an arm's `history` seeds, so the run's own counts leave them out.
+const SEED: &str = "bench-seed";
+
 /// One run of an arm, named rp-<ARM>-<N>.
 pub fn run(o: &Opts) -> io::Result<i32> {
     let leaks = crate::bench_block::ancestor_instructions(&o.trials);
@@ -513,7 +538,7 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     )?;
     let cfg = json!({
         "ledger": ledger.display().to_string(), "mb": arm.job_mb, "seconds": arm.job_seconds,
-        "passes": arm.job_passes,
+        "passes": arm.job_passes, "shortPasses": arm.short_passes,
     });
     fs::write(dir.join("job.json"), format!("{cfg:#}\n"))?;
     git!("-C", dir, "add", "-A")?;
@@ -593,6 +618,16 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         &claude_wrapper(&o.claude, &arm.flags(&settings)),
     )?;
 
+    let ev = state.join("reeve/events.jsonl");
+    fs::create_dir_all(state.join("reeve"))?;
+    for (label, ms) in &arm.history {
+        for _ in 0..5 {
+            let e = json!({ "ts": 0, "version": SEED, "command": "heavy", "label": label,
+                "ms": ms, "exit": 0, "heavy_run_ms": ms });
+            append(&ev, format!("{e}\n").as_bytes())?;
+        }
+    }
+
     let since = SystemTime::now();
     let t0 = clock();
     let events = logs.join("events.jsonl");
@@ -632,7 +667,14 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     let mut ids = vec![];
     let mut run_failures = 0;
     for w in 1..=arm.workers {
-        let mine: Vec<String> = (1..=arm.jobs).map(|j| format!("w{w}-{j}")).collect();
+        let mine: Vec<String> = (1..=arm.jobs.max(arm.short_jobs))
+            .flat_map(|j| {
+                let short = (j <= arm.short_jobs).then(|| format!("w{w}-s{j}"));
+                short
+                    .into_iter()
+                    .chain((j <= arm.jobs).then(|| format!("w{w}-{j}")))
+            })
+            .collect();
         let name = format!("{run}-w{w}");
         let out = Command::new("reeve")
             .args(["run", "--name", &name, "--cwd"])
@@ -688,6 +730,12 @@ pub fn run(o: &Opts) -> io::Result<i32> {
     let mut run_ms = j.run_ms.clone();
     run_ms.sort_unstable();
     let job_median = run_ms.get(run_ms.len() / 2).copied();
+    let median = |mut v: Vec<i64>| {
+        v.sort_unstable();
+        v.get(v.len() / 2).copied()
+    };
+    let short_median = median(j.short_ms.clone());
+    let long_median = median(j.long_ms.clone());
     let job_max = run_ms.last().copied();
     let (peak_t, p) = peak.lock().unwrap().clone();
     let mut usage = Usage::default();
@@ -698,7 +746,12 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         sessions += usize::from(!f.to_string_lossy().contains("/subagents/"));
     }
     let reeve = super::day::reeve_metrics(
-        &fs::read_to_string(state.join("reeve/events.jsonl")).unwrap_or_default(),
+        &fs::read_to_string(&ev)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.contains(SEED))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
     let total = ids.len();
     let result = json!({
@@ -709,7 +762,8 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         "peakMemMb": round(p.mem_kb as f64 / 1024.0, 0), "peakAt": peak_t,
         "peakJobsMemMb": round(p.jobs_mem_kb as f64 / 1024.0, 0),
         "sessionsAtPeak": p.sessions, "jobsAtPeak": p.jobs, "procsAtPeak": p.procs,
-        "jobMedianMs": job_median, "jobMaxMs": job_max, "swapins": swapins, "swapouts": swapouts,
+        "jobMedianMs": job_median, "jobMaxMs": job_max,
+        "shortJobMedianMs": short_median, "longJobMedianMs": long_median, "swapins": swapins, "swapouts": swapouts,
         "minFreePct": *min_free.lock().unwrap(),
         "runFailures": run_failures, "usage": usage.json(), "costUsd": round(usage.cost, 3),
         "sessionCount": sessions, "reeve": reeve,
@@ -739,6 +793,7 @@ fn arm_json(arm: &Arm) -> Value {
         "model": arm.model, "effort": arm.effort, "settingSources": arm.setting_sources,
         "setup": arm.setup, "workers": arm.workers, "jobs": arm.jobs, "jobMb": arm.job_mb,
         "jobSeconds": arm.job_seconds, "jobPasses": arm.job_passes, "budgetMb": arm.budget_mb,
+        "shortJobs": arm.short_jobs, "shortPasses": arm.short_passes, "history": arm.history,
         "env": arm.env,
         "reeve": arm.reeve.clone().unwrap_or_else(|| "built-in".into()),
     })
@@ -769,6 +824,9 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
         "min to done",
         "job s",
         "longest job s",
+        "long job s",
+        "short job s",
+        "wait s",
         "swapins",
         "swapouts",
         "min free %",
@@ -803,6 +861,14 @@ pub fn score(trials: &Path, only: &[String]) -> io::Result<String> {
             ),
             secs("jobMedianMs"),
             secs("jobMaxMs"),
+            secs("longJobMedianMs"),
+            secs("shortJobMedianMs"),
+            fmt(
+                &rs.iter()
+                    .map(|r| r["reeve"]["heavyWaitS"].as_f64())
+                    .collect::<Vec<_>>(),
+                0,
+            ),
             col("swapins", 0),
             col("swapouts", 0),
             col("minFreePct", 0),

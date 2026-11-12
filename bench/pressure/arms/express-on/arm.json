@@ -1,0 +1,15 @@
+{
+  "note": "The express-off arm with one express slot, so a short job may run beside two long ones: a third 1 GB run at once.",
+  "model": "sonnet",
+  "settingSources": "project,local",
+  "setup": "arms/reeve",
+  "workers": 6,
+  "jobs": 1,
+  "jobMb": 1000,
+  "jobPasses": 150,
+  "shortJobs": 2,
+  "shortPasses": 4,
+  "history": { "job-short": 5000, "job-long": 300000 },
+  "budgetMb": 0,
+  "env": { "REEVE_HEAVY_SLOTS": "2", "REEVE_HEAVY_EXPRESS": "1" }
+}

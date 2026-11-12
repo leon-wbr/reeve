@@ -481,6 +481,20 @@ Does a third slot pay on a 10-core, 16 GB Mac now that runs past the first need 
 - **The floor doesn't see it.** Free memory never read below 31% (about 5 GB) in any run, well above the 2 GB floor, so the floor let the third job in every time. `kern.memorystatus_level` counts memory the OS can reclaim by compressing and swapping, which is the paging that slowed the jobs.
 - **So the default stays at a quarter of the cores**, 2 here. The replay that gave 3 slots 88% less waiting (`reeve-bench heavy-replay`) doesn't model memory; this batch is why that figure doesn't hold here.
 
+### Batch S2: the express slot under memory, n=3 ([results/pressure-express-n3.tsv](results/pressure-express-n3.tsv))
+
+An express run is a third run at once, which S1 showed can thrash. Does it here? Arms `express-off` (main's queue) and `express-on` (one express slot), both 2 slots and the 2 GB floor, scripted workers, no reaper. Each of six workers runs a short 1 GB job (4 hashing passes, about 2 s), a long 1 GB job (150 passes, over a minute) and another short one, labelled `job-short` and `job-long`. The run's event log is seeded with five runs per label (5 s and 5 min), so the express rule knows which is which. Interleaved on 12 Nov, with other sessions and their heavy runs busy on the machine.
+
+| Express | Min to done | Queue wait s, total | Longest wait s | Long job s | Short job s | Swap-outs | Lowest free % | Peak jobs MB |
+|---|---|---|---|---|---|---|---|---|
+| 0 (main) | 3.6 [3.4–3.6] | 841 [807–843] | 134 [128–137] | 66 [63–67] | 2 [2–2] | 0 [0–0] | 42 [35–62] | 2031 |
+| 1 | 3.4 [3.4–3.4] | **423 [422–426]** | 130 [129–132] | 64 [64–65] | 2 [2–2] | 0 [0–0] | 41 [38–48] | 3046 |
+
+- **Half the waiting, and nothing swapped.** The express slot halves the total queue wait, and no run swapped out a page with it on or off. A third 1 GB job was in memory at the peak, but for about 2 s at a time, so the long jobs didn't slow down (64 s against 66 s).
+- **Long runs don't starve.** The longest wait is unchanged (130 s against 134 s), as the replay found.
+- **The run ends about as late,** 3.4 against 3.6 minutes: the long jobs, two at a time, set the end.
+- **What this doesn't show:** short runs that each hold a lot of memory for longer, up to the minute the rule allows. Those are closer to S1's third slot.
+
 ### Cost of this round (1–2 Nov)
 
 | Time (UTC) | Weekly | Point |

@@ -1,6 +1,7 @@
 // A heavy job that needs memory: it holds `mb` of RAM for `seconds` (job.json), as a build or an
 // e2e run would. With `passes` set it instead works through its memory that many times (a hash
-// of the whole buffer each), so it takes longer when the machine pages its memory out. It writes
+// of the whole buffer each), so it takes longer when the machine pages its memory out. A short
+// job (an id like `w1-s2`) does `shortPasses` when that is set. It writes
 // its start and finish to the ledger the bench reads, and keeps a live file while it holds the
 // memory, so the bench can tell a job that was killed.
 import crypto from 'node:crypto';
@@ -28,9 +29,10 @@ const done = (extra) => {
   fs.rmSync(mine, { force: true });
   console.log(`job ${id}: done`);
 };
-if (cfg.passes > 0) {
+const passes = /-s/.test(id) && cfg.shortPasses > 0 ? cfg.shortPasses : cfg.passes;
+if (passes > 0) {
   const t0 = Date.now();
-  for (let p = 0; p < cfg.passes; p++) crypto.createHash('sha1').update(hold).digest();
+  for (let p = 0; p < passes; p++) crypto.createHash('sha1').update(hold).digest();
   done({ workMs: Date.now() - t0 });
 } else {
   setTimeout(() => done({}), cfg.seconds * 1000);

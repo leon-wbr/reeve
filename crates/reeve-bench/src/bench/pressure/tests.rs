@@ -1,14 +1,16 @@
 use super::*;
 
 #[test]
-fn the_ledger_counts_a_job_done_once() {
-    let ids: Vec<String> = ["w1-1", "w1-2", "w2-1"].map(String::from).to_vec();
+fn the_ledger_counts_a_job_done_once_and_splits_short_from_long() {
+    let ids: Vec<String> = ["w1-1", "w1-2", "w2-1", "w2-s1"].map(String::from).to_vec();
     let ledger = [
         r#"{"t":10,"id":"w1-1","pid":1,"event":"start"}"#,
         r#"{"t":20,"id":"w1-1","pid":1,"event":"done"}"#,
         r#"{"t":21,"id":"w1-1","pid":3,"event":"start"}"#,
         r#"{"t":30,"id":"w1-1","pid":3,"event":"done"}"#,
         r#"{"t":31,"id":"w1-2","pid":4,"event":"start"}"#,
+        r#"{"t":32,"id":"w2-s1","pid":5,"event":"start"}"#,
+        r#"{"t":34,"id":"w2-s1","pid":5,"event":"done"}"#,
         "not json",
     ]
     .join("\n");
@@ -16,12 +18,14 @@ fn the_ledger_counts_a_job_done_once() {
     assert_eq!(
         j,
         Jobs {
-            completed: 1,
-            started: 3,
+            completed: 2,
+            started: 4,
             live: 1,
-            last_t: Some(31),
-            last_done: Some(30),
-            run_ms: vec![10, 9],
+            last_t: Some(34),
+            last_done: Some(34),
+            run_ms: vec![10, 9, 2],
+            short_ms: vec![2],
+            long_ms: vec![10, 9],
         }
     );
 }
@@ -203,7 +207,7 @@ case "$1" in
   run) shift; while [ "$1" != "--" ]; do [ "$1" = --cwd ] && cwd="$2"; shift; done; shift
     printf '{"command":"run","exit":0}\n' >> "$ev"
     (cd "$cwd" && nohup claude --bg "$1" >/dev/null 2>&1 &) ;;
-  heavy) shift; [ "$1" = "--" ] && shift
+  heavy) while [ "$1" != "--" ]; do shift; done; shift
     "$@"; c=$?
     printf '{"command":"heavy","exit":%s,"heavy_wait_ms":0}\n' "$c" >> "$ev"; exit $c ;;
   *) printf '{"command":"%s","exit":0}\n' "$1" >> "$ev" ;;
@@ -283,15 +287,42 @@ fn a_fake_run_starts_the_workers_measures_the_jobs_and_is_scored() {
     );
 }
 
+fn arm(name: &str) -> Arm {
+    let p = super::super::root()
+        .join("pressure/arms")
+        .join(name)
+        .join("arm.json");
+    serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap()
+}
+
+#[test]
+fn the_express_arms_differ_only_in_the_express_slot() {
+    let (off, on) = (arm("express-off"), arm("express-on"));
+    assert_eq!(off.env["REEVE_HEAVY_EXPRESS"], "0");
+    assert_eq!(on.env["REEVE_HEAVY_EXPRESS"], "1");
+    assert_eq!(off.env["REEVE_HEAVY_SLOTS"], on.env["REEVE_HEAVY_SLOTS"]);
+    let same = |a: &Arm| {
+        (
+            a.workers,
+            a.jobs,
+            a.short_jobs,
+            a.job_mb,
+            a.job_passes,
+            a.short_passes,
+            a.history.clone(),
+            a.budget_mb,
+        )
+    };
+    assert_eq!(same(&off), same(&on));
+    assert!(
+        off.history["job-long"].as_u64().unwrap() > 60_000
+            && off.history["job-short"].as_u64().unwrap() <= 60_000,
+        "the history makes only the short label short"
+    );
+}
+
 #[test]
 fn the_slot_arms_differ_only_in_their_slots() {
-    let arm = |name: &str| -> Arm {
-        let p = super::super::root()
-            .join("pressure/arms")
-            .join(name)
-            .join("arm.json");
-        serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap()
-    };
     let (two, three) = (arm("slots-2"), arm("slots-3"));
     assert_eq!(two.env["REEVE_HEAVY_SLOTS"], "2");
     assert_eq!(three.env["REEVE_HEAVY_SLOTS"], "3");
@@ -332,7 +363,8 @@ fn the_scripted_claude_runs_each_workers_jobs_through_reeve_heavy() {
     let bin = t.path().join("fakes");
     fs::create_dir_all(&bin).unwrap();
     write_exe(&bin.join("reeve"), FAKE_REEVE).unwrap();
-    let arm = r#"{ "workers": 2, "jobs": 2, "jobMb": 8, "jobPasses": 2, "budgetMb": 0 }"#;
+    let arm = r#"{ "workers": 2, "jobs": 2, "jobMb": 8, "jobPasses": 2, "budgetMb": 0,
+        "shortJobs": 1, "shortPasses": 1, "history": { "job-short": 5000 } }"#;
     let o = Opts {
         arm: "scripted".into(),
         n: "1".into(),
@@ -355,7 +387,13 @@ fn the_scripted_claude_runs_each_workers_jobs_through_reeve_heavy() {
     )
     .unwrap();
     assert_eq!(r["end"], "all done", "{r:#}");
-    assert_eq!(r["completed"].as_u64(), Some(4), "{r:#}");
+    assert_eq!(r["completed"].as_u64(), Some(6), "{r:#}");
     assert!(r["jobMedianMs"].as_i64().is_some(), "{r:#}");
+    assert!(r["shortJobMedianMs"].as_i64().is_some(), "{r:#}");
+    assert!(r["longJobMedianMs"].as_i64().is_some(), "{r:#}");
+    assert_eq!(
+        r["reeve"]["heavyRuns"], 6,
+        "the seeded history isn't counted: {r:#}"
+    );
     assert_eq!(r["costUsd"].as_f64(), Some(0.0), "no model: {r:#}");
 }

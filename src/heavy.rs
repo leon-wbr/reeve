@@ -10,6 +10,7 @@
 
 use crate::events::Event;
 use crate::mem::{self, Mem};
+use crate::sched::{self, Expect, History, Room, Turn};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -54,6 +55,22 @@ pub struct Entry {
     /// its own job; missing outside a worker or for a run in a terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// What its label's history says it takes; missing when there is too little history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<Expect>,
+}
+
+impl Entry {
+    /// Whether it may use an express slot: a waiter expected to be short, or a run that is
+    /// and hasn't overrun.
+    fn short(&self, running: bool, now: u64) -> bool {
+        let ran = if running {
+            now.saturating_sub(self.since)
+        } else {
+            0
+        };
+        sched::counts_short(self.expect.as_ref(), ran)
+    }
 }
 
 /// A ticket or slot file, locked for as long as its owner lives. An unlocked file belongs to a
@@ -64,26 +81,24 @@ pub struct Held {
     _lock: File,
 }
 
-/// Why the first waiter in line didn't get a slot, or how many are ahead of a later one.
+/// Why a waiter didn't get a slot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Wait {
+    /// This many are ahead in line, and one of them could start now.
     Ahead(usize),
-    /// First in line, with every slot taken by this many runs.
-    Slots(usize),
-    /// First in line with a slot free, but less memory free than the floor, in GB.
-    Memory {
-        free: f64,
-        floor: f64,
-    },
+    /// Nobody ahead could start and neither can this one: the slots it may use are taken.
+    Slots { ahead: usize, running: usize },
+    /// It could start, but less memory is free than the floor, in GB.
+    Memory { free: f64, floor: f64 },
 }
 
 impl Wait {
     /// Lines are printed when this changes, not every time the free memory figure moves.
-    fn kind(&self) -> (u8, usize) {
+    fn kind(&self) -> (u8, usize, usize) {
         match *self {
-            Wait::Ahead(n) => (0, n),
-            Wait::Slots(n) => (1, n),
-            Wait::Memory { .. } => (2, 0),
+            Wait::Ahead(n) => (0, n, 0),
+            Wait::Slots { ahead, running } => (1, ahead, running),
+            Wait::Memory { .. } => (2, 0, 0),
         }
     }
 }
@@ -92,10 +107,12 @@ impl std::fmt::Display for Wait {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
             Wait::Ahead(n) => write!(f, "waiting for a slot: {n} ahead"),
-            Wait::Slots(n) => write!(f, "waiting for a slot: 0 ahead, {n} running"),
+            Wait::Slots { ahead, running } => {
+                write!(f, "waiting for a slot: {ahead} ahead, {running} running")
+            }
             Wait::Memory { free, floor } => write!(
                 f,
-                "waiting for memory: 0 ahead, {free:.1} GB free, below the {floor:.1} GB floor \
+                "waiting for memory: {free:.1} GB free, below the {floor:.1} GB floor \
                  (REEVE_HEAVY_MIN_FREE)"
             ),
         }
@@ -104,13 +121,15 @@ impl std::fmt::Display for Wait {
 
 #[derive(Debug, PartialEq)]
 pub enum Claim {
-    Slot(Held),
+    Slot(Box<Held>),
     Wait(Wait),
 }
 
 /// What a waiter at the head of the line must find before it gets a slot.
 pub struct Gate<'a> {
     pub slots: usize,
+    /// Slots on top of `slots` that only runs expected to be short may use.
+    pub express: usize,
     /// GB that must stay free once one heavy run is going; 0 turns the check off.
     pub min_free_gb: f64,
     pub probe: &'a dyn Fn() -> Option<Mem>,
@@ -269,9 +288,10 @@ impl Queue {
             .collect()
     }
 
-    /// Takes a slot for the ticket's owner if it is first in line, a slot is free, and, when
-    /// another heavy run is already going, enough memory is free. The first run always gets
-    /// its slot, so a machine that is short of memory still makes progress, one run at a time.
+    /// Takes a slot for the ticket's owner if nobody ahead in line could start, a slot it may
+    /// use is free (an express one too, for a run expected to be short; see [`sched`]), and,
+    /// when another heavy run is already going, enough memory is free. The first run always
+    /// gets its slot, so a machine that is short of memory still makes progress, one at a time.
     pub fn try_claim(&self, ticket: &mut Held, gate: &Gate) -> io::Result<Claim> {
         fs::create_dir_all(&self.root)?;
         // Without the lock, two waiters could both count a free slot before either takes it.
@@ -287,15 +307,28 @@ impl Queue {
             *ticket = self.enqueue(&e)?;
             waiting = self.waiting();
         }
-        let Some(0) = waiting.iter().position(|w| w.pid == e.pid) else {
-            let n = waiting.iter().position(|w| w.pid == e.pid);
-            return Ok(Claim::Wait(Wait::Ahead(n.unwrap_or(waiting.len()))));
+        let at = waiting
+            .iter()
+            .position(|w| w.pid == e.pid)
+            .unwrap_or(waiting.len());
+        let now = now_ms();
+        let running: Vec<bool> = self.running().iter().map(|r| r.short(true, now)).collect();
+        let ahead: Vec<bool> = waiting[..at].iter().map(|w| w.short(false, now)).collect();
+        let room = Room {
+            slots: gate.slots,
+            express: gate.express,
         };
-        let running = self.running().len();
-        if running >= gate.slots {
-            return Ok(Claim::Wait(Wait::Slots(running)));
+        match room.turn(&ahead, e.short(false, now), &running) {
+            Turn::Ahead => return Ok(Claim::Wait(Wait::Ahead(at))),
+            Turn::Full => {
+                return Ok(Claim::Wait(Wait::Slots {
+                    ahead: at,
+                    running: running.len(),
+                }));
+            }
+            Turn::Go => {}
         }
-        if running > 0
+        if !running.is_empty()
             && gate.min_free_gb > 0.0
             && let Some(m) = (gate.probe)()
             && m.free_gb() < gate.min_free_gb
@@ -313,7 +346,7 @@ impl Queue {
             },
         )?;
         let _ = fs::remove_file(&ticket.path);
-        Ok(Claim::Slot(slot))
+        Ok(Claim::Slot(Box::new(slot)))
     }
 
     /// Rewrites a slot, e.g. to record the command's process group.
@@ -446,6 +479,41 @@ pub fn default_slots(cores: usize) -> usize {
     (cores / 4).max(1)
 }
 
+/// Express slots by default: one, so short runs needn't wait behind long ones.
+pub const DEFAULT_EXPRESS: usize = 1;
+
+/// How many bytes at the end of the event log are read for a label's history: days of runs.
+const HISTORY_BYTES: u64 = 8 << 20;
+
+/// The heavy runs in the end of the event log, oldest first. Empty if there is no log.
+fn history() -> History {
+    let mut h = History::default();
+    let Ok(mut f) = crate::events::path().and_then(File::open) else {
+        return h;
+    };
+    let len = f.metadata().map_or(0, |m| m.len());
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(len.saturating_sub(HISTORY_BYTES)))
+        .is_err()
+        || f.read_to_end(&mut buf).is_err()
+    {
+        return h;
+    }
+    // The first line may be cut; it doesn't parse and is skipped.
+    for line in String::from_utf8_lossy(&buf).lines() {
+        if !line.contains("\"heavy_run_ms\"") {
+            continue;
+        }
+        if let Ok(e) = serde_json::from_str::<Event>(line)
+            && e.command == "heavy"
+            && let (Some(label), Some(ms)) = (&e.label, e.heavy_run_ms)
+        {
+            h.push(label, ms);
+        }
+    }
+    h
+}
+
 /// Free memory, in GB, below which a second heavy run waits.
 pub const DEFAULT_MIN_FREE_GB: f64 = 2.0;
 
@@ -470,6 +538,10 @@ pub struct Args {
         value_parser = parse_gb
     )]
     min_free: f64,
+    /// Slots on top of --slots for runs expected to be short: each of the label's last few runs
+    /// took under a minute. 0 turns them off
+    #[arg(long, value_name = "N", env = "REEVE_HEAVY_EXPRESS", default_value_t = DEFAULT_EXPRESS)]
+    express: usize,
     /// Run only while no other `reeve heavy` holds KEY, on any agent on this machine. For a
     /// resource that can't be shared; prefer making runs independent (own database or port)
     #[arg(long, value_name = "KEY", value_parser = non_empty)]
@@ -574,6 +646,8 @@ struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lock: Option<String>,
     slots: usize,
+    #[serde(default)]
+    express: usize,
     min_free_gb: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit_ms: Option<u64>,
@@ -684,6 +758,7 @@ pub fn main(
     let interactive = unsafe { libc::isatty(0) == 1 && libc::tcgetpgrp(0) == libc::getpgrp() };
     let gate = Gate {
         slots,
+        express: args.express,
         min_free_gb: args.min_free,
         probe: &mem::probe,
     };
@@ -697,6 +772,7 @@ pub fn main(
         ev_label,
         lock: args.lock,
         slots,
+        express: args.express,
         min_free_gb: args.min_free,
         limit_ms: args.timeout.map(|l| l.as_millis() as u64),
         cwd: cwd(),
@@ -726,6 +802,7 @@ fn entry(pid: u32, label: String, lock: Option<String>, job: Option<String>) -> 
         limit_ms: None,
         job,
         worker: None,
+        expect: None,
     }
 }
 
@@ -803,6 +880,7 @@ fn runner(q: &Queue, dir: &Path, worker: impl FnOnce() -> Option<String>) -> io:
     ev.label = Some(job.ev_label.clone());
     let gate = Gate {
         slots: job.slots,
+        express: job.express,
         min_free_gb: job.min_free_gb,
         probe: &mem::probe,
     };
@@ -1015,8 +1093,12 @@ fn run(
         },
         None => None,
     };
+    let me = Entry {
+        expect: ev.label.as_deref().and_then(|l| history().expect(l)),
+        ..me
+    };
     let mut ticket = q.enqueue(&me)?;
-    let mut said: Option<(u8, usize)> = None;
+    let mut said: Option<(u8, usize, usize)> = None;
     let mut shown = String::new();
     let mut slot = loop {
         if let Some(sig) = stopped() {
@@ -1028,7 +1110,7 @@ fn run(
             Claim::Slot(slot) => {
                 ev.heavy_wait_ms = Some(queued.elapsed().as_millis() as u64);
                 let _ = fs::remove_file(q.why_dir().join(me.pid.to_string()));
-                break slot;
+                break *slot;
             }
             Claim::Wait(w) => {
                 let why = w.to_string();
@@ -1249,8 +1331,13 @@ fn ls(
                     .unwrap_or_default(),
                 _ => String::new(),
             };
+            let expect = e
+                .expect
+                .as_ref()
+                .map(|x| format!("  {x}"))
+                .unwrap_or_default();
             format!(
-                "{state}  {:<width$}  pid {:<6}  {:>5}  {}{limit}{lock}{reason}\n",
+                "{state}  {:<width$}  pid {:<6}  {:>5}  {}{limit}{lock}{reason}{expect}\n",
                 e.label,
                 e.pid,
                 age(now.saturating_sub(e.since)),
@@ -1294,6 +1381,19 @@ mod tests {
             limit_ms: None,
             job: None,
             worker: None,
+            expect: None,
+        }
+    }
+
+    /// An entry whose label's last runs all took `ms`.
+    fn expecting(pid: u32, label: &str, since: u64, ms: u64) -> Entry {
+        Entry {
+            expect: Some(Expect {
+                ms,
+                runs: 5,
+                word: None,
+            }),
+            ..entry(pid, label, since)
         }
     }
 
@@ -1310,6 +1410,7 @@ mod tests {
     fn gate(slots: usize) -> Gate<'static> {
         Gate {
             slots,
+            express: 0,
             min_free_gb: 0.0,
             probe: &|| None,
         }
@@ -1317,7 +1418,7 @@ mod tests {
 
     fn slot(c: Claim) -> Held {
         match c {
-            Claim::Slot(s) => s,
+            Claim::Slot(s) => *s,
             other => panic!("expected a slot, got {other:?}"),
         }
     }
@@ -1360,9 +1461,94 @@ mod tests {
         let mut t = q.enqueue(&entry(2, "next", 2)).unwrap();
         assert_eq!(
             q.try_claim(&mut t, &gate(1)).unwrap(),
-            Claim::Wait(Wait::Slots(1))
+            Claim::Wait(Wait::Slots {
+                ahead: 0,
+                running: 1
+            })
         );
         slot(q.try_claim(&mut t, &gate(2)).unwrap());
+    }
+
+    #[test]
+    fn a_run_expected_to_be_short_takes_the_express_slot_past_a_long_waiter() {
+        let (_d, q) = queue();
+        let g = Gate {
+            express: 1,
+            ..gate(1)
+        };
+        let mut long = q.enqueue(&expecting(1, "e2e", 1, 900_000)).unwrap();
+        let _long = slot(q.try_claim(&mut long, &g).unwrap());
+        let mut next = q.enqueue(&entry(2, "build", 2)).unwrap();
+        let mut quick = q.enqueue(&expecting(3, "fmt", 3, 5_000)).unwrap();
+        assert_eq!(
+            q.try_claim(&mut next, &g).unwrap(),
+            Claim::Wait(Wait::Slots {
+                ahead: 0,
+                running: 1
+            })
+        );
+        let _quick = slot(q.try_claim(&mut quick, &g).unwrap());
+        assert_eq!(labels(q.running()), ["e2e", "fmt"]);
+        // The express slot is taken now, and a second short run waits.
+        let mut again = q.enqueue(&expecting(4, "fmt", 4, 5_000)).unwrap();
+        assert_eq!(
+            q.try_claim(&mut again, &g).unwrap(),
+            Claim::Wait(Wait::Slots {
+                ahead: 1,
+                running: 2
+            })
+        );
+        // Without express slots it waits its turn, as before.
+        assert_eq!(
+            q.try_claim(&mut again, &gate(1)).unwrap(),
+            Claim::Wait(Wait::Slots {
+                ahead: 1,
+                running: 2
+            })
+        );
+    }
+
+    #[test]
+    fn a_short_waiter_does_not_pass_one_that_could_start() {
+        let (_d, q) = queue();
+        let g = Gate {
+            express: 1,
+            ..gate(2)
+        };
+        let mut first = q.enqueue(&expecting(1, "e2e", 1, 900_000)).unwrap();
+        let _first = slot(q.try_claim(&mut first, &g).unwrap());
+        let mut long = q.enqueue(&entry(2, "build", 2)).unwrap();
+        let mut quick = q.enqueue(&expecting(3, "fmt", 3, 5_000)).unwrap();
+        assert_eq!(
+            q.try_claim(&mut quick, &g).unwrap(),
+            Claim::Wait(Wait::Ahead(1))
+        );
+        slot(q.try_claim(&mut long, &g).unwrap());
+    }
+
+    #[test]
+    fn a_short_run_that_overruns_counts_as_long() {
+        let (_d, q) = queue();
+        let g = Gate {
+            express: 1,
+            ..gate(1)
+        };
+        let mut a = q.enqueue(&expecting(1, "fmt", 1, 5_000)).unwrap();
+        let mut a = slot(q.try_claim(&mut a, &g).unwrap());
+        // It started long enough ago to be past its overrun.
+        let old = Entry {
+            since: now_ms() - sched::OVERRUN_MS,
+            ..a.entry.clone()
+        };
+        q.update(&mut a, old).unwrap();
+        let mut b = q.enqueue(&entry(2, "build", 2)).unwrap();
+        assert_eq!(
+            q.try_claim(&mut b, &g).unwrap(),
+            Claim::Wait(Wait::Slots {
+                ahead: 0,
+                running: 1
+            })
+        );
     }
 
     #[test]
@@ -1493,6 +1679,7 @@ mod tests {
         };
         let g = Gate {
             slots: 4,
+            express: 0,
             min_free_gb: 2.0,
             probe: &tight,
         };
@@ -1515,6 +1702,7 @@ mod tests {
         let mut c = q.enqueue(&entry(3, "c", 3)).unwrap();
         let unknown = Gate {
             slots: 4,
+            express: 0,
             min_free_gb: 2.0,
             probe: &|| None,
         };
@@ -1537,6 +1725,7 @@ mod tests {
             ev_label: "cargo".into(),
             lock: None,
             slots: 1,
+            express: 1,
             min_free_gb: 2.0,
             limit_ms: None,
             cwd: "/w".into(),
@@ -1546,9 +1735,17 @@ mod tests {
             finished: 0,
             followed: false,
         };
-        let why = |pid| (pid == 2).then(|| Wait::Slots(1).to_string());
+        let why = |pid| {
+            (pid == 2).then(|| {
+                Wait::Slots {
+                    ahead: 0,
+                    running: 1,
+                }
+                .to_string()
+            })
+        };
         let out = ls(
-            &[entry(1, "test", 0)],
+            &[expecting(1, "test", 0, 5_000)],
             &[entry(2, "next", 0)],
             &[],
             &why,
@@ -1558,6 +1755,13 @@ mod tests {
         );
         assert!(
             out.contains("next") && out.contains("waits for a slot: 0 ahead, 1 running"),
+            "{out}"
+        );
+        assert!(
+            out.lines()
+                .next()
+                .unwrap()
+                .ends_with("short: its last 5 runs took at most 5s"),
             "{out}"
         );
         let last = out.lines().last().unwrap();
