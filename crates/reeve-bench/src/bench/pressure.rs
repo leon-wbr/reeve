@@ -670,7 +670,9 @@ pub fn run(o: &Opts) -> io::Result<i32> {
         let mine: Vec<String> = (1..=arm.jobs.max(arm.short_jobs))
             .flat_map(|j| {
                 let short = (j <= arm.short_jobs).then(|| format!("w{w}-s{j}"));
-                short.into_iter().chain((j <= arm.jobs).then(|| format!("w{w}-{j}")))
+                short
+                    .into_iter()
+                    .chain((j <= arm.jobs).then(|| format!("w{w}-{j}")))
             })
             .collect();
         let name = format!("{run}-w{w}");

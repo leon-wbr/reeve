@@ -391,6 +391,9 @@ fn the_scripted_claude_runs_each_workers_jobs_through_reeve_heavy() {
     assert!(r["jobMedianMs"].as_i64().is_some(), "{r:#}");
     assert!(r["shortJobMedianMs"].as_i64().is_some(), "{r:#}");
     assert!(r["longJobMedianMs"].as_i64().is_some(), "{r:#}");
-    assert_eq!(r["reeve"]["heavyRuns"], 6, "the seeded history isn't counted: {r:#}");
+    assert_eq!(
+        r["reeve"]["heavyRuns"], 6,
+        "the seeded history isn't counted: {r:#}"
+    );
     assert_eq!(r["costUsd"].as_f64(), Some(0.0), "no model: {r:#}");
 }
