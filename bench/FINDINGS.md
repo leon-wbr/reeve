@@ -323,6 +323,17 @@ Measured on a copy of the live `workers.json` under its own `XDG_STATE_HOME`, ma
 
 The brief was already capped at 1,000 characters. It now spends those characters on workers someone has to act on. 79 of the 95 still listed are done: they finished in the last 12 hours or still have their pane open, waiting for `reeve close`.
 
+## The CLAUDE.md block is two lines (12 Nov)
+
+Every Claude Code session loads `~/.claude/CLAUDE.md`, so whatever `reeve setup claude --claude-md` puts there costs tokens in every session, reeve-related or not. The block repeated the skill stub's list of uses and a pointer to `reeve --skill`. It now only says reeve is installed and names the `reeve` skill, whose description already says when to use it. Re-running setup replaces an old block in place.
+
+Measured by rendering both blocks, markers included (`block()` on main and on the branch). Deterministic, so n=1; no agent sessions ran. Plain Claude Code has no block, so main is the baseline.
+
+| | main | branch |
+|---|---|---|
+| block bytes (≈ tokens) | 384 (≈96) | **176 (≈44), −54%** |
+| block lines | 11 | **5** |
+
 ## Day scenario
 
 The six-ask scenario never needed reeve's workers, heavy queue or handoffs, so [day/](day/README.md) is a working day in one repo: five backlog tasks, an urgent sixth at minute 5, a 60 s suite and a 6-minute fixture rebuild on one shared test database, a scripted user, and a context budget that forces handoffs. All runs: Sonnet, `--setting-sources project,local`, auto mode, budget 30K, n=3 per arm. Per-run rows are in [results/day-sonnet-30k.tsv](results/day-sonnet-30k.tsv). No run showed an API or network error, so none is invalid on that count.
