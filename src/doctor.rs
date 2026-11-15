@@ -412,10 +412,18 @@ pub fn main(version: &str) -> io::Result<i32> {
     }
 
     match crate::workers::gone(&Registry::at(state)) {
-        Ok(names) => checks.extend(gone_checks(&names)),
+        Ok(names) => {
+            if !names.is_empty() {
+                crate::autoreport::report("lost-worker", "a worker is gone without a report");
+            }
+            checks.extend(gone_checks(&names));
+        }
         Err(e) => checks.push(problem(
             Status::Fail,
-            format!("can't read the worker registry: {e}"),
+            {
+                crate::autoreport::report("doctor", "can't read the worker registry");
+                format!("can't read the worker registry: {e}")
+            },
             "move workers.json aside; `reeve ls` starts a new one",
         )),
     }

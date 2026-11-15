@@ -1,4 +1,6 @@
 mod autoclose;
+mod autofix;
+mod autoreport;
 mod background;
 mod build_info;
 pub mod context;
@@ -8,6 +10,7 @@ mod feedback;
 mod handoff;
 mod heavy;
 mod inbox;
+mod leak;
 pub mod mem;
 mod msg;
 mod push;
@@ -184,6 +187,26 @@ enum Top {
         /// Open the prefilled new-issue page in the browser
         #[arg(long)]
         open: bool,
+    },
+    /// Start one named worker on an open `auto-reported` issue that a maintainer approved
+    /// (label `autofix-approved`): failing test, fix, local gate, PR, squash-merge where allowed.
+    /// Skips while an agent is over its usage cap or another autofix worker runs. Run it on a
+    /// schedule (docs/autofix.md)
+    Autofix {
+        /// Print the issue it would pick and the worker's brief, and start nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// The repository checkout to work on [default: the one reeve was built in]
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+    /// Scan text that is about to go on a public repo (stdin, files, or with --diff the branch's
+    /// added lines and commit messages) for private data; exits 1 on a hit
+    Leakcheck {
+        /// Scan the added lines and commit messages of BASE...HEAD
+        #[arg(long, value_name = "BASE")]
+        diff: Option<String>,
+        files: Vec<PathBuf>,
     },
     /// Install reeve's pieces into an agent's setup
     #[command(subcommand)]
@@ -603,6 +626,7 @@ fn sweep_done(r: &workers::Registry) -> Vec<String> {
 }
 
 pub fn main() -> ExitCode {
+    autoreport::install();
     let matches = Cli::command().try_get_matches().unwrap_or_else(|e| {
         log_usage_error(&e);
         e.exit()
@@ -916,6 +940,8 @@ pub fn main() -> ExitCode {
             remove,
             agents_md,
         }) => setup_agent(workers::Kind::Codex, check, remove, agents_md),
+        Top::Autofix { dry_run, repo } => autofix::main(repo.as_deref(), dry_run),
+        Top::Leakcheck { diff, files } => autofix::leakcheck(diff.as_deref(), &files),
         Top::Doctor => doctor::main(VERSION),
         Top::Update { dry_run } => update::main(dry_run),
         Top::Remote(cmd) => match cmd {

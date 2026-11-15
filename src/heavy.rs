@@ -1164,6 +1164,7 @@ fn run(
     };
     if let Err(err) = q.update(&mut slot, entry) {
         eprintln!("reeve heavy: could not record the command's group: {err}");
+        crate::autoreport::report("heavy-bookkeeping", "could not record the command's group");
     }
     let target = if interactive {
         child.id() as i32

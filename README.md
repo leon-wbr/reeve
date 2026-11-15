@@ -54,6 +54,7 @@ For Codex, `reeve setup codex` does the same with Codex's hooks, skills and rule
 - `reeve heavy`: queue builds and test suites so agents take turns ([docs/heavy.md](docs/heavy.md)).
 - `reeve stats`: sum up reeve's local event log ([docs/events.md](docs/events.md)).
 - `reeve feedback "text"`: save a note about reeve itself and offer to post it as an issue ([docs/events.md](docs/events.md)).
+- `reeve autofix`, `reeve leakcheck`, `REEVE_AUTOREPORT`: reeve files its own panics and bookkeeping failures as redacted `auto-reported` issues (off unless you opt in), and `autofix` has an agent fix the maintainer-approved ones in a PR ([docs/autofix.md](docs/autofix.md)).
 - `reeve setup claude [--claude-md] [--check] [--remove]`: add, check or remove the hooks, the allow rules, the skill stub and, with `--claude-md`, the CLAUDE.md block.
 - `reeve setup codex [--agents-md] [--check] [--remove]`: the same for Codex ([docs/codex.md](docs/codex.md)).
 - `reeve --skill`: print the manual for agents.
@@ -117,6 +118,10 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 | Gas Town | A durable record of work across many agents | Heavyweight; many agents in tmux |
 | Claude Squad, Superset, cmux | Managing many agent terminals | No tracking to done |
 
+## Contributing with reeve autofix
+
+Opt in with `REEVE_AUTOREPORT=1` and reeve files its own panics and bookkeeping failures as issues labelled `auto-reported`, with only its version, the OS family, an error kind and a backtrace into its own source (`REEVE_AUTOREPORT=dry` shows what it would file). A maintainer approves an issue by adding the label `autofix-approved`; `reeve autofix`, run every half hour from launchd, systemd or cron, then starts a worker on one approved issue at a time. The worker writes a failing test, fixes it, runs the repo's gate and opens a PR that says `Fixes #N`; it squash-merges only if your `gh` account may, and otherwise stops at the open PR. `reeve leakcheck` scans every PR body, comment and diff for private data first. Details and schedules: [docs/autofix.md](docs/autofix.md).
+
 ## Documents
 
 - [PHILOSOPHY.md](PHILOSOPHY.md)
@@ -127,6 +132,7 @@ reeve builds only those, and is meant to be measured against plain Claude Code a
 - [docs/codex.md](docs/codex.md)
 - [docs/remotes.md](docs/remotes.md)
 - [docs/schedule.md](docs/schedule.md)
+- [docs/autofix.md](docs/autofix.md)
 
 ## License
 
