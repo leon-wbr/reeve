@@ -22,6 +22,7 @@ mod update;
 pub mod usage;
 mod waiting;
 mod watch;
+mod watchdog;
 pub mod workers;
 
 use clap::parser::ValueSource;
@@ -261,6 +262,15 @@ enum Top {
     /// the predecessor; the prompt hook runs this in the background
     #[command(hide = true)]
     Tidy { next: String },
+    /// Keep opted-in workers going: tell one to carry on after a usage-limit stop or two idle
+    /// checks without a `reeve heavy` job of its own, and once to wrap up when its agent passes a
+    /// weekly usage cap. A pass every 15 minutes, set under `watchdog` in reeve's config file (see
+    /// docs/watchdog.md); each nudge goes to `watchdog.log` in reeve's state dir
+    Watchdog {
+        /// One pass, for launchd, systemd or cron
+        #[arg(long)]
+        once: bool,
+    },
     /// Close the worker NAME once it is done, as `reeve close` would; `reeve run` starts this in
     /// the background, so a finished worker is closed with nobody watching
     #[command(hide = true)]
@@ -850,6 +860,7 @@ pub fn main() -> ExitCode {
             ev.worker = Some(next.clone());
             workers().map(|r| handoff::follow(&r, &next)).map(|_| 0)
         }
+        Top::Watchdog { once } => workers().and_then(|r| watchdog::main(&r, once)),
         Top::Autoclose { name } => {
             ev.worker = Some(name.clone());
             workers()
