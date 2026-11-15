@@ -224,7 +224,7 @@ pub fn follow(r: &Registry, name: &str) {
         match o.get(name) {
             Some(Outcome::Closed(_)) => return,
             Some(Outcome::Stays(why)) if why.starts_with("started with") => return,
-            _ if workers::agent(&w) == Agent::Absent => return,
+            _ if !w.starting && workers::agent(&w) == Agent::Absent => return,
             _ => {}
         }
     }
