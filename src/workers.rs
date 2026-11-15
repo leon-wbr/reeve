@@ -589,9 +589,19 @@ pub fn blocked_at_start(err: &str) -> bool {
     herdr_error_code(err).is_some_and(|c| c == "agent_not_ready")
 }
 
-/// A new pane's shell isn't up yet; herdr refuses before typing anything, so retrying is safe.
+/// Claude refused `-w` and exited, back at the shell, because nobody has answered the folder's
+/// trust dialog yet.
+pub fn untrusted(tab: &str) -> bool {
+    tab.lines()
+        .rev()
+        .take(5)
+        .any(|l| l.contains("Workspace trust not yet accepted"))
+}
+
+/// A new pane's shell isn't up yet, or the agent told to exit still holds the worker's name;
+/// herdr refuses before typing anything, so retrying is safe.
 pub fn pane_not_ready(err: &str) -> bool {
-    herdr_error_code(err).is_some_and(|c| c == "agent_pane_busy")
+    herdr_error_code(err).is_some_and(|c| c == "agent_pane_busy" || c == "agent_name_taken")
 }
 
 fn herdr_error_code(err: &str) -> Option<String> {
@@ -782,24 +792,28 @@ fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String)> {
 }
 
 /// Starts the agent in the tab's pane with the prompt as its argument; the tab is closed again
-/// if it didn't start.
-fn start_pane(
-    name: &str,
-    tab: &str,
-    pane: &str,
-    kind: Kind,
-    args: &[String],
-) -> io::Result<String> {
-    let start = || herdr(pane_start_args(name, pane, kind, args));
-    let mut started = start();
-    for _ in 0..20 {
-        match &started {
-            Err(e) if pane_not_ready(&e.to_string()) => {
-                std::thread::sleep(Duration::from_millis(250));
-                started = start();
+/// if it didn't start. A Claude that refused an untrusted folder makes way for a plain `claude`
+/// showing the trust dialog, and the result says so.
+fn start_pane(name: &str, tab: &str, pane: &str, kind: Kind, args: &[String]) -> io::Result<bool> {
+    let start = |args: &[String]| {
+        let once = || herdr(pane_start_args(name, pane, kind, args));
+        let mut started = once();
+        for _ in 0..20 {
+            match &started {
+                Err(e) if pane_not_ready(&e.to_string()) => {
+                    std::thread::sleep(Duration::from_millis(250));
+                    started = once();
+                }
+                _ => break,
             }
-            _ => break,
         }
+        started
+    };
+    let mut started = start(args);
+    let trusting =
+        started.is_err() && kind == Kind::Claude && read_tab(pane).is_ok_and(|t| untrusted(&t));
+    if trusting {
+        started = start(&[]);
     }
     let started = match started {
         Err(e) if busy_at_start(&e.to_string()) => wait_for_agent(pane, kind)
@@ -812,7 +826,28 @@ fn start_pane(
         let _ = herdr(["tab", "close", tab]);
         return Err(e);
     }
-    Ok(pane.into())
+    Ok(trusting)
+}
+
+/// Once the trust dialog is answered and Claude idles, it exits and the worker starts again,
+/// now in a trusted folder. A tab closed, or the dialog answered no, leaves the worker gone.
+fn after_trust(r: &Registry, w: &Worker, tab: &str, argv: &[String]) -> io::Result<()> {
+    for _ in 0..(60 * 60 * 24) {
+        match agent(w) {
+            Agent::Idle => {
+                herdr(["agent", "prompt", &w.handle, "/exit"])?;
+                let again = now();
+                r.set(&w.name, w.started, |w| {
+                    w.starting = true;
+                    w.started = again;
+                })?;
+                return start(r, &w.name, Some(tab), argv);
+            }
+            Agent::Absent => return Ok(()),
+            _ => std::thread::sleep(Duration::from_secs(1)),
+        }
+    }
+    Ok(())
 }
 
 fn wait_for_agent(pane: &str, kind: Kind) -> io::Result<()> {
@@ -1135,8 +1170,12 @@ fn spawn_start(name: &str, tab: Option<&str>, argv: &[String]) -> io::Result<()>
 /// or why it failed.
 pub fn start(r: &Registry, name: &str, tab: Option<&str>, argv: &[String]) -> io::Result<()> {
     let w = r.get(name)?;
+    let mut trusting = false;
     let up = match (w.backend, w.agent, tab) {
-        (Backend::Pane, kind, Some(tab)) => start_pane(name, tab, &w.handle, kind, argv),
+        (Backend::Pane, kind, Some(tab)) => start_pane(name, tab, &w.handle, kind, argv).map(|t| {
+            trusting = t;
+            w.handle.clone()
+        }),
         (Backend::Pane, _, None) => Err(io::Error::other("a pane worker needs --tab")),
         (Backend::Bg, Kind::Claude, _) => start_bg(argv),
         (Backend::Bg, Kind::Codex, _) => start_exec(argv, &exec_log(&w)),
@@ -1148,7 +1187,10 @@ pub fn start(r: &Registry, name: &str, tab: Option<&str>, argv: &[String]) -> io
             Err(e) => w.error = Some(e.to_string()),
         }
     })?;
-    up.map(|_| ())
+    match (up, tab) {
+        (Ok(_), Some(tab)) if trusting => after_trust(r, &w, tab, argv),
+        (up, _) => up.map(|_| ()),
+    }
 }
 
 /// What `reeve run` prints once a worker is registered: where its report goes and how the
@@ -2376,10 +2418,25 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_is_untrusted_while_claudes_refusal_ends_the_tab() {
+        let refused = "$ claude -w w go\nError creating worktree: Workspace trust not yet \
+                       accepted. Run `claude` once in this directory and accept the trust \
+                       dialog,\nthen retry with --worktree.\n$ \n";
+        assert!(untrusted(refused));
+        assert!(!untrusted(&format!(
+            "{refused}$ claude -w w go\n{}",
+            "│ working\n".repeat(30)
+        )));
+        assert!(!untrusted("Error creating worktree: no commits yet\n$ \n"));
+    }
+
+    #[test]
     fn a_pane_is_not_ready_while_herdr_says_its_shell_is_busy() {
         let busy = r#"herdr: {"error":{"code":"agent_pane_busy","message":"pane w1-2 is not an available shell"},"id":"cli:agent:start"}"#;
         let timeout = r#"herdr: {"error":{"code":"timeout","message":"timed out waiting for agent startup"},"id":"cli:agent:start"}"#;
+        let exiting = r#"herdr: {"error":{"code":"agent_name_taken","message":"agent name w is already used"},"id":"cli:agent:start"}"#;
         assert!(pane_not_ready(busy));
+        assert!(pane_not_ready(exiting));
         assert!(!pane_not_ready(timeout));
         assert!(!pane_not_ready("herdr: agent_pane_busy"));
     }

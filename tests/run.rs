@@ -13,7 +13,7 @@ fn executable(path: &Path, script: &str) {
 /// `pane.json` when it exists, and otherwise with a pane that has no agent; `herdr pane read`
 /// with `pane-text`, `herdr workspace list` with `workspaces.json` or no workspace, and
 /// `herdr workspace create` like `tab create`. `herdr agent start` waits while `hold` exists, fails if `fail` does, and fails with the error code in
-/// `start-error` if that does. `herdr agent prompt` fails as blocked while `busy` exists.
+/// `start-error` if that does, which `start-error-next` then replaces. `herdr agent prompt` fails as blocked while `busy` exists.
 /// `claude` refuses an untrusted folder, as Claude Code does, while `untrusted` exists.
 fn fakes(dir: &Path) -> String {
     let bin = dir.join("bin");
@@ -52,7 +52,8 @@ fn fakes(dir: &Path) -> String {
                echo '{{\"result\":{{}}}}' ;;\n\
              'agent start') while [ -f {hold} ]; do sleep 0.05; done\n\
                if [ -f {fail} ]; then echo '{{\"error\":{{\"code\":\"boom\",\"message\":\"no shell\"}}}}' >&2; exit 1; fi\n\
-               if [ -f {err} ]; then printf '{{\"error\":{{\"code\":\"%s\",\"message\":\"m\"}}}}\\n' \"$(cat {err})\" >&2; exit 1; fi\n\
+               if [ -f {err} ]; then code=$(cat {err}); if [ -f {next} ]; then mv {next} {err}; fi\n\
+                 printf '{{\"error\":{{\"code\":\"%s\",\"message\":\"m\"}}}}\\n' \"$code\" >&2; exit 1; fi\n\
                echo '{{\"result\":{{}}}}' ;;\n\
              *) echo '{{\"result\":{{}}}}' ;;\nesac",
             log("herdr"),
@@ -63,7 +64,8 @@ fn fakes(dir: &Path) -> String {
             hold = dir.join("hold").display(),
             busy = dir.join("busy").display(),
             fail = dir.join("fail").display(),
-            err = dir.join("start-error").display()
+            err = dir.join("start-error").display(),
+            next = dir.join("start-error-next").display()
         ),
     );
     format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
@@ -511,10 +513,15 @@ fn a_start_that_fails_leaves_the_worker_gone_with_the_reason() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();
     std::fs::write(root.join("fail"), "").unwrap();
+    std::fs::write(
+        root.join("pane-text"),
+        "Error creating worktree: no commits yet\n",
+    )
+    .unwrap();
     let o = reeve(
         &root,
         &project,
-        &["run", "--name", "w", "--pane", "--", "go"],
+        &["run", "--name", "w", "--pane", "--", "-w", "w", "go"],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let w = started(&root, "w");
@@ -798,6 +805,47 @@ fn a_worker_that_stops_at_a_question_on_start_keeps_its_tab_and_shows_blocked() 
     assert!(w.get("error").is_none(), "{w}");
     assert!(!read(root.join("herdr.log")).contains("tab close"));
     assert!(ls_line(&root, &project, "cx").contains(" blocked "));
+}
+
+#[test]
+fn a_claude_refusing_w_in_an_untrusted_folder_asks_for_trust_then_starts_the_worker() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(root.join("start-error"), "timeout").unwrap();
+    std::fs::write(root.join("start-error-next"), "agent_not_ready").unwrap();
+    std::fs::write(
+        root.join("pane-text"),
+        "$ claude -w w go\nError creating worktree: Workspace trust not yet accepted. Run `claude` \
+         once in this directory and accept the trust dialog, then retry with --worktree.\n$ \n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"claude","agent_status":"blocked"}}}"#,
+    )
+    .unwrap();
+    let args = ["run", "--name", "w", "--pane", "--", "-w", "w", "go"];
+    let o = reeve(&root, &project, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let w = started(&root, "w");
+    assert!(w.get("error").is_none(), "{w}");
+    let herdr = read(root.join("herdr.log"));
+    assert!(
+        herdr.contains("\nagent start w --kind claude --pane p1 --timeout 10000 --\n"),
+        "{herdr}"
+    );
+    assert!(!herdr.contains("tab close"), "{herdr}");
+    assert!(ls_line(&root, &project, "w").contains(" blocked "));
+
+    std::fs::write(
+        root.join("pane.json"),
+        r#"{"result":{"pane":{"agent":"claude","agent_status":"idle"}}}"#,
+    )
+    .unwrap();
+    let herdr = herdr_until(&root, "agent prompt p1 /exit\nagent start w ");
+    let after = herdr.split("agent prompt p1 /exit\n").nth(1).unwrap();
+    assert!(after.contains(" -- -w w "), "{herdr}");
+    assert!(!herdr.contains("tab close"), "{herdr}");
 }
 
 #[test]
