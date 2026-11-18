@@ -793,11 +793,11 @@ pub fn main() -> ExitCode {
                     var("CLAUDECODE").as_deref(),
                 )
             });
-            let pane = var("HERDR_PANE_ID");
+            let me = workers::Caller::from_env();
             workers()
                 .and_then(|r| {
                     let all = r.all()?;
-                    let from = handoff::predecessor(&all, pane.as_deref()).map(|w| w.name.as_str());
+                    let from = handoff::predecessor(&all, &me).map(|w| w.name.as_str());
                     handoff::handoff(&r, &name, kind, backend, &notes, from, &args)
                 })
                 .map(|_| 0)

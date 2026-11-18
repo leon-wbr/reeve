@@ -104,6 +104,10 @@ pub struct Worker {
     /// Its report was pushed to `parent`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pushed: bool,
+    /// The Herdr terminal in its pane. Herdr hands a closed pane's id to a later pane, but
+    /// never a terminal's, so a pane holding another terminal is no longer this worker's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<String>,
 }
 
 /// What a worker's pane or session is doing, as far as Herdr or `claude agents` can tell.
@@ -549,11 +553,12 @@ pub fn workspace_create_args(label: &str, cwd: &str) -> Vec<String> {
 }
 
 /// The tab ID and root pane ID from `herdr tab create`.
-pub fn created_tab(out: &Value) -> Option<(String, String)> {
+pub fn created_tab(out: &Value) -> Option<(String, String, Option<String>)> {
     let r = &out["result"];
     Some((
         r["tab"]["tab_id"].as_str()?.to_string(),
         r["root_pane"]["pane_id"].as_str()?.to_string(),
+        r["root_pane"]["terminal_id"].as_str().map(String::from),
     ))
 }
 
@@ -625,7 +630,7 @@ pub fn bg_id(out: &str) -> Option<String> {
 
 /// From `herdr pane get`: its JSON, or the error naming a closed pane. A pane whose agent
 /// isn't `kind` (any more) has none of ours.
-pub fn pane_agent(probe: Result<&str, &str>, kind: Kind) -> Agent {
+pub fn pane_agent(probe: Result<&str, &str>, kind: Kind, terminal: Option<&str>) -> Agent {
     let out = match probe {
         Err(e) if e.contains(r#""code":"pane_not_found""#) => return Agent::Absent,
         Err(_) => return Agent::Unknown,
@@ -635,7 +640,7 @@ pub fn pane_agent(probe: Result<&str, &str>, kind: Kind) -> Agent {
         return Agent::Unknown;
     };
     let pane = &v["result"]["pane"];
-    if pane["agent"] != kind.bin() {
+    if pane["agent"] != kind.bin() || pane["terminal_id"].as_str() != terminal {
         return Agent::Absent;
     }
     match pane["agent_status"].as_str() {
@@ -770,7 +775,7 @@ pub fn now() -> u64 {
 /// worker's project. A missing workspace is created unfocused and its first tab becomes the
 /// worker's, so Herdr closes the workspace with the last tab when it holds nothing else.
 /// Returns the tab and pane IDs.
-fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String)> {
+fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String, Option<String>)> {
     let git = |args: &[&str]| crate::run::git(cwd, args).ok().map(PathBuf::from);
     let project = project_dir(
         cwd,
@@ -783,10 +788,10 @@ fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String)> {
     match workspace_named(&herdr(["workspace", "list"])?, &label) {
         Some(ws) => created_tab(&herdr(tab_create_args(name, &cwd, &ws))?).ok_or_else(no_pane),
         None => {
-            let (tab, pane) =
+            let (tab, pane, terminal) =
                 created_tab(&herdr(workspace_create_args(&label, &cwd))?).ok_or_else(no_pane)?;
             let _ = herdr(["tab", "rename", &tab, name]);
-            Ok((tab, pane))
+            Ok((tab, pane, terminal))
         }
     }
 }
@@ -794,7 +799,8 @@ fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String)> {
 /// Starts the agent in the tab's pane with the prompt as its argument; the tab is closed again
 /// if it didn't start. A Claude that refused an untrusted folder makes way for a plain `claude`
 /// showing the trust dialog, and the result says so.
-fn start_pane(name: &str, tab: &str, pane: &str, kind: Kind, args: &[String]) -> io::Result<bool> {
+fn start_pane(w: &Worker, tab: &str, args: &[String]) -> io::Result<bool> {
+    let (name, pane, kind) = (&w.name[..], &w.handle[..], w.agent);
     let start = |args: &[String]| {
         let once = || herdr(pane_start_args(name, pane, kind, args));
         let mut started = once();
@@ -816,7 +822,7 @@ fn start_pane(name: &str, tab: &str, pane: &str, kind: Kind, args: &[String]) ->
         started = start(&[]);
     }
     let started = match started {
-        Err(e) if busy_at_start(&e.to_string()) => wait_for_agent(pane, kind)
+        Err(e) if busy_at_start(&e.to_string()) => wait_for_agent(w)
             .and_then(|_| herdr(["agent", "rename", pane, name]))
             .map_err(|_| e),
         Err(e) if blocked_at_start(&e.to_string()) => Ok(Value::Null),
@@ -850,20 +856,17 @@ fn after_trust(r: &Registry, w: &Worker, tab: &str, argv: &[String]) -> io::Resu
     Ok(())
 }
 
-fn wait_for_agent(pane: &str, kind: Kind) -> io::Result<()> {
+fn wait_for_agent(w: &Worker) -> io::Result<()> {
     for _ in 0..20 {
-        let a = pane_agent(
-            probe("herdr", ["pane", "get", pane])
-                .as_deref()
-                .map_err(|e| e.as_str()),
-            kind,
-        );
-        if matches!(a, Agent::Working | Agent::Idle | Agent::Blocked) {
+        if matches!(agent(w), Agent::Working | Agent::Idle | Agent::Blocked) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    Err(io::Error::other(format!("no {kind} in pane {pane}")))
+    Err(io::Error::other(format!(
+        "no {} in pane {}",
+        w.agent, w.handle
+    )))
 }
 
 /// Drops the variables by which `kind` would take itself for its starter's session.
@@ -907,11 +910,12 @@ fn start_exec(argv: &[String], log: &Path) -> io::Result<String> {
     Ok(child.id().to_string())
 }
 
-/// What a session knows about itself: its Herdr pane, its Claude Code session id, its Codex
-/// thread.
+/// What a session knows about itself: its Herdr pane and the terminal in it, its Claude Code
+/// session id, its Codex thread.
 #[derive(Debug, Default, Clone)]
 pub struct Caller {
     pub pane: Option<String>,
+    pub terminal: Option<String>,
     pub claude_session: Option<String>,
     pub codex_thread: Option<String>,
 }
@@ -919,21 +923,28 @@ pub struct Caller {
 impl Caller {
     pub fn from_env() -> Caller {
         let var = |k| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let pane = var("HERDR_PANE_ID");
         Caller {
-            pane: var("HERDR_PANE_ID"),
+            terminal: pane.as_deref().and_then(terminal_in),
+            pane,
             claude_session: var("CLAUDE_CODE_SESSION_ID"),
             codex_thread: var("CODEX_THREAD_ID"),
         }
     }
 }
 
-/// The pane worker in Herdr pane `pane`. Herdr hands the id of a closed pane to a later one,
-/// and the closed pane's worker stays registered, so several workers can share a handle: the
-/// one that started last is in the pane now.
-pub fn pane_worker<'a>(all: &'a [Worker], pane: &str) -> Option<&'a Worker> {
-    all.iter()
-        .filter(|w| w.backend == Backend::Pane && w.handle == pane)
-        .max_by_key(|w| w.started)
+fn terminal_in(pane: &str) -> Option<String> {
+    let out = herdr(["pane", "get", pane]).ok()?;
+    Some(out["result"]["pane"]["terminal_id"].as_str()?.to_string())
+}
+
+/// The pane worker whose terminal is in Herdr pane `pane`. Herdr hands the id of a closed pane
+/// to a later one and the closed pane's worker stays registered, so the pane id alone can name
+/// a long-gone worker in a session the user started there.
+pub fn pane_worker<'a>(all: &'a [Worker], pane: &str, terminal: &str) -> Option<&'a Worker> {
+    all.iter().find(|w| {
+        w.backend == Backend::Pane && w.handle == pane && w.terminal.as_deref() == Some(terminal)
+    })
 }
 
 /// The named worker a session is: the pane worker in its Herdr pane; else the background
@@ -945,8 +956,8 @@ pub fn caller_of<'a>(
     agents: impl FnOnce() -> Option<String>,
     thread_of: impl Fn(&Worker) -> Option<String>,
 ) -> Option<&'a Worker> {
-    if let Some(pane) = &c.pane
-        && let Some(w) = pane_worker(all, pane)
+    if let (Some(pane), Some(terminal)) = (&c.pane, &c.terminal)
+        && let Some(w) = pane_worker(all, pane, terminal)
     {
         return Some(w);
     }
@@ -993,7 +1004,11 @@ pub fn agent(w: &Worker) -> Agent {
     match (w.backend, w.agent) {
         (Backend::Pane, kind) => {
             let p = probe("herdr", ["pane", "get", &w.handle]);
-            pane_agent(p.as_deref().map_err(|e| e.as_str()), kind)
+            pane_agent(
+                p.as_deref().map_err(|e| e.as_str()),
+                kind,
+                w.terminal.as_deref(),
+            )
         }
         (Backend::Bg, Kind::Claude) => {
             let p = probe("claude", ["agents", "--json"]);
@@ -1078,14 +1093,16 @@ pub fn run(
                     if argv.last() != Some(&prompt) {
                         fs::write(&file, &prompt)?;
                     }
-                    let (tab, pane) = open_tab(name, &cwd)?;
-                    Ok((pane, Some(tab), argv))
+                    let (tab, pane, terminal) = open_tab(name, &cwd)?;
+                    Ok((pane, terminal, Some(tab), argv))
                 })
         }
-        Backend::Bg if kind == Kind::Codex => Ok((String::new(), None, exec_argv(&own, &prompt))),
-        Backend::Bg => Ok((String::new(), None, bg_argv(&own, &prompt))),
+        Backend::Bg if kind == Kind::Codex => {
+            Ok((String::new(), None, None, exec_argv(&own, &prompt)))
+        }
+        Backend::Bg => Ok((String::new(), None, None, bg_argv(&own, &prompt))),
     };
-    let (handle, tab, argv) = match opened {
+    let (handle, terminal, tab, argv) = match opened {
         Ok(o) => o,
         Err(e) => {
             let _ = fs::rename(&old, &report);
@@ -1106,6 +1123,7 @@ pub fn run(
         error: None,
         parent,
         pushed: false,
+        terminal,
     })?;
     if let Err(e) = spawn_start(name, tab.as_deref(), &argv) {
         if let Some(tab) = &tab {
@@ -1172,7 +1190,7 @@ pub fn start(r: &Registry, name: &str, tab: Option<&str>, argv: &[String]) -> io
     let w = r.get(name)?;
     let mut trusting = false;
     let up = match (w.backend, w.agent, tab) {
-        (Backend::Pane, kind, Some(tab)) => start_pane(name, tab, &w.handle, kind, argv).map(|t| {
+        (Backend::Pane, _, Some(tab)) => start_pane(&w, tab, argv).map(|t| {
             trusting = t;
             w.handle.clone()
         }),
@@ -2075,6 +2093,7 @@ mod tests {
             error: None,
             parent: None,
             pushed: false,
+            terminal: None,
         }
     }
 
@@ -2355,19 +2374,19 @@ mod tests {
         .unwrap();
         assert_eq!(
             created_tab(&out),
-            Some(("wGS:t1".to_string(), "wGS:p1".to_string()))
+            Some(("wGS:t1".into(), "wGS:p1".into(), None))
         );
     }
 
     #[test]
     fn a_created_tab_names_its_root_pane() {
         let out: Value = serde_json::from_str(
-            r#"{"result":{"root_pane":{"pane_id":"w1:p2"},"tab":{"tab_id":"w1:t3"}}}"#,
+            r#"{"result":{"root_pane":{"pane_id":"w1:p2","terminal_id":"term_7"},"tab":{"tab_id":"w1:t3"}}}"#,
         )
         .unwrap();
         assert_eq!(
             created_tab(&out),
-            Some(("w1:t3".to_string(), "w1:p2".to_string()))
+            Some(("w1:t3".into(), "w1:p2".into(), Some("term_7".into())))
         );
         assert_eq!(created_tab(&serde_json::json!({"result":{}})), None);
     }
@@ -2591,9 +2610,11 @@ mod tests {
 
     #[test]
     fn pane_agent_follows_herdrs_status() {
-        let pane = |agent: &str| format!(r#"{{"result":{{"pane":{{{agent}"pane_id":"w1:p2"}}}}}}"#);
+        let pane = |agent: &str| {
+            format!(r#"{{"result":{{"pane":{{{agent}"pane_id":"w1:p2","terminal_id":"t1"}}}}}}"#)
+        };
         let with = |status: &str| pane(&format!(r#""agent":"claude","agent_status":"{status}","#));
-        let claude = |p: Result<&str, &str>| pane_agent(p, Kind::Claude);
+        let claude = |p: Result<&str, &str>| pane_agent(p, Kind::Claude, Some("t1"));
         assert_eq!(claude(Ok(&with("working"))), Agent::Working);
         assert_eq!(claude(Ok(&with("unknown"))), Agent::Working);
         for idle in ["idle", "done"] {
@@ -2607,9 +2628,15 @@ mod tests {
         assert_eq!(claude(Err("herdr: connection refused")), Agent::Unknown);
         assert_eq!(claude(Ok("garbage")), Agent::Unknown);
         let codex = pane(r#""agent":"codex","agent_status":"blocked","#);
-        assert_eq!(pane_agent(Ok(&codex), Kind::Codex), Agent::Blocked);
+        assert_eq!(
+            pane_agent(Ok(&codex), Kind::Codex, Some("t1")),
+            Agent::Blocked
+        );
         assert_eq!(claude(Ok(&codex)), Agent::Absent);
-        assert_eq!(pane_agent(Ok(&with("working")), Kind::Codex), Agent::Absent);
+        assert_eq!(
+            pane_agent(Ok(&with("working")), Kind::Codex, Some("t1")),
+            Agent::Absent
+        );
     }
 
     #[test]
@@ -3450,6 +3477,7 @@ mod tests {
             error: None,
             parent: None,
             pushed: false,
+            terminal: Some("t1".into()),
         };
         let all = [
             mk("pane", Backend::Pane, Kind::Claude, "w1:p2"),
@@ -3471,6 +3499,7 @@ mod tests {
         };
         let pane = |p: &str| Caller {
             pane: Some(p.into()),
+            terminal: Some("t1".into()),
             ..Caller::default()
         };
         let session = |s: &str| Caller {
@@ -3495,32 +3524,48 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_pane_id_belongs_to_the_newest_worker_in_it() {
-        let mk = |name: &str, started| Worker {
+    fn a_reused_pane_id_belongs_only_to_the_worker_whose_terminal_is_in_it() {
+        let mk = |name: &str, terminal: Option<&str>| Worker {
             name: name.into(),
             backend: Backend::Pane,
             agent: Kind::Claude,
             cwd: "/w".into(),
-            started,
+            started: 100,
             report: format!("/st/reports/{name}.md").into(),
             handle: "wH4:p3".into(),
             starting: false,
             error: None,
             parent: None,
             pushed: false,
+            terminal: terminal.map(String::from),
         };
-        // Herdr hands the id of a closed pane to a later one; the old entry stays registered.
-        let all = [mk("stale", 100), mk("successor", 200), mk("older", 50)];
-        let c = Caller {
-            pane: Some("wH4:p3".into()),
-            ..Caller::default()
+        // Herdr hands the id of a closed pane to a later one; the old entries stay registered.
+        let all = [
+            mk("stale", Some("term_1")),
+            mk("now", Some("term_2")),
+            mk("legacy", None),
+        ];
+        let who = |terminal: Option<&str>| {
+            let c = Caller {
+                pane: Some("wH4:p3".into()),
+                terminal: terminal.map(String::from),
+                ..Caller::default()
+            };
+            caller_of(&all, &c, || None, |_| None).map(|w| w.name.clone())
         };
-        let me = caller_of(&all, &c, || None, |_| None).map(|w| w.name.as_str());
-        assert_eq!(me, Some("successor"));
-        assert_eq!(
-            pane_worker(&all, "wH4:p3").map(|w| w.name.as_str()),
-            Some("successor")
-        );
+        assert_eq!(who(Some("term_2")).as_deref(), Some("now"));
+        // A session the user started in the reused pane is no worker.
+        assert_eq!(who(Some("term_9")), None);
+        assert_eq!(who(None), None);
+    }
+
+    #[test]
+    fn a_pane_holding_another_terminal_has_lost_its_worker() {
+        let out = r#"{"result":{"pane":{"agent":"claude","agent_status":"idle","terminal_id":"term_2"}}}"#;
+        let a = |t| pane_agent(Ok(out), Kind::Claude, t);
+        assert_eq!(a(Some("term_2")), Agent::Idle);
+        assert_eq!(a(Some("term_1")), Agent::Absent);
+        assert_eq!(a(None), Agent::Absent);
     }
 
     #[test]

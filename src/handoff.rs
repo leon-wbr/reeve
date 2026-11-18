@@ -3,7 +3,7 @@
 //! the predecessor after that goes to the successor's inbox, like any `reeve send`, and the
 //! predecessor is closed.
 
-use crate::workers::{self, Agent, Backend, Kind, Registry, State, Worker};
+use crate::workers::{self, Agent, Backend, Caller, Kind, Registry, State, Worker};
 use crate::{msg, push, setup};
 use serde_json::{Value, json};
 use std::fs::{self, File};
@@ -41,10 +41,10 @@ pub fn successor_prompt(file: &Path) -> String {
     )
 }
 
-/// The named worker whose Herdr pane is `pane`: the session that is handing off, if reeve
+/// The named worker in the caller's Herdr pane: the session that is handing off, if reeve
 /// started it. Sessions the user started by hand are not reeve's to close.
-pub fn predecessor<'a>(all: &'a [Worker], pane: Option<&str>) -> Option<&'a Worker> {
-    workers::pane_worker(all, pane?)
+pub fn predecessor<'a>(all: &'a [Worker], c: &Caller) -> Option<&'a Worker> {
+    workers::pane_worker(all, c.pane.as_deref()?, c.terminal.as_deref()?)
 }
 
 /// What a predecessor's tab shows. `text` is the pane read; the handoff shows in it as the
@@ -208,10 +208,10 @@ pub fn forwarded(from: &str, text: &str) -> String {
     )
 }
 
-/// The handoff whose predecessor runs in `pane`, as (successor, predecessor).
-pub fn handed_off_from(r: &Registry, pane: &str) -> Option<(String, String)> {
+/// The handoff whose predecessor is the caller, as (successor, predecessor).
+pub fn handed_off_from(r: &Registry, c: &Caller) -> Option<(String, String)> {
     let all = r.all().ok()?;
-    let me = predecessor(&all, Some(pane))?;
+    let me = predecessor(&all, c)?;
     r.predecessors()
         .into_iter()
         .find(|(next, from)| *from == me.name && all.iter().any(|w| w.name == *next))
@@ -299,9 +299,8 @@ pub fn on_prompt(payload: &Value) -> Option<Value> {
     if is_machine_event(text) {
         return None;
     }
-    let pane = std::env::var("HERDR_PANE_ID").ok()?;
     let r = Registry::at(Registry::default_dir().ok()?);
-    let (next, from) = handed_off_from(&r, &pane)?;
+    let (next, from) = handed_off_from(&r, &Caller::from_env())?;
     queue(&r, &next, &from, text).ok()?;
     let _ = spawn_follow(&next);
     Some(blocked(&next))
@@ -443,6 +442,7 @@ mod tests {
             error: None,
             parent: None,
             pushed: false,
+            terminal: None,
         }
     }
 
@@ -640,62 +640,62 @@ mod tests {
         assert!(w.contains("boom"), "{w}");
     }
 
+    fn in_pane(pane: &str, terminal: &str) -> Caller {
+        Caller {
+            pane: Some(pane.into()),
+            terminal: Some(terminal.into()),
+            ..Caller::default()
+        }
+    }
+
+    fn pane_w(name: &str, pane: &str, terminal: &str) -> Worker {
+        Worker {
+            backend: Backend::Pane,
+            handle: pane.into(),
+            terminal: Some(terminal.into()),
+            ..w(name)
+        }
+    }
+
     #[test]
     fn the_predecessor_is_the_worker_in_the_callers_pane() {
-        let mut old = w("old");
-        old.backend = Backend::Pane;
-        old.handle = "w1:p2".into();
-        let bg = w("bg");
-        let all = [bg, old];
-        assert_eq!(
-            predecessor(&all, Some("w1:p2")).map(|w| &w.name[..]),
-            Some("old")
-        );
-        assert_eq!(predecessor(&all, Some("w1:p9")), None);
-        assert_eq!(predecessor(&all, None), None);
+        let all = [w("bg"), pane_w("old", "w1:p2", "t1")];
+        let name = |c: &Caller| predecessor(&all, c).map(|w| w.name.clone());
+        assert_eq!(name(&in_pane("w1:p2", "t1")).as_deref(), Some("old"));
+        assert_eq!(name(&in_pane("w1:p9", "t1")), None);
+        assert_eq!(name(&Caller::default()), None);
     }
 
     #[test]
-    fn the_predecessor_in_a_reused_pane_is_the_newest_worker_there() {
-        let mut stale = w("stale");
-        stale.backend = Backend::Pane;
-        stale.handle = "w1:p2".into();
-        stale.started = 100;
-        let mut current = stale.clone();
-        current.name = "current".into();
-        current.started = 200;
-        let all = [stale, current];
-        assert_eq!(
-            predecessor(&all, Some("w1:p2")).map(|w| &w.name[..]),
-            Some("current")
-        );
+    fn the_predecessor_in_a_reused_pane_is_the_worker_whose_terminal_is_there() {
+        let all = [
+            pane_w("stale", "w1:p2", "t1"),
+            pane_w("current", "w1:p2", "t2"),
+        ];
+        let name = |t| predecessor(&all, &in_pane("w1:p2", t)).map(|w| w.name.clone());
+        assert_eq!(name("t2").as_deref(), Some("current"));
+        // A session the user started in the reused pane hands nothing off.
+        assert_eq!(name("t9"), None);
     }
 
     #[test]
-    fn three_workers_sharing_a_pane_across_two_handoffs_resolve_to_the_newest() {
+    fn three_workers_sharing_a_pane_across_two_handoffs_resolve_by_terminal() {
         let dir = std::env::temp_dir().join(format!("reeve-ho-three-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let r = Registry::at(dir);
-        let at = |name: &str, started| {
-            let mut x = w(name);
-            x.backend = Backend::Pane;
-            x.handle = "wH4:p3".into();
-            x.started = started;
-            x
-        };
-        for x in [at("knip", 100), at("report", 200), at("ws6", 300)] {
-            r.put(x).unwrap();
+        for (name, t) in [("knip", "t1"), ("report", "t2"), ("ws6", "t3")] {
+            r.put(pane_w(name, "wH4:p3", t)).unwrap();
         }
         fs::create_dir_all(r.predecessor_path("x").parent().unwrap()).unwrap();
         fs::write(r.predecessor_path("report-2"), "report").unwrap();
         fs::write(r.predecessor_path("ws7"), "ws6").unwrap();
         r.put(w("report-2")).unwrap();
         r.put(w("ws7")).unwrap();
-        // ws6 hands off from the shared pane: the handoff is ws6's, not knip's or report's.
-        assert_eq!(
-            handed_off_from(&r, "wH4:p3"),
-            Some(("ws7".into(), "ws6".into()))
-        );
+        let from = |t| handed_off_from(&r, &in_pane("wH4:p3", t));
+        assert_eq!(from("t3"), Some(("ws7".into(), "ws6".into())));
+        assert_eq!(from("t2"), Some(("report-2".into(), "report".into())));
+        // The user's own session in the pane: its prompts are its own.
+        assert_eq!(from("t9"), None);
     }
 
     #[test]

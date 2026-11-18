@@ -10,7 +10,8 @@ fn executable(path: &Path, script: &str) {
 
 /// A `claude` and a `herdr` on PATH that log the directory they were started in and their
 /// arguments to `<name>.log`, and answer the way reeve expects. `herdr pane get` answers with
-/// `pane.json` when it exists, and otherwise with a pane that has no agent; `herdr pane read`
+/// `pane.json` when it exists, and otherwise with a pane that has no agent, either holding
+/// terminal `term-PANE`; `herdr pane read`
 /// with `pane-text`, `herdr workspace list` with `workspaces.json` or no workspace, and
 /// `herdr workspace create` like `tab create`. `herdr agent start` waits while `hold` exists, fails if `fail` does, and fails with the error code in
 /// `start-error` if that does, which `start-error-next` then replaces. `herdr agent prompt` fails as blocked while `busy` exists.
@@ -44,8 +45,9 @@ fn fakes(dir: &Path) -> String {
         &bin.join("herdr"),
         &format!(
             "echo \"$*\" >> {}\ncase \"$1 $2\" in\n\
-             'tab create'|'workspace create') echo '{{\"result\":{{\"tab\":{{\"tab_id\":\"t1\"}},\"root_pane\":{{\"pane_id\":\"p1\"}}}}}}' ;;\n\
-             'pane get') if [ -f {pane} ]; then cat {pane}; else echo '{{\"result\":{{}}}}'; fi ;;\n\
+             'tab create'|'workspace create') echo '{{\"result\":{{\"tab\":{{\"tab_id\":\"t1\"}},\"root_pane\":{{\"pane_id\":\"p1\",\"terminal_id\":\"term-p1\"}}}}}}' ;;\n\
+             'pane get') if [ -f {pane} ]; then sed \"s/\\\"pane\\\":{{/&\\\"terminal_id\\\":\\\"term-$3\\\",/\" {pane}\n\
+               else echo \"{{\\\"result\\\":{{\\\"pane\\\":{{\\\"terminal_id\\\":\\\"term-$3\\\"}}}}}}\"; fi ;;\n\
              'pane read') cat {text} ;;\n\
              'workspace list') if [ -f {ws} ]; then cat {ws}; else echo '{{\"result\":{{\"workspaces\":[]}}}}'; fi ;;\n\
              'agent prompt') if [ -f {busy} ]; then echo refused >> {log}; echo '{{\"error\":{{\"code\":\"agent_blocked\",\"message\":\"m\"}}}}' >&2; exit 1; fi\n\
@@ -349,7 +351,7 @@ fn a_started_worker_says_how_to_follow_it_in_two_lines() {
     assert!(err.contains("its tab closes by itself"), "{err}");
 }
 
-/// Writes a registry of pane workers, each with handle `p-NAME`.
+/// Writes a registry of pane workers, each with handle `p-NAME` and terminal `term-p-NAME`.
 fn registry(root: &Path, names: &[&str]) {
     let state = root.join("state/reeve");
     std::fs::create_dir_all(state.join("reports")).unwrap();
@@ -363,6 +365,7 @@ fn registry(root: &Path, names: &[&str]) {
                 "started": 1,
                 "report": state.join(format!("reports/{n}.md")),
                 "handle": format!("p-{n}"),
+                "terminal": format!("term-p-{n}"),
             })
         })
         .collect();
