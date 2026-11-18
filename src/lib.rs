@@ -238,8 +238,9 @@ enum Top {
     /// Drop a worker that is gone or done from `reeve ls`; its report stays
     Rm { name: String },
     /// Close a done, idle or gone worker: its tab (or background session), and its own worktree
-    /// when that is clean, pushed and holds no git-ignored files under `.claude/` (never forced;
-    /// it lists such files instead). Its report and `reeve ls` entry stay
+    /// when that is clean, pushed, holds no git-ignored data beyond build output and no other
+    /// live worker works in it (never forced; it names them instead, the data with its sizes).
+    /// Its report and `reeve ls` entry stay
     Close {
         name: String,
         /// Close the tab but keep the worktree, with its ignored files
