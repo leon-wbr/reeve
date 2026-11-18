@@ -194,12 +194,15 @@ pub fn gone_why(w: &Worker) -> String {
 
 /// Where a background `codex exec` worker's JSON events go: `logs/NAME.jsonl` beside `reports/`.
 pub fn exec_log(w: &Worker) -> PathBuf {
-    let state = w
-        .report
+    state_dir(w).join("logs").join(format!("{}.jsonl", w.name))
+}
+
+/// The state dir that holds `w`'s `reports/`.
+fn state_dir(w: &Worker) -> &Path {
+    w.report
         .parent()
         .and_then(Path::parent)
-        .unwrap_or(Path::new("."));
-    state.join("logs").join(format!("{}.jsonl", w.name))
+        .unwrap_or(Path::new("."))
 }
 
 /// The thread id from `codex exec --json`'s `thread.started` event.
@@ -729,7 +732,27 @@ pub fn pane_agent(probe: Result<&str, &str>, kind: Kind, terminal: Option<&str>)
     let Ok(v) = serde_json::from_str::<Value>(out) else {
         return Agent::Unknown;
     };
-    let pane = &v["result"]["pane"];
+    pane_status(&v["result"]["pane"], kind, terminal)
+}
+
+/// The panes `herdr pane list` shows, or `None` when the call or its output failed.
+fn listed_panes(probe: Result<&str, &str>) -> Option<Vec<Value>> {
+    let mut v: Value = serde_json::from_str(probe.ok()?).ok()?;
+    serde_json::from_value(v["result"]["panes"].take()).ok()
+}
+
+/// [`pane_agent`] for one pane of [`listed_panes`], so many workers cost one `herdr` call.
+fn pane_listed(panes: Option<&[Value]>, id: &str, kind: Kind, terminal: Option<&str>) -> Agent {
+    let Some(panes) = panes else {
+        return Agent::Unknown;
+    };
+    panes
+        .iter()
+        .find(|p| p["pane_id"] == id)
+        .map_or(Agent::Absent, |p| pane_status(p, kind, terminal))
+}
+
+fn pane_status(pane: &Value, kind: Kind, terminal: Option<&str>) -> Agent {
     if pane["agent"] != kind.bin() || pane["terminal_id"].as_str() != terminal {
         return Agent::Absent;
     }
@@ -759,7 +782,11 @@ fn listed_agent(a: &Value) -> Agent {
 
 /// From `claude agents --json`, which keeps listing a background session after its turn.
 pub fn bg_agent(probe: Result<&str, &str>, id: &str) -> Agent {
-    let Some(all) = listed(probe) else {
+    bg_in(listed(probe).as_deref(), id)
+}
+
+fn bg_in(all: Option<&[Value]>, id: &str) -> Agent {
+    let Some(all) = all else {
         return Agent::Unknown;
     };
     all.iter()
@@ -771,7 +798,11 @@ pub fn bg_agent(probe: Result<&str, &str>, id: &str) -> Agent {
 /// reeve starts every Claude worker with, so without the registry's handle. When several carry
 /// the name, such as a restart beside its stopped first try, the busiest counts.
 pub fn named_agent(probe: Result<&str, &str>, name: &str) -> Agent {
-    let Some(all) = listed(probe) else {
+    named_in(listed(probe).as_deref(), name)
+}
+
+fn named_in(all: Option<&[Value]>, name: &str) -> Agent {
+    let Some(all) = all else {
         return Agent::Unknown;
     };
     let rank = |a: &Agent| match a {
@@ -1107,6 +1138,40 @@ pub fn read_tab(pane: &str) -> Result<String, String> {
     )
 }
 
+/// Why an idle agent stopped, from the end of its tab: a usage limit or an API error, which a
+/// nudge won't fix until it clears. `None` for an agent that just finished its turn.
+pub fn idle_why(tab: &str) -> Option<String> {
+    const LIMITS: [&str; 3] = ["hit your usage limit", "hit your limit", "limit reached"];
+    const ERRORS: [&str; 3] = ["API Error", "stream disconnected", "stream error"];
+    let lines: Vec<&str> = tab.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines.iter().rev().take(12).find_map(|l| {
+        let l = l
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim_end();
+        let cut = |s: &str| s.chars().take(120).collect::<String>();
+        if LIMITS.iter().any(|k| l.contains(k)) {
+            Some(cut(&format!("usage limit: {l}")))
+        } else {
+            ERRORS.iter().find_map(|k| l.find(k)).map(|i| cut(&l[i..]))
+        }
+    })
+}
+
+/// [`idle_why`] for a pane worker; other workers have no tab to read.
+pub fn why_idle(w: &Worker) -> Option<String> {
+    (w.backend == Backend::Pane)
+        .then(|| {
+            probe(
+                "herdr",
+                [
+                    "pane", "read", &w.handle, "--source", "recent", "--lines", "40",
+                ],
+            )
+        })
+        .and_then(Result::ok)
+        .and_then(|t| idle_why(&t))
+}
+
 pub fn agent(w: &Worker) -> Agent {
     match (w.backend, w.agent) {
         (Backend::Pane, kind) => {
@@ -1427,33 +1492,44 @@ pub fn brief(shown: &[(&str, State)], older: usize) -> String {
     out + HEAVY_REMINDER
 }
 
-/// States for many workers, asking `claude agents` only once, each with whether it is
-/// finished [`history`]. A worker whose agent was never asked about (it failed to start, or is
-/// still starting) counts as having none. Each Claude worker is also looked up there by name,
-/// and a `registry_mismatch` event is logged where that disagrees with its pane or registered
-/// session. Codex has no such list (`codex agents` is a TUI), so its workers keep their own
-/// probes and log none.
+/// States for many workers, asking `claude agents` and `herdr pane list` only once, each with
+/// whether it is finished [`history`]. A worker whose agent was never asked about (it failed to
+/// start, or is still starting) counts as having none. Each Claude worker is also looked up in
+/// `claude agents` by name, and a `registry_mismatch` event is logged when that starts to
+/// disagree with its pane or registered session, as `mismatches.json` remembers. Codex has no
+/// such list (`codex agents` is a TUI), so its workers log none.
 pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
-    let mut claude: Option<Result<String, String>> = None;
+    let mut claude = None;
+    let mut panes = None;
+    let file = all.first().map(|w| state_dir(w).join("mismatches.json"));
+    let logged: HashMap<String, String> = file
+        .as_ref()
+        .and_then(|f| serde_json::from_slice(&fs::read(f).ok()?).ok())
+        .unwrap_or_default();
+    let mut last = logged.clone();
     let now = now();
-    all.iter()
+    let out = all
+        .iter()
         .map(|w| {
             let mut a = Agent::Absent;
             let s = state_of(w, now, || {
-                a = if w.agent != Kind::Claude {
-                    agent(w)
-                } else {
-                    let p = claude.get_or_insert_with(|| probe("claude", ["agents", "--json"]));
-                    let p = p.as_deref().map_err(|e| e.as_str());
-                    let registry = match w.backend {
-                        Backend::Pane => agent(w),
-                        Backend::Bg => bg_agent(p, &w.handle),
-                    };
-                    if let Some(m) = mismatch(registry, named_agent(p, &w.name)) {
-                        log_mismatch(&w.name, m);
+                a = match (w.backend, w.agent) {
+                    (Backend::Pane, kind) => {
+                        let p = panes.get_or_insert_with(|| {
+                            let p = probe("herdr", ["pane", "list"]);
+                            listed_panes(p.as_deref().map_err(|e| e.as_str()))
+                        });
+                        pane_listed(p.as_deref(), &w.handle, kind, w.terminal.as_deref())
                     }
-                    registry
+                    (Backend::Bg, Kind::Codex) => agent(w),
+                    (Backend::Bg, Kind::Claude) => bg_in(claude_list(&mut claude), &w.handle),
                 };
+                if w.agent == Kind::Claude {
+                    let m = mismatch(a, named_in(claude_list(&mut claude), &w.name));
+                    if note_mismatch(&mut last, &w.name, m.clone()) {
+                        log_mismatch(&w.name, m.unwrap_or_default());
+                    }
+                }
                 a
             });
             if w.error.is_none() && !w.starting {
@@ -1461,7 +1537,36 @@ pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
             }
             (s, history(s, a, finished_ago(w, now)))
         })
-        .collect()
+        .collect();
+    if let Some(f) = file.filter(|_| last != logged) {
+        let tmp = f.with_extension(format!("json.{}", std::process::id()));
+        let _ = serde_json::to_vec(&last)
+            .map_err(io::Error::other)
+            .and_then(|b| fs::write(&tmp, b))
+            .and_then(|_| fs::rename(&tmp, &f));
+    }
+    out
+}
+
+/// `claude agents --json`, asked once and kept in `cache`.
+fn claude_list(cache: &mut Option<Option<Vec<Value>>>) -> Option<&[Value]> {
+    cache
+        .get_or_insert_with(|| {
+            let p = probe("claude", ["agents", "--json"]);
+            listed(p.as_deref().map_err(|e| e.as_str()))
+        })
+        .as_deref()
+}
+
+/// Records `m` as `name`'s mismatch in `last`, and says whether it is new and so worth logging.
+fn note_mismatch(last: &mut HashMap<String, String>, name: &str, m: Option<String>) -> bool {
+    match m {
+        None => {
+            last.remove(name);
+            false
+        }
+        Some(m) => last.insert(name.into(), m.clone()) != Some(m),
+    }
 }
 
 /// The agents [`states`] found in this process, so a later pass doesn't probe them again.
@@ -1587,6 +1692,9 @@ pub fn ls(
             col(count(&w.name)),
             crate::setup::tilde(&w.cwd)
         );
+        if let Some(why) = (state == State::Idle).then(|| why_idle(w)).flatten() {
+            out += &format!("  (idle on {why})");
+        }
     }
     for x in extra {
         out += &format!(
@@ -1723,27 +1831,32 @@ impl Watch {
     /// `step_at` for workers with no job of their own, at no particular time.
     pub fn step(&mut self, polled: &[(Worker, State)]) -> Vec<String> {
         let polled: Vec<_> = polled.iter().map(|(w, s)| (w.clone(), *s, false)).collect();
-        self.step_at(0, &polled, &HashMap::new())
+        self.step_at(0, &polled, &HashMap::new(), &HashMap::new())
     }
 
     /// One line per worker whose state changed since the last poll, at `now` ms. Each worker
     /// comes with whether a `reeve heavy` job of its own runs or waits. A worker seen for the
     /// first time is reported only if it needs someone, so a restart doesn't replay old news. A
     /// done worker that automatic closing will close is held back until it is, so its line can
-    /// say so.
+    /// say so. An idle worker with a reason in `why` (see [`idle_why`]) is news at once.
     pub fn step_at(
         &mut self,
         now: u64,
         polled: &[(Worker, State, bool)],
         closing: &HashMap<String, Outcome>,
+        why: &HashMap<String, String>,
     ) -> Vec<String> {
         let mut lines = vec![];
         for (w, s, busy) in polled {
             let mut s = *s;
+            let why = why.get(&w.name);
             let idle = self.idle.entry(w.name.clone()).or_default();
             *idle = if s == State::Idle { *idle + 1 } else { 0 };
             if s == State::Unknown
-                || (self.stall_ms.is_none() && s == State::Idle && *idle < IDLE_POLLS)
+                || (self.stall_ms.is_none()
+                    && s == State::Idle
+                    && *idle < IDLE_POLLS
+                    && why.is_none())
             {
                 continue;
             }
@@ -1756,13 +1869,13 @@ impl Watch {
                     // Waiting on its own job is working, as far as its follower is concerned.
                     s = State::Running;
                 }
-                if s == State::Idle {
+                if s == State::Idle && why.is_none() {
                     let since = *self.idle_since.entry(w.name.clone()).or_insert(now);
                     if now.saturating_sub(since) < stall {
                         continue;
                     }
                     stalled = Some((now - since) / 60_000);
-                } else {
+                } else if s != State::Idle {
                     self.idle_since.remove(&w.name);
                 }
             }
@@ -1777,9 +1890,10 @@ impl Watch {
                 Some(b) => b != s,
             };
             if news {
-                lines.push(match (stalled, s) {
-                    (Some(min), _) => idle_for(w, min),
-                    (None, State::Done) => {
+                lines.push(match (stalled, s, why) {
+                    (_, State::Idle, Some(why)) => stopped_on(w, why),
+                    (Some(min), _, _) => idle_for(w, min),
+                    (None, State::Done, _) => {
                         crate::autoclose::done_line(&w.name, &w.report, closing.get(&w.name))
                     }
                     _ => change(w, before, s),
@@ -1787,6 +1901,11 @@ impl Watch {
             }
         }
         lines
+    }
+
+    /// Whether the last line about `name` said it was idle, so its tab needn't be read again.
+    pub fn reported_idle(&self, name: &str) -> bool {
+        self.last.get(name) == Some(&State::Idle)
     }
 
     /// With names: `Some(true)` once all are done, `Some(false)` once all are done or gone with
@@ -1805,6 +1924,15 @@ fn idle_for(w: &Worker, min: u64) -> String {
     format!(
         "{name} idle without a report for {min} min and no `reeve heavy` job of its own: read \
          {}; nudge it with `reeve send {name} \"TEXT\"`, let it carry on, or ask the user",
+        look_where(w)
+    )
+}
+
+fn stopped_on(w: &Worker, why: &str) -> String {
+    let name = &w.name;
+    format!(
+        "{name} idle on {why}: read {}; once that clears, nudge it with `reeve send {name} \"TEXT\"`, \
+         restart it, or ask the user",
         look_where(w)
     )
 }
@@ -1886,7 +2014,12 @@ pub fn watch(r: &Registry, names: &[String], stall: Option<Duration>) -> io::Res
             .map(|(w, _, _)| w.clone())
             .collect();
         let closing = crate::autoclose::sweep(r, &done);
-        for line in w.step_at(crate::events::now_ms(), &polled, &closing) {
+        let why: HashMap<_, _> = polled
+            .iter()
+            .filter(|(x, s, _)| *s == State::Idle && !w.reported_idle(&x.name))
+            .filter_map(|(x, _, _)| Some((x.name.clone(), why_idle(x)?)))
+            .collect();
+        for line in w.step_at(crate::events::now_ms(), &polled, &closing, &why) {
             println!("{line}");
         }
         if let Some(all_done) = w.end(names) {
@@ -3216,7 +3349,7 @@ mod tests {
 
     fn at(w: &mut Watch, t: u64, ws: &[(&Worker, State, bool)]) -> Vec<String> {
         let ws: Vec<_> = ws.iter().map(|(w, s, b)| ((*w).clone(), *s, *b)).collect();
-        w.step_at(t, &ws, &HashMap::new())
+        w.step_at(t, &ws, &HashMap::new(), &HashMap::new())
     }
 
     #[test]
@@ -3974,6 +4107,108 @@ mod tests {
         assert_eq!(a(Some("term_2")), Agent::Idle);
         assert_eq!(a(Some("term_1")), Agent::Absent);
         assert_eq!(a(None), Agent::Absent);
+    }
+
+    #[test]
+    fn one_pane_list_answers_for_every_pane_worker() {
+        let list = r#"{"result":{"panes":[
+            {"pane_id":"w1:p1","agent":"claude","agent_status":"working","terminal_id":"t1"},
+            {"pane_id":"w1:p2","agent":"codex","agent_status":"done","terminal_id":"t2"}]}}"#;
+        let panes = listed_panes(Ok(list));
+        let a = |pane, kind, t| pane_listed(panes.as_deref(), pane, kind, Some(t));
+        assert_eq!(a("w1:p1", Kind::Claude, "t1"), Agent::Working);
+        assert_eq!(a("w1:p2", Kind::Codex, "t2"), Agent::Idle);
+        assert_eq!(a("w1:p2", Kind::Codex, "t9"), Agent::Absent);
+        assert_eq!(a("w9:p1", Kind::Claude, "t1"), Agent::Absent);
+        let down = listed_panes(Err("herdr: connection refused"));
+        assert_eq!(
+            pane_listed(down.as_deref(), "w1:p1", Kind::Claude, Some("t1")),
+            Agent::Unknown
+        );
+    }
+
+    #[test]
+    fn a_mismatch_is_logged_once_until_it_changes() {
+        let mut last = HashMap::new();
+        let m = |s: &str| Some(s.to_string());
+        assert!(note_mismatch(
+            &mut last,
+            "a",
+            m("registry=idle claude=working")
+        ));
+        assert!(!note_mismatch(
+            &mut last,
+            "a",
+            m("registry=idle claude=working")
+        ));
+        assert!(note_mismatch(
+            &mut last,
+            "a",
+            m("registry=idle claude=absent")
+        ));
+        assert!(!note_mismatch(&mut last, "a", None));
+        assert!(note_mismatch(
+            &mut last,
+            "a",
+            m("registry=idle claude=absent")
+        ));
+    }
+
+    #[test]
+    fn an_idle_tab_says_why_it_stopped() {
+        let tab =
+            |l: &str| format!("● Done step 3.\n\n  ⎿  {l}\n\n╭──\n│ > \n╰──\n  ? for shortcuts\n");
+        assert_eq!(
+            idle_why(&tab(
+                "API Error: Connection lost mid-response. The response above may be incomplete."
+            ))
+            .as_deref(),
+            Some("API Error: Connection lost mid-response. The response above may be incomplete.")
+        );
+        assert_eq!(
+            idle_why(&tab("■ You've hit your usage limit. Try again in 3 hours.")).as_deref(),
+            Some("usage limit: You've hit your usage limit. Try again in 3 hours.")
+        );
+        assert_eq!(
+            idle_why(&tab("5-hour limit reached ∙ resets 3pm")).as_deref(),
+            Some("usage limit: 5-hour limit reached ∙ resets 3pm")
+        );
+        assert_eq!(
+            idle_why(&tab(
+                "■ stream disconnected before completion: error sending request"
+            ))
+            .as_deref(),
+            Some("stream disconnected before completion: error sending request")
+        );
+        assert_eq!(idle_why(&tab("All tests pass; writing the report.")), None);
+        let long = idle_why(&tab(&format!("API Error: 500 {}", "x".repeat(300)))).unwrap();
+        assert!(long.chars().count() <= 120, "{long}");
+        let old = format!("API Error: Connection error.\n{}", "line\n".repeat(60));
+        assert_eq!(idle_why(&old), None, "only the end of the tab counts");
+    }
+
+    #[test]
+    fn a_worker_idle_on_an_error_is_reported_at_once_and_once() {
+        let r = Registry::at(temp("quiet-why"));
+        let a = worker(&r, "a", "w1:p1");
+        let why = HashMap::from([("a".to_string(), "usage limit: try again at 7am".to_string())]);
+        let ws = vec![(a.clone(), State::Idle, false)];
+        let mut w = quiet();
+        let lines = w.step_at(0, &ws, &HashMap::new(), &why);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("a idle on usage limit: try again at 7am"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("reeve send a"), "{lines:?}");
+        let stall = STALL.as_millis() as u64;
+        assert!(
+            w.step_at(stall + MIN, &ws, &HashMap::new(), &why)
+                .is_empty()
+        );
+        assert!(w.reported_idle("a"));
+        let mut plain = Watch::default();
+        assert_eq!(plain.step_at(0, &ws, &HashMap::new(), &why).len(), 1);
     }
 
     #[test]

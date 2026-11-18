@@ -692,6 +692,12 @@ pub fn main() -> ExitCode {
             {
                 eprintln!("reeve: {w}");
             }
+            if let Some(w) = (agent == workers::Kind::Codex)
+                .then(usage::codex_warning)
+                .flatten()
+            {
+                eprintln!("reeve: {w}");
+            }
             let started = moved.and_then(|_| workers()).and_then(|r| {
                 let parent = push::parent(&r, &workers::Caller::from_env());
                 workers::run(&r, &name, agent, backend, &args, parent)?;

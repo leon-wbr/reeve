@@ -29,6 +29,7 @@ Reports reach your inbox as `NAME done: …`; also follow each with `reeve watch
 
 - **done**: read it if needed; reeve closes it in 2 minutes, or says why not.
 - **idle** without a report or `reeve heavy` job for 10 minutes: read it where the line says; one stuck on a prompt can show as idle. If it waits on its own background job, do nothing; else nudge it with `reeve send NAME "TEXT"`, let it carry on if it can decide, or ask the user.
+- **idle on** a usage limit or API error: nudge it once clear, or restart it.
 - **blocked** (a permission prompt, a question): answer it yourself, as the line says. Approve reads and work within its task; bring the user only deploys, production data changes, force-pushes and anything published.
 
 A **gone** worker stopped without a report. See what it left (`reeve wait NAME` says where), then restart it under its name saying where to pick up, or report it lost. `reeve rm NAME` drops it.

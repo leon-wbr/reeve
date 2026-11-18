@@ -318,6 +318,34 @@ pub fn codex(now: u64) -> Reading {
     }
 }
 
+/// Used share of a window over which a new Codex worker is warned it may not finish.
+const NEAR: f64 = 80.0;
+
+/// A warning for `reeve run --agent codex` when a Codex window is nearly spent, else `None`.
+pub fn near_limit(r: &Reading) -> Option<String> {
+    let over = over(
+        std::slice::from_ref(r),
+        &[Limit {
+            agent: None,
+            percent: NEAR,
+        }],
+        WindowSel::All,
+    );
+    (!over.is_empty()).then(|| {
+        format!(
+            "{}: the worker may stop at the limit, which `reeve ls` shows as idle on a usage \
+             limit; `--agent claude` avoids it",
+            over.join(", ")
+        )
+    })
+}
+
+/// [`near_limit`] for Codex now, asked briefly so a start isn't held up.
+pub fn codex_warning() -> Option<String> {
+    let result = codex_query(Duration::from_secs(5)).ok()?;
+    near_limit(&codex_from(&result, crate::msg::now_secs()))
+}
+
 pub fn read(agent: Option<Kind>, now: u64) -> Vec<Reading> {
     let want = |k| agent.is_none_or(|a| a == k);
     let claude = want(Kind::Claude).then(|| std::thread::spawn(move || claude(now)));
@@ -530,6 +558,25 @@ mod tests {
         );
         let none = codex_from(&json!({"rateLimits": {"primary": null}}), NOW);
         assert!(none.windows.is_empty());
+    }
+
+    #[test]
+    fn a_codex_worker_is_warned_of_a_nearly_spent_window() {
+        let at = |five: f64, week: f64| {
+            codex_from(
+                &json!({"rateLimits": {
+                    "primary": {"usedPercent": five, "windowDurationMins": 300, "resetsAt": NOW + 3600},
+                    "secondary": {"usedPercent": week, "windowDurationMins": 10080},
+                }}),
+                NOW,
+            )
+        };
+        assert_eq!(near_limit(&at(50.0, 60.0)), None);
+        let w = near_limit(&at(84.0, 60.0)).unwrap();
+        assert!(w.starts_with("codex 5-hour 84% is over 80%"), "{w}");
+        assert!(w.contains("--agent claude"), "{w}");
+        assert!(near_limit(&at(10.0, 95.0)).unwrap().contains("weekly 95%"));
+        assert_eq!(near_limit(&Reading::unknown("codex", "s", "x")), None);
     }
 
     #[test]

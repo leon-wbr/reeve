@@ -9,7 +9,7 @@ reeve feedback "text" [--with-paths] [--open]
 
 ## The event log
 
-Every reeve command appends one JSON line to `~/.local/state/reeve/events.jsonl` (or `$XDG_STATE_HOME/reeve/events.jsonl`, or the file named by `REEVE_EVENTS`; `REEVE_EVENTS=/dev/null` turns it off). Each line is one `write` to a file opened for appending, so concurrent commands never mix their lines. If the log can't be written, reeve warns and the command runs as usual.
+Every reeve command appends one JSON line to `~/.local/state/reeve/events.jsonl` (or `$XDG_STATE_HOME/reeve/events.jsonl`, or the file named by `REEVE_EVENTS`; `REEVE_EVENTS=/dev/null` turns it off). Each line is one `write` to a file opened for appending, so concurrent commands never mix their lines. If the log can't be written, reeve warns and the command runs as usual. Past 32 MB the log moves to `events.jsonl.1`, replacing the one there, and a new one starts.
 
 | Field | Meaning |
 | --- | --- |
@@ -28,7 +28,7 @@ Every reeve command appends one JSON line to `~/.local/state/reeve/events.jsonl`
 | `mismatch` | For a `registry_mismatch` event, e.g. `registry=idle claude=blocked` |
 | `actor`, `agent` | `agent` or `person`, from the variables agent CLIs set (`CLAUDECODE`, `CODEX_SANDBOX`, `AI_AGENT`); `agent` names a known one, or says `other`. `schedule` when no agent is set and `REEVE_ACTOR=schedule` is, as a launchd or cron job sets it ([schedule.md](schedule.md)) |
 
-`reeve ls` (and the session-start brief) also look each Claude worker up by name in `claude agents --json`, and log a `registry_mismatch` event where that disagrees with what its Herdr pane or registered session id says. The count tells whether `workers.json` and the per-pane probes can give way to `claude agents`. Codex has no machine-readable session list, so Codex workers log none.
+`reeve ls` (and the session-start brief) also look each Claude worker up by name in `claude agents --json`, and log a `registry_mismatch` event when that starts to disagree with what its Herdr pane or registered session id says; `mismatches.json` beside the log keeps what was logged, so a lasting disagreement is logged once. The count tells whether `workers.json` and the per-pane probes can give way to `claude agents`. Codex has no machine-readable session list, so Codex workers log none.
 
 **The privacy rule:** the log never holds prompt text, file contents, report text, command arguments, error messages or environment values.
 

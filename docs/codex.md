@@ -18,6 +18,8 @@ Everything after `--` goes to codex, the prompt last, as with claude. The worker
 - **Herdr pane length.** Herdr types the command into the pane's shell, so the same 1000-byte limit applies; a longer prompt goes through `reports/NAME.prompt.md` as for claude.
 - In a folder Codex hasn't trusted yet, the interactive codex asks first, and Herdr reports it as blocked during startup. reeve doesn't answer that for the user: the tab stays open and the worker shows as blocked until it is answered there. Any agent that stops at a question on start is treated the same way.
 
+`reeve run --agent codex` warns when a Codex usage window is over 80% spent, as a worker that hits the limit stops.
+
 `--agent codex` doesn't combine with `--sandbox` (the container image has claude only) or with `--bg` outside a named worker.
 
 ## Codex as the main session

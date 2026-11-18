@@ -182,12 +182,30 @@ pub fn append(e: &Event) -> io::Result<()> {
     }
     let mut line = serde_json::to_vec(e)?;
     line.push(b'\n');
-    let mut f = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+    rotate(&path, &f, MAX_BYTES);
     let n = f.write(&line)?;
     if n < line.len() {
         return Err(io::Error::other("short write"));
     }
     Ok(())
+}
+
+/// How big the log grows before it moves to `events.jsonl.1`, replacing the one there.
+const MAX_BYTES: u64 = 32 << 20;
+
+/// Moves the log at `path`, open as `f`, aside once it holds over `max` bytes. Only the file
+/// still at `path` moves, so two commands that both find it full don't move a fresh one too.
+fn rotate(path: &std::path::Path, f: &fs::File, max: u64) {
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(open), Ok(now)) = (f.metadata(), fs::metadata(path)) else {
+        return;
+    };
+    if open.len() > max && open.ino() == now.ino() {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        let _ = fs::rename(path, old);
+    }
 }
 
 /// Appends `e`; a failure is only reported, never passed on to the command.
@@ -296,6 +314,31 @@ mod tests {
         assert_eq!(
             error_kind(&io::Error::from(io::ErrorKind::PermissionDenied)),
             "permission_denied"
+        );
+    }
+
+    #[test]
+    fn a_full_log_moves_aside_and_a_new_one_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("events.jsonl");
+        fs::write(&log, "a\nb\n").unwrap();
+        let mut f = OpenOptions::new().append(true).open(&log).unwrap();
+        rotate(&log, &f, 100);
+        assert!(
+            !log.with_extension("jsonl.1").exists(),
+            "under the cap it stays"
+        );
+        rotate(&log, &f, 3);
+        assert_eq!(
+            fs::read_to_string(log.with_extension("jsonl.1")).unwrap(),
+            "a\nb\n"
+        );
+        assert!(!log.exists());
+        f.write_all(b"c\n").unwrap();
+        // A writer that opened the old file before it moved finishes its line there.
+        assert_eq!(
+            fs::read_to_string(log.with_extension("jsonl.1")).unwrap(),
+            "a\nb\nc\n"
         );
     }
 
