@@ -207,6 +207,7 @@ mod tests {
             parent: parent.map(String::from),
             pushed: false,
             terminal: None,
+            extra: Default::default(),
         };
         f.r.put(w.clone()).unwrap();
         w

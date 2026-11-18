@@ -41,10 +41,10 @@ pub fn successor_prompt(file: &Path) -> String {
     )
 }
 
-/// The named worker in the caller's Herdr pane: the session that is handing off, if reeve
-/// started it. Sessions the user started by hand are not reeve's to close.
+/// The session that is handing off, if reeve started it (`workers::own_worker`). Sessions the
+/// user started by hand are not reeve's to close.
 pub fn predecessor<'a>(all: &'a [Worker], c: &Caller) -> Option<&'a Worker> {
-    workers::pane_worker(all, c.pane.as_deref()?, c.terminal.as_deref()?)
+    workers::own_worker(all, c)
 }
 
 /// What a predecessor's tab shows. `text` is the pane read; the handoff shows in it as the
@@ -443,6 +443,7 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: None,
+            extra: Default::default(),
         }
     }
 

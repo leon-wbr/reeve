@@ -261,6 +261,7 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: None,
+            extra: Default::default(),
         }
     }
 
