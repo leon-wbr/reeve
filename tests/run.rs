@@ -721,7 +721,11 @@ fn a_background_codex_worker_runs_exec_and_is_done_once_it_reports() {
     );
     let state = root.join("state/reeve");
     assert!(
-        argv.contains(&format!("--add-dir {} report it", state.display())),
+        argv.contains(&format!(
+            "--add-dir {} --add-dir {} report it",
+            state.display(),
+            root.join("reeve-home").display()
+        )),
         "{argv}"
     );
     assert_eq!(lines.next(), Some("0"), "CLAUDECODE reached codex");

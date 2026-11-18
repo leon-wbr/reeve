@@ -393,8 +393,8 @@ enum Hook {
 #[derive(Subcommand)]
 enum Setup {
     /// Add hooks to ~/.claude/settings.json that run `reeve ls --brief` at session start and
-    /// `reeve hook context` on prompts and tool calls, `reeve hook background` before Bash calls,
-    /// a skill stub at ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`, and
+    /// `reeve hook context` on prompts, tool calls and auto mode denials, `reeve hook background`
+    /// before Bash calls, a skill stub at ~/.claude/skills/reeve/SKILL.md that points at `reeve --skill`, and
     /// `permissions.allow` rules for reeve's own subcommands, so auto mode doesn't decline them
     Claude {
         /// Only report whether each piece is installed and current

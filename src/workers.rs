@@ -165,6 +165,17 @@ pub fn state_of(w: &Worker, now: u64, agent: impl FnOnce() -> Agent) -> State {
     }
 }
 
+/// A worker's state after `worker NAME`, with how long a start may still take.
+pub fn is_state(w: &Worker, s: State, now: u64) -> String {
+    match s {
+        State::Starting => format!(
+            "is starting, for at most {}s more",
+            START_SECS.saturating_sub(now.saturating_sub(w.started))
+        ),
+        s => format!("is {s}"),
+    }
+}
+
 /// Why a worker without a report is gone, after `worker NAME`.
 pub fn gone_why(w: &Worker) -> String {
     match &w.error {
@@ -447,10 +458,10 @@ pub fn claude_args(name: &str, report: &Path, flags: &[String]) -> Vec<String> {
 }
 
 /// Codex args for a worker: its sandbox may write reeve's state dir, for the report and
-/// `reeve heavy`'s queue. That takes a writable sandbox, which `codex exec` and an untrusted
+/// `reeve heavy`'s queue, and the inbox (`msg::home`), for `reeve send`. That takes a writable sandbox, which `codex exec` and an untrusted
 /// folder don't give by default (codex then refuses `--add-dir` and exits), so it gets
 /// workspace-write unless its arguments choose a sandbox. Codex has no flag to name a session.
-pub fn codex_args(report: &Path, flags: &[String]) -> Vec<String> {
+pub fn codex_args(report: &Path, inbox: Option<&Path>, flags: &[String]) -> Vec<String> {
     let state = report.parent().and_then(Path::parent).unwrap_or(report);
     let chosen = flags.iter().any(|a| {
         CODEX_SANDBOX_FLAGS.contains(&a.as_str())
@@ -462,14 +473,25 @@ pub fn codex_args(report: &Path, flags: &[String]) -> Vec<String> {
         .iter()
         .cloned()
         .chain(sandbox.into_iter().flatten().map(String::from))
-        .chain(["--add-dir".into(), state.display().to_string()])
+        .chain(
+            [Some(state), inbox]
+                .into_iter()
+                .flatten()
+                .flat_map(|d| ["--add-dir".into(), d.display().to_string()]),
+        )
         .collect()
 }
 
-pub fn agent_args(kind: Kind, name: &str, report: &Path, flags: &[String]) -> Vec<String> {
+pub fn agent_args(
+    kind: Kind,
+    name: &str,
+    report: &Path,
+    inbox: Option<&Path>,
+    flags: &[String],
+) -> Vec<String> {
     match kind {
         Kind::Claude => claude_args(name, report, flags),
-        Kind::Codex => codex_args(report, flags),
+        Kind::Codex => codex_args(report, inbox, flags),
     }
 }
 
@@ -601,6 +623,63 @@ pub fn untrusted(tab: &str) -> bool {
         .rev()
         .take(5)
         .any(|l| l.contains("Workspace trust not yet accepted"))
+}
+
+/// While Claude's trust dialog waits for an answer: the folder it asks about, and how many
+/// times to press down from the selected option to reach Yes.
+pub fn trust_dialog(tab: &str) -> Option<(PathBuf, usize)> {
+    let lines: Vec<&str> = tab
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let (last, options) = lines.split_last()?;
+    if !last.starts_with("Enter to confirm") {
+        return None;
+    }
+    let options = &options[options.len().saturating_sub(3)..];
+    let yes = options
+        .iter()
+        .position(|l| l.ends_with("Yes, I trust this folder"))?;
+    let selected = options.iter().position(|l| l.starts_with('❯'))?;
+    let at = lines.iter().rposition(|l| *l == "Accessing workspace:")?;
+    let folder = PathBuf::from(lines.get(at + 1)?);
+    yes.checked_sub(selected).map(|downs| (folder, downs))
+}
+
+fn asks_trust(w: &Worker) -> Option<(PathBuf, usize)> {
+    (w.backend == Backend::Pane && w.agent == Kind::Claude)
+        .then(|| trust_dialog(&read_tab(&w.handle).ok()?))
+        .flatten()
+}
+
+/// Claude never saves trust for the home folder, so a worker there, such as the successor a
+/// main session in ~ hands off to, would wait at the dialog each time: reeve answers it, as the
+/// user would. Elsewhere the answer is saved, so it stays the user's, and the worker shows as
+/// blocked.
+pub fn answers_trust(asked: Option<&Path>, cwd: &Path, home: Option<&Path>) -> bool {
+    asked.is_some() && asked == home && asked == Some(cwd)
+}
+
+fn trust_home(w: &Worker) {
+    let mut seen = asks_trust(w);
+    for _ in 0..10 {
+        if seen.is_some() || agent(w) != Agent::Blocked {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        seen = asks_trust(w);
+    }
+    let Some((asked, downs)) = seen else {
+        return;
+    };
+    if answers_trust(Some(&asked), &w.cwd, std::env::home_dir().as_deref()) {
+        let keys = ["pane", "send-keys", &w.handle]
+            .into_iter()
+            .chain(std::iter::repeat_n("down", downs))
+            .chain(["enter"]);
+        let _ = stdout("herdr", keys);
+    }
 }
 
 /// A new pane's shell isn't up yet, or the agent told to exit still holds the worker's name;
@@ -832,6 +911,7 @@ fn start_pane(w: &Worker, tab: &str, args: &[String]) -> io::Result<bool> {
         let _ = herdr(["tab", "close", tab]);
         return Err(e);
     }
+    trust_home(w);
     Ok(trusting)
 }
 
@@ -1049,6 +1129,9 @@ pub fn run(
     if let Some(f) = crate::run::unchecked_flag(kind, flags) {
         return Err(io::Error::other(crate::run::unchecked_refusal(&f)));
     }
+    if let Some(f) = crate::run::own_flag(kind, flags) {
+        return Err(io::Error::other(crate::run::own_refusal(&f)));
+    }
     // A pane's shell finds the agent itself, and Herdr says so when it can't.
     if let Some(why) = (backend == Backend::Bg)
         .then(|| crate::run::missing_agent(kind))
@@ -1080,7 +1163,10 @@ pub fn run(
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
-    let own = agent_args(kind, name, &report, flags);
+    let inbox = crate::msg::home()
+        .ok()
+        .filter(|h| fs::create_dir_all(h).is_ok());
+    let own = agent_args(kind, name, &report, inbox.as_deref(), flags);
     let prompt = with_report(prompt, &report);
     let cwd = std::env::current_dir()?;
     // The tab opens now, so the user sees the worker starting; the agent starts in the background.
@@ -1706,10 +1792,19 @@ fn change(w: &Worker, before: Option<State>, s: State) -> String {
              nudge it with `reeve send {name} \"TEXT\"`, let it carry on, or ask the user",
             look_where(w)
         ),
-        State::Blocked => format!(
-            "{name} blocked (waiting for the user): answer it {} if you can, else ask the user",
-            answer_where(w)
-        ),
+        State::Blocked => match asks_trust(w) {
+            Some((dir, downs)) => format!(
+                "{name} blocked: Claude asks whether to trust {}, which it then remembers; if the \
+                 user trusts it, `herdr pane send-keys {} {}enter`, else ask the user",
+                dir.display(),
+                w.handle,
+                "down ".repeat(downs)
+            ),
+            None => format!(
+                "{name} blocked (waiting for the user): answer it {} if you can, else ask the user",
+                answer_where(w)
+            ),
+        },
         State::Done => format!(
             "{name} done: report at {}; read it, then `reeve close {name}`",
             crate::setup::tilde(&w.report)
@@ -1777,10 +1872,12 @@ pub fn watch(r: &Registry, names: &[String], stall: Option<Duration>) -> io::Res
 pub fn rm(r: &Registry, name: &str) -> io::Result<()> {
     let w = r.get(name)?;
     let a = agent(&w);
-    let s = state_of(&w, now(), || a);
+    let t = now();
+    let s = state_of(&w, t, || a);
     if a != Agent::Absent || s == State::Starting {
         return Err(io::Error::other(format!(
-            "worker {name} is {s}; reeve drops only workers whose agent has gone"
+            "worker {name} {}; reeve drops only workers whose agent has gone",
+            is_state(&w, s, t)
         )));
     }
     r.remove(name)?;
@@ -2125,13 +2222,15 @@ pub fn close(r: &Registry, name: &str, preserve: bool) -> io::Result<()> {
 pub fn close_quiet(r: &Registry, name: &str, preserve: bool) -> io::Result<String> {
     let w = r.get(name)?;
     let a = agent(&w);
-    let s = state_of(&w, now(), || a);
+    let t = now();
+    let s = state_of(&w, t, || a);
     if matches!(
         s,
         State::Starting | State::Running | State::Blocked | State::Unknown
     ) {
         return Err(io::Error::other(format!(
-            "worker {name} is {s}; close it once it is done, idle or gone"
+            "worker {name} {}; close it once it is done, idle or gone",
+            is_state(&w, s, t)
         )));
     }
     if a != Agent::Absent {
@@ -2274,6 +2373,11 @@ mod tests {
         assert_eq!(state_of(&w, 100 + START_SECS - 1, unasked), State::Starting);
         assert_eq!(state_of(&w, 100 + START_SECS, unasked), State::Gone);
         assert_eq!(gone_why(&w), format!("did not start within {START_SECS}s"));
+        assert_eq!(
+            is_state(&w, State::Starting, 110),
+            format!("is starting, for at most {}s more", START_SECS - 10)
+        );
+        assert_eq!(is_state(&w, State::Idle, 110), "is idle");
 
         w.starting = false;
         assert_eq!(state_of(&w, 100, || Agent::Working), State::Running);
@@ -2542,6 +2646,47 @@ mod tests {
     }
 
     #[test]
+    fn claudes_trust_dialog_names_the_folder_and_how_far_down_yes_is() {
+        let dialog = |options: &str| {
+            format!(
+                "$ claude 'go'\n Accessing workspace:\n\n /Users/u\n\n Quick safety check: Is \
+                 this a project you created or one you trust? (Like your own code)\n\n This is \
+                 your home folder, so Yes lasts for this session only.\n\n{options}\n\n Enter to \
+                 confirm · Esc to cancel\n"
+            )
+        };
+        let home = || Some((PathBuf::from("/Users/u"), 1));
+        let no_first = dialog(" ❯ No, exit\n   Yes, I trust this folder");
+        assert_eq!(trust_dialog(&no_first), home());
+        let three = dialog(
+            " ❯ No, exit\n   Yes, I trust this folder\n   No, continue without these permissions",
+        );
+        assert_eq!(trust_dialog(&three), home());
+        let yes_first = dialog(" ❯ Yes, I trust this folder\n   No, exit");
+        assert_eq!(
+            trust_dialog(&yes_first),
+            Some((PathBuf::from("/Users/u"), 0))
+        );
+        let yes_above = dialog("   Yes, I trust this folder\n ❯ No, exit");
+        assert_eq!(trust_dialog(&yes_above), None);
+        let answered = format!("{no_first}\n╭───╮\n│ > go │\n");
+        assert_eq!(trust_dialog(&answered), None);
+        assert_eq!(trust_dialog("Do you want to proceed?\n❯ 1. Yes\n"), None);
+    }
+
+    #[test]
+    fn reeve_answers_the_trust_dialog_only_for_a_worker_in_the_home_folder() {
+        let home = Some(Path::new("/Users/u"));
+        // A handoff successor of a main session in ~ starts in ~.
+        assert!(answers_trust(home, Path::new("/Users/u"), home));
+        let project = Some(Path::new("/Users/u/app"));
+        assert!(!answers_trust(project, Path::new("/Users/u/app"), home));
+        assert!(!answers_trust(None, Path::new("/Users/u"), home));
+        assert!(!answers_trust(home, Path::new("/Users/u/app"), home));
+        assert!(!answers_trust(home, Path::new("/Users/u"), None));
+    }
+
+    #[test]
     fn a_pane_is_not_ready_while_herdr_says_its_shell_is_busy() {
         let busy = r#"herdr: {"error":{"code":"agent_pane_busy","message":"pane w1-2 is not an available shell"},"id":"cli:agent:start"}"#;
         let timeout = r#"herdr: {"error":{"code":"timeout","message":"timed out waiting for agent startup"},"id":"cli:agent:start"}"#;
@@ -2591,11 +2736,14 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_worker_may_write_reeves_state_dir_in_a_writable_sandbox_unless_one_is_chosen() {
+    fn a_codex_worker_may_write_reeves_state_dir_and_inbox_in_a_writable_sandbox_unless_one_is_chosen()
+     {
         let report = Path::new("/st/reports/x.md");
+        let inbox = Some(Path::new("/h/.reeve"));
+        let dirs = s(&["--add-dir", "/st", "--add-dir", "/h/.reeve"]);
         assert_eq!(
-            agent_args(Kind::Codex, "x", report, &s(&["-m", "o9"])),
-            s(&["-m", "o9", "-s", "workspace-write", "--add-dir", "/st"])
+            agent_args(Kind::Codex, "x", report, inbox, &s(&["-m", "o9"])),
+            [s(&["-m", "o9", "-s", "workspace-write"]), dirs.clone()].concat()
         );
         for chosen in [
             &["-s", "read-only"][..],
@@ -2603,12 +2751,12 @@ mod tests {
             &["--sandbox=danger-full-access"],
             &["--dangerously-bypass-approvals-and-sandbox"],
         ] {
-            let args = codex_args(report, &s(chosen));
+            let args = codex_args(report, inbox, &s(chosen));
             assert!(!args.contains(&"workspace-write".into()), "{args:?}");
-            assert_eq!(args[args.len() - 2..], s(&["--add-dir", "/st"]));
+            assert_eq!(args[args.len() - 4..], dirs);
         }
         assert_eq!(
-            agent_args(Kind::Claude, "x", report, &[]),
+            agent_args(Kind::Claude, "x", report, inbox, &[]),
             claude_args("x", report, &[])
         );
     }

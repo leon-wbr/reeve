@@ -178,6 +178,34 @@ pub fn unchecked_refusal(flag: &str) -> String {
     )
 }
 
+/// `reeve run`'s flags that the agent doesn't take itself: put after `--`, they would reach the
+/// agent and stop it at start.
+fn reeve_only(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Claude => &["--cwd", "--name", "--pane", "--keep-open", "--force"],
+        Kind::Codex => &[
+            "--cwd",
+            "--name",
+            "--pane",
+            "--keep-open",
+            "--force",
+            "--agent",
+            "--bg",
+        ],
+    }
+}
+
+pub fn own_flag(kind: Kind, args: &[String]) -> Option<String> {
+    args.iter()
+        .map(|a| a.split_once('=').map_or(a.as_str(), |(f, _)| f))
+        .find(|f| reeve_only(kind).contains(f))
+        .map(String::from)
+}
+
+pub fn own_refusal(flag: &str) -> String {
+    format!("`{flag}` is reeve's flag, not the agent's: put it before `--`")
+}
+
 /// The claude command line; in a sandbox it skips permission prompts.
 pub fn claude_argv(bg: bool, sandboxed: bool, args: &[String]) -> Vec<String> {
     let flags = [(sandboxed, "--dangerously-skip-permissions"), (bg, "--bg")];
@@ -294,6 +322,27 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn reeves_own_flags_after_the_double_dash_are_refused_unless_the_agent_takes_them_too() {
+        for (kind, args) in [
+            (Kind::Claude, &["--cwd", "/w"][..]),
+            (Kind::Claude, &["--model", "opus", "--cwd=/w"]),
+            (Kind::Claude, &["--name", "x"]),
+            (Kind::Codex, &["--keep-open"]),
+            (Kind::Codex, &["--agent", "claude"]),
+        ] {
+            let f = own_flag(kind, &s(args)).expect("refused");
+            assert!(own_refusal(&f).contains("before `--`"), "{f}");
+        }
+        for (kind, args) in [
+            (Kind::Claude, &["-w", "x", "--model", "opus"][..]),
+            (Kind::Claude, &["--worktree", "x", "--agent", "rev"]),
+            (Kind::Codex, &["--sandbox", "workspace-write"]),
+        ] {
+            assert_eq!(own_flag(kind, &s(args)), None, "{kind} {args:?}");
+        }
     }
 
     #[test]

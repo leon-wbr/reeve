@@ -135,6 +135,10 @@ fn hook_with(stdin: impl Read, messages: impl FnOnce(&Value) -> Option<String>) 
         return Some(out.to_string());
     }
     let event = payload["hook_event_name"].as_str()?;
+    if event == "PermissionDenied" {
+        tell_parent(&payload);
+        return None;
+    }
     if event != "UserPromptSubmit" && event != "PostToolUse" {
         return None;
     }
@@ -155,6 +159,64 @@ fn hook_with(stdin: impl Read, messages: impl FnOnce(&Value) -> Option<String>) 
     (!parts.is_empty()).then(|| output(event, &parts.join("\n\n")).to_string())
 }
 
+/// A worker's parent hears from its inbox that auto mode denied the worker an action, which
+/// otherwise shows only as a partial report or an idle worker.
+fn tell_parent(payload: &Value) -> Option<()> {
+    use crate::{msg, workers};
+    let r = workers::Registry::at(workers::Registry::default_dir().ok()?);
+    let w = workers::caller(&r, &session(payload))?;
+    let store = msg::Store::open().ok()?;
+    let m = msg::compose(
+        &w.name,
+        w.parent.as_deref()?,
+        &denial(&w.name, payload),
+        None,
+        None,
+        msg::now_secs(),
+    )
+    .ok()?;
+    msg::write_atomic(&store.inbox(), &m).ok()
+}
+
+pub fn denial(name: &str, payload: &Value) -> String {
+    let tool = payload["tool_name"].as_str().unwrap_or("a tool");
+    let cmd = payload["tool_input"]["command"].as_str();
+    let what: String = cmd.unwrap_or(tool).chars().take(160).collect();
+    let why = payload["reason"]
+        .as_str()
+        .map(|r| format!(" ({r})"))
+        .unwrap_or_default();
+    let allow = cmd
+        .and_then(allow_rule)
+        .map(|r| format!("allow `{r}` in that project's .claude/settings.json, or "))
+        .unwrap_or_default();
+    format!(
+        "{name} blocked: auto mode denied `{what}`{why}. Publishing on a public repo: it pushes and          puts the text in its report for the user. Where the user lets workers do this, {allow}do          it yourself or ask the user"
+    )
+}
+
+/// An allow rule for a command's leading words, such as `Bash(gh pr create:*)`.
+pub fn allow_rule(cmd: &str) -> Option<String> {
+    let words: Vec<&str> = cmd
+        .split_whitespace()
+        .take(3)
+        .take_while(|w| {
+            w.chars().all(|c| c.is_ascii_lowercase() || c == '-') && !w.starts_with('-')
+        })
+        .collect();
+    (words.len() >= 2).then(|| format!("Bash({}:*)", words.join(" ")))
+}
+
+/// The session a hook runs in, with the payload's session id when the environment has none.
+fn session(payload: &Value) -> crate::workers::Caller {
+    let mut c = crate::workers::Caller::from_env();
+    let unset = c.claude_session.is_none() && c.codex_thread.is_none();
+    if let Some(sid) = payload["session_id"].as_str().filter(|_| unset) {
+        c.claude_session = Some(sid.to_string());
+    }
+    c
+}
+
 /// The messages sent to this session, as a named worker or by its session id (pushed reports,
 /// see `push`), that it hasn't been shown yet, claimed so no other hook or follow shows them
 /// again. Reports that are due are pushed first. Who the session is gets looked up only when
@@ -167,13 +229,8 @@ fn messages(payload: &Value) -> Option<String> {
     if inbox::unread_counts(&store, now).is_empty() {
         return None;
     }
-    let mut c = workers::Caller::from_env();
-    let unset = c.claude_session.is_none() && c.codex_thread.is_none();
-    if let Some(sid) = payload["session_id"].as_str().filter(|_| unset) {
-        c.claude_session = Some(sid.to_string());
-    }
     let r = workers::Registry::at(workers::Registry::default_dir().ok()?);
-    let got: Vec<Value> = push::addresses(&r, &c)
+    let got: Vec<Value> = push::addresses(&r, &session(payload))
         .iter()
         .flat_map(|a| inbox::claim(&store, a, now))
         .collect();
@@ -326,6 +383,31 @@ mod tests {
         let o = output("PostToolUse", &n);
         assert_eq!(o["hookSpecificOutput"]["hookEventName"], "PostToolUse");
         assert_eq!(o["hookSpecificOutput"]["additionalContext"], n);
+    }
+
+    #[test]
+    fn a_denial_names_the_worker_the_command_and_what_to_do() {
+        let p = json!({
+            "hook_event_name": "PermissionDenied",
+            "tool_name": "Bash",
+            "tool_input": { "command": "gh pr create --title t --body b" },
+            "reason": "[External System Writes]",
+        });
+        let d = denial("fix-a", &p);
+        assert!(
+            d.starts_with("fix-a blocked: auto mode denied `gh pr create --title t --body b` ([External System Writes])"),
+            "{d}"
+        );
+        assert!(d.contains("`Bash(gh pr create:*)`"), "{d}");
+        assert!(d.contains("report"), "{d}");
+        let p = json!({ "tool_name": "Edit", "tool_input": { "file_path": "/x" } });
+        assert!(denial("w", &p).starts_with("w blocked: auto mode denied `Edit`"));
+        assert!(!denial("w", &p).contains("Bash("));
+        assert_eq!(
+            allow_rule("git push origin --delete x"),
+            Some("Bash(git push origin:*)".into())
+        );
+        assert_eq!(allow_rule("FOO=1 make"), None);
     }
 
     fn missing_msg() -> String {

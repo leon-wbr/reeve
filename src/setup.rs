@@ -58,6 +58,7 @@ fn groups(k: Kind) -> Vec<(&'static str, Value)> {
         ("PostToolUse", context()),
     ];
     if k == Kind::Claude {
+        gs.push(("PermissionDenied", context()));
         gs.push((
             "PreToolUse",
             json!({
@@ -90,11 +91,12 @@ pub enum Piece {
 }
 
 /// Every event setup may write to, so a hook left from another version is found too.
-const EVENTS: [&str; 4] = [
+const EVENTS: [&str; 5] = [
     "SessionStart",
     "UserPromptSubmit",
     "PostToolUse",
     "PreToolUse",
+    "PermissionDenied",
 ];
 
 pub fn hook_state(settings: &Value, k: Kind) -> Piece {
@@ -242,6 +244,26 @@ pub fn allow_rules() -> Vec<String> {
             s => format!("Bash(reeve {s}:*)"),
         })
         .collect()
+}
+
+/// What to allow so auto mode's classifier lets workers publish, where the user wants them to,
+/// unless one of `settings` (the user's, the project's) already allows opening a PR. reeve
+/// suggests it and never writes it: on a public repo the user may want to read the text first.
+pub fn publish_hint(settings: &[Value]) -> Option<String> {
+    let allowed = settings.iter().any(|s| {
+        s["permissions"]["allow"].as_array().is_some_and(|l| {
+            l.iter().any(|v| {
+                v.as_str()
+                    .is_some_and(|r| r.starts_with("Bash(gh pr create"))
+            })
+        })
+    });
+    (!allowed).then(|| {
+        "where workers may publish, add \"Bash(gh pr create:*)\" and \"Bash(git push:*)\" to \
+         `permissions.allow` in that project's .claude/settings.json; elsewhere a denied worker \
+         pushes, puts the text in its report, and reeve tells its starter"
+            .into()
+    })
 }
 
 /// Ok when every rule is there and no retired one, Stale when only some are or a retired one
@@ -583,8 +605,8 @@ pub fn install(p: &Paths, version: &str, with_md: bool, now: u64) -> io::Result<
     if hooks_changed {
         let hooks = match p.kind {
             Kind::Claude => {
-                "hooks `reeve ls --brief` (session start), `reeve hook context` (prompts and \
-                 tool calls) and `reeve hook background` (Bash calls)"
+                "hooks `reeve ls --brief` (session start), `reeve hook context` (prompts, tool \
+                 calls and auto mode denials) and `reeve hook background` (Bash calls)"
             }
             Kind::Codex => {
                 "hooks `reeve ls --brief` (session start) and `reeve hook context` (prompts and \
@@ -959,6 +981,22 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_setup_hears_of_auto_mode_denials_and_one_without_that_hook_is_stale() {
+        let mut s = others();
+        add_hook(&mut s, C).unwrap();
+        let gs = s["hooks"]["PermissionDenied"].as_array().unwrap();
+        assert_eq!(gs[0]["hooks"][0]["command"], context_command(C));
+        s["hooks"]
+            .as_object_mut()
+            .unwrap()
+            .remove("PermissionDenied");
+        assert_eq!(hook_state(&s, C), Piece::Stale);
+        let mut c = json!({});
+        add_hook(&mut c, Kind::Codex).unwrap();
+        assert!(c["hooks"].get("PermissionDenied").is_none());
+    }
+
+    #[test]
     fn the_background_hook_runs_before_bash_calls_and_never_fails() {
         let mut s = others();
         add_hook(&mut s, C).unwrap();
@@ -1220,6 +1258,15 @@ mod tests {
         assert!(!p.rules.as_ref().unwrap().exists());
         assert!(!p.md.exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn publishing_rules_are_suggested_until_any_settings_file_allows_opening_a_pr() {
+        let hint = publish_hint(&[mine(), json!({})]).expect("suggested");
+        assert!(hint.contains("\"Bash(gh pr create:*)\""), "{hint}");
+        assert!(hint.contains(".claude/settings.json"), "{hint}");
+        let project = json!({ "permissions": { "allow": ["Bash(gh pr create:*)"] } });
+        assert_eq!(publish_hint(&[mine(), project]), None);
     }
 
     fn mine() -> Value {
