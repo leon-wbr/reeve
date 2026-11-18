@@ -10,7 +10,7 @@
 
 use crate::events::Event;
 use crate::mem::{self, Mem};
-use crate::sched::{self, Expect, History, Room, Turn};
+use crate::sched::{self, Expect, History, Priority, Room, Turn};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -58,9 +58,15 @@ pub struct Entry {
     /// What its label's history says it takes; missing when there is too little history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect: Option<Expect>,
+    #[serde(default, skip_serializing_if = "Priority::is_normal")]
+    pub priority: Priority,
 }
 
 impl Entry {
+    fn aged(&self, now: u64) -> Priority {
+        self.priority.aged(now.saturating_sub(self.since))
+    }
+
     /// Whether it may use an express slot: a waiter expected to be short, or a run that is
     /// and hasn't overrun.
     fn short(&self, running: bool, now: u64) -> bool {
@@ -268,10 +274,13 @@ impl Queue {
         put(&self.queue_dir().join(name), e)
     }
 
-    /// Waiters in FIFO order. The order comes from the file names, so it is recomputed on every
-    /// read and tickets are never renamed.
+    /// Waiters in line: by priority, aged by how long each has waited, then first come, first
+    /// served. The order is recomputed on every read, so tickets are never renamed.
     pub fn waiting(&self) -> Vec<Entry> {
-        live(&self.queue_dir())
+        let now = now_ms();
+        let mut v = live(&self.queue_dir());
+        v.sort_by_key(|e| std::cmp::Reverse(e.aged(now)));
+        v
     }
 
     pub fn running(&self) -> Vec<Entry> {
@@ -546,6 +555,10 @@ pub struct Args {
     /// resource that can't be shared; prefer making runs independent (own database or port)
     #[arg(long, value_name = "KEY", value_parser = non_empty)]
     lock: Option<String>,
+    /// Waiters with a higher priority get the next free slot first; a waiter moves up one level
+    /// for every 30 minutes it has waited
+    #[arg(long, value_enum, default_value_t)]
+    priority: Priority,
     /// Longest the command may run once it has a slot (e.g. 45m, 90s). At the limit its process
     /// group is stopped and reeve heavy exits 124. Start visual/e2e runs narrow rather than
     /// raising this; prefer a large value to `none`, which removes the limit
@@ -652,6 +665,8 @@ struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit_ms: Option<u64>,
     cwd: String,
+    #[serde(default, skip_serializing_if = "Priority::is_normal")]
+    priority: Priority,
 }
 
 /// How a detached job ended, in `jobs/ID/result.json`.
@@ -763,7 +778,10 @@ pub fn main(
         probe: &mem::probe,
     };
     if interactive {
-        let me = entry(std::process::id(), label, args.lock.clone(), None);
+        let me = Entry {
+            priority: args.priority,
+            ..entry(std::process::id(), label, args.lock.clone(), None)
+        };
         return run(&q, me, &args.cmd, &gate, args.timeout, true, ev);
     }
     let job = Job {
@@ -776,6 +794,7 @@ pub fn main(
         min_free_gb: args.min_free,
         limit_ms: args.timeout.map(|l| l.as_millis() as u64),
         cwd: cwd(),
+        priority: args.priority,
     };
     // The runner logs the run's event, whether or not anyone still follows it.
     ev.skip = true;
@@ -803,6 +822,7 @@ fn entry(pid: u32, label: String, lock: Option<String>, job: Option<String>) -> 
         job,
         worker: None,
         expect: None,
+        priority: Priority::Normal,
     }
 }
 
@@ -889,6 +909,7 @@ fn runner(q: &Queue, dir: &Path, worker: impl FnOnce() -> Option<String>) -> io:
     let worker = worker();
     let me = Entry {
         worker: worker.clone(),
+        priority: job.priority,
         ..entry(
             std::process::id(),
             job.label.clone(),
@@ -1331,13 +1352,18 @@ fn ls(
                     .unwrap_or_default(),
                 _ => String::new(),
             };
+            let priority = match (*state, e.aged(now)) {
+                ("waiting", p) if p != e.priority => format!("  priority {p} (from {})", e.priority),
+                _ if e.priority.is_normal() => String::new(),
+                _ => format!("  priority {}", e.priority),
+            };
             let expect = e
                 .expect
                 .as_ref()
                 .map(|x| format!("  {x}"))
                 .unwrap_or_default();
             format!(
-                "{state}  {:<width$}  pid {:<6}  {:>5}  {}{limit}{lock}{reason}{expect}\n",
+                "{state}  {:<width$}  pid {:<6}  {:>5}  {}{limit}{priority}{lock}{reason}{expect}\n",
                 e.label,
                 e.pid,
                 age(now.saturating_sub(e.since)),
@@ -1382,6 +1408,7 @@ mod tests {
             job: None,
             worker: None,
             expect: None,
+            priority: Priority::Normal,
         }
     }
 
@@ -1621,6 +1648,46 @@ mod tests {
         let _b = slot(q.try_claim(&mut second, &gate(2)).unwrap());
     }
 
+    fn with(pid: u32, label: &str, waited: u64, priority: Priority) -> Entry {
+        Entry {
+            priority,
+            ..entry(pid, label, now_ms() - waited)
+        }
+    }
+
+    #[test]
+    fn a_higher_priority_waiter_goes_first_and_fifo_holds_within_a_priority() {
+        let (_d, q) = queue();
+        let mut low = q.enqueue(&with(1, "bench", 4000, Priority::Low)).unwrap();
+        let _t1 = q
+            .enqueue(&with(2, "first", 3000, Priority::Normal))
+            .unwrap();
+        let _t2 = q.enqueue(&with(3, "urgent", 2000, Priority::High)).unwrap();
+        let _t3 = q
+            .enqueue(&with(4, "second", 1000, Priority::Normal))
+            .unwrap();
+        assert_eq!(labels(q.waiting()), ["urgent", "first", "second", "bench"]);
+        assert_eq!(
+            q.try_claim(&mut low, &gate(1)).unwrap(),
+            Claim::Wait(Wait::Ahead(3))
+        );
+    }
+
+    #[test]
+    fn a_low_waiter_that_waited_long_enough_goes_ahead() {
+        let (_d, q) = queue();
+        let _t4 = q.enqueue(&with(1, "new", 1000, Priority::Normal)).unwrap();
+        let _t5 = q.enqueue(&with(2, "urgent", 1000, Priority::High)).unwrap();
+        let _t6 = q
+            .enqueue(&with(3, "bench", sched::AGE_MS + 1000, Priority::Low))
+            .unwrap();
+        assert_eq!(labels(q.waiting()), ["urgent", "bench", "new"]);
+        let _t7 = q
+            .enqueue(&with(4, "old", 2 * sched::AGE_MS + 1000, Priority::Low))
+            .unwrap();
+        assert_eq!(labels(q.waiting()), ["old", "urgent", "bench", "new"]);
+    }
+
     #[test]
     fn a_waiter_whose_ticket_vanished_rejoins_the_queue() {
         let (_d, q) = queue();
@@ -1729,6 +1796,7 @@ mod tests {
             min_free_gb: 2.0,
             limit_ms: None,
             cwd: "/w".into(),
+            priority: Priority::Normal,
         };
         let ended = Outcome {
             code: 101,
@@ -1746,7 +1814,13 @@ mod tests {
         };
         let out = ls(
             &[expecting(1, "test", 0, 5_000)],
-            &[entry(2, "next", 0)],
+            &[
+                entry(2, "next", 0),
+                Entry {
+                    priority: Priority::Low,
+                    ..entry(3, "bench", 119_000)
+                },
+            ],
             &[],
             &why,
             &[("17-9".into(), job, ended)],
@@ -1757,6 +1831,8 @@ mod tests {
             out.contains("next") && out.contains("waits for a slot: 0 ahead, 1 running"),
             "{out}"
         );
+        assert!(out.contains("next") && !out.contains("normal"), "{out}");
+        assert!(out.contains("priority low"), "{out}");
         assert!(
             out.lines()
                 .next()

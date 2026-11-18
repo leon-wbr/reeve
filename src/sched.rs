@@ -122,6 +122,58 @@ pub fn counts_short(expect: Option<&Expect>, ran_ms: u64) -> bool {
     expect.is_some_and(Expect::short) && ran_ms < OVERRUN_MS
 }
 
+/// A waiter's place: higher ones go first, and within one it is first come, first served.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    clap::ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    Low,
+    #[default]
+    Normal,
+    High,
+}
+
+/// A waiter moves up one priority for each this long it has waited, so a low one never starves.
+/// It is the default `--timeout`: by then every run going when it joined has ended or been
+/// stopped, so a low run waits at most about one run's length longer than a normal one would.
+pub const AGE_MS: u64 = 30 * 60_000;
+
+impl Priority {
+    pub fn is_normal(&self) -> bool {
+        *self == Priority::Normal
+    }
+
+    /// The priority it has after waiting `waited_ms`.
+    pub fn aged(self, waited_ms: u64) -> Priority {
+        match (self as u64).saturating_add(waited_ms / AGE_MS) {
+            0 => Priority::Low,
+            1 => Priority::Normal,
+            _ => Priority::High,
+        }
+    }
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            Priority::Low => "low",
+            Priority::Normal => "normal",
+            Priority::High => "high",
+        })
+    }
+}
+
 /// How many runs may go at once: `slots` of any kind, and `express` more that only short runs
 /// may use.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -296,6 +348,16 @@ mod tests {
             running.remove(0);
         }
         assert!(started_long, "the long run never started: {running:?}");
+    }
+
+    #[test]
+    fn a_waiter_ages_up_one_level_every_age_ms_up_to_high() {
+        use Priority::*;
+        assert_eq!(Low.aged(AGE_MS - 1), Low);
+        assert_eq!(Low.aged(AGE_MS), Normal);
+        assert_eq!(Low.aged(2 * AGE_MS), High);
+        assert_eq!(Normal.aged(AGE_MS), High);
+        assert_eq!(High.aged(10 * AGE_MS), High);
     }
 
     #[test]
