@@ -260,6 +260,7 @@ mod tests {
             error: None,
             parent: None,
             pushed: false,
+            terminal: None,
         }
     }
 

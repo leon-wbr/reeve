@@ -391,8 +391,18 @@ fn a_waiter_whose_caller_is_killed_keeps_its_place_runs_and_is_reported() {
     let reg = state.join("xdg/reeve");
     std::fs::create_dir_all(&reg).unwrap();
     let worker = serde_json::json!([{"name": "w1", "backend": "pane", "cwd": "/", "started": 1,
-        "report": reg.join("reports/w1.md"), "handle": "p-w1"}]);
+        "report": reg.join("reports/w1.md"), "handle": "p-w1", "terminal": "t-w1"}]);
     std::fs::write(reg.join("workers.json"), worker.to_string()).unwrap();
+    let bin = state.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let herdr = bin.join("herdr");
+    std::fs::write(
+        &herdr,
+        "#!/bin/sh\necho '{\"result\":{\"pane\":{\"terminal_id\":\"t-w1\"}}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&herdr, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let holder = hold(state, "holder");
     let ran = state.join("ran");
     let mut w = heavy(
@@ -401,6 +411,7 @@ fn a_waiter_whose_caller_is_killed_keeps_its_place_runs_and_is_reported() {
     )
     .arg(format!("echo built; touch {}; exit 3", ran.display()))
     .env("HERDR_PANE_ID", "p-w1")
+    .env("PATH", path)
     .stderr(Stdio::null())
     .spawn()
     .unwrap();

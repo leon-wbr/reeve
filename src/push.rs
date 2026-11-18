@@ -206,6 +206,7 @@ mod tests {
             error: None,
             parent: parent.map(String::from),
             pushed: false,
+            terminal: None,
         };
         f.r.put(w.clone()).unwrap();
         w
