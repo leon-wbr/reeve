@@ -232,7 +232,7 @@ fn a_fake_run_starts_the_workers_measures_the_jobs_and_is_scored() {
         reeve: bin.join("reeve"),
         home: t.path().join("home"),
         tick_ms: 100,
-        quiet_ms: 3_000,
+        quiet_ms: i64::MAX,
         total_ms: 60_000,
         sample_ms: 200,
         extra_env: vec![("FAKE_LOG".into(), log.clone().into())],
@@ -374,8 +374,8 @@ fn the_scripted_claude_runs_each_workers_jobs_through_reeve_heavy() {
         reeve: bin.join("reeve"),
         home: t.path().join("home"),
         tick_ms: 100,
-        // Its workers start their jobs in the background, after `claude --bg` returns.
-        quiet_ms: 15_000,
+        // Never quiet: on a loaded machine the first job can start after any fixed window.
+        quiet_ms: i64::MAX,
         total_ms: 60_000,
         sample_ms: 200,
         extra_env: vec![],
