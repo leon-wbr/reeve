@@ -275,7 +275,7 @@ fn inside_herdr_a_worker_without_bg_gets_its_own_tab() {
     let log = read(root.join("herdr.log"));
     let opened: Vec<_> = log.lines().take(3).collect();
     let create = format!(
-        "workspace create --label project --cwd {} --no-focus",
+        "workspace create --label project --cwd {} --no-focus --env REEVE_WORKER=w",
         project.display()
     );
     assert_eq!(
@@ -304,7 +304,7 @@ fn inside_herdr_a_worker_opens_its_tab_in_its_projects_existing_workspace() {
     started(&root, "w");
     let log = read(root.join("herdr.log"));
     let create = format!(
-        "tab create --label w --cwd {} --no-focus --workspace w2",
+        "tab create --label w --cwd {} --no-focus --workspace w2 --env REEVE_WORKER=w",
         project.display()
     );
     assert_eq!(log.lines().nth(1), Some(create.as_str()), "{log}");

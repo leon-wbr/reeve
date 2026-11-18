@@ -108,7 +108,14 @@ pub struct Worker {
     /// never a terminal's, so a pane holding another terminal is no longer this worker's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<String>,
+    /// Fields from a newer reeve, kept so that rewriting the registry doesn't drop them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
+
+/// The variable a worker's agent is started with, holding its name: how reeve, called from the
+/// worker's session, knows which worker it is.
+pub const WORKER_ENV: &str = "REEVE_WORKER";
 
 /// What a worker's pane or session is doing, as far as Herdr or `claude agents` can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -523,6 +530,8 @@ pub fn tab_create_args(name: &str, cwd: &str, workspace: &str) -> Vec<String> {
         "--no-focus",
         "--workspace",
         workspace,
+        "--env",
+        &format!("{WORKER_ENV}={name}"),
     ]
     .into_iter()
     .map(String::from)
@@ -559,7 +568,7 @@ pub fn workspace_named(list: &Value, label: &str) -> Option<String> {
         .map(String::from)
 }
 
-pub fn workspace_create_args(label: &str, cwd: &str) -> Vec<String> {
+pub fn workspace_create_args(label: &str, cwd: &str, name: &str) -> Vec<String> {
     [
         "workspace",
         "create",
@@ -568,6 +577,8 @@ pub fn workspace_create_args(label: &str, cwd: &str) -> Vec<String> {
         "--cwd",
         cwd,
         "--no-focus",
+        "--env",
+        &format!("{WORKER_ENV}={name}"),
     ]
     .into_iter()
     .map(String::from)
@@ -868,7 +879,8 @@ fn open_tab(name: &str, cwd: &Path) -> io::Result<(String, String, Option<String
         Some(ws) => created_tab(&herdr(tab_create_args(name, &cwd, &ws))?).ok_or_else(no_pane),
         None => {
             let (tab, pane, terminal) =
-                created_tab(&herdr(workspace_create_args(&label, &cwd))?).ok_or_else(no_pane)?;
+                created_tab(&herdr(workspace_create_args(&label, &cwd, name))?)
+                    .ok_or_else(no_pane)?;
             let _ = herdr(["tab", "rename", &tab, name]);
             Ok((tab, pane, terminal))
         }
@@ -949,17 +961,20 @@ fn wait_for_agent(w: &Worker) -> io::Result<()> {
     )))
 }
 
-/// Drops the variables by which `kind` would take itself for its starter's session.
-fn without_foreign_env(mut cmd: Command, kind: Kind) -> Command {
-    for k in kind.foreign_env() {
+/// `bin` for worker `name`, under its name and without the variables by which it would take
+/// itself for its starter's session: the other agent's, and the starter's Herdr pane.
+pub fn worker_command(bin: &str, kind: Kind, name: &str) -> Command {
+    let mut cmd = Command::new(bin);
+    for k in kind.foreign_env().iter().chain(&["HERDR_PANE_ID"]) {
         cmd.env_remove(k);
     }
+    cmd.env(WORKER_ENV, name);
     cmd
 }
 
 /// Returns the short id that `claude --bg` prints and `claude agents` lists.
-fn start_bg(argv: &[String]) -> io::Result<String> {
-    let mut cmd = without_foreign_env(Command::new(&argv[0]), Kind::Claude);
+fn start_bg(name: &str, argv: &[String]) -> io::Result<String> {
+    let mut cmd = worker_command(&argv[0], Kind::Claude, name);
     let o = cmd.args(&argv[1..]).stdin(Stdio::null()).output()?;
     if !o.status.success() {
         return Err(io::Error::other(format!(
@@ -974,11 +989,11 @@ fn start_bg(argv: &[String]) -> io::Result<String> {
 
 /// Starts `codex exec` in its own process group with its events in `log`, and returns its pid.
 /// Nothing waits for it: once `reeve start` exits, init reaps it.
-fn start_exec(argv: &[String], log: &Path) -> io::Result<String> {
+fn start_exec(name: &str, argv: &[String], log: &Path) -> io::Result<String> {
     use std::os::unix::process::CommandExt;
     fs::create_dir_all(log.parent().expect("logs dir"))?;
     let out = File::create(log)?;
-    let mut cmd = without_foreign_env(Command::new(&argv[0]), Kind::Codex);
+    let mut cmd = worker_command(&argv[0], Kind::Codex, name);
     let child = cmd
         .args(&argv[1..])
         .stdin(Stdio::null())
@@ -990,10 +1005,11 @@ fn start_exec(argv: &[String], log: &Path) -> io::Result<String> {
     Ok(child.id().to_string())
 }
 
-/// What a session knows about itself: its Herdr pane and the terminal in it, its Claude Code
-/// session id, its Codex thread.
+/// What a session knows about itself: the worker name reeve started it under, its Herdr pane
+/// and the terminal in it, its Claude Code session id, its Codex thread.
 #[derive(Debug, Default, Clone)]
 pub struct Caller {
+    pub worker: Option<String>,
     pub pane: Option<String>,
     pub terminal: Option<String>,
     pub claude_session: Option<String>,
@@ -1005,6 +1021,7 @@ impl Caller {
         let var = |k| std::env::var(k).ok().filter(|v| !v.is_empty());
         let pane = var("HERDR_PANE_ID");
         Caller {
+            worker: var(WORKER_ENV),
             terminal: pane.as_deref().and_then(terminal_in),
             pane,
             claude_session: var("CLAUDE_CODE_SESSION_ID"),
@@ -1027,7 +1044,19 @@ pub fn pane_worker<'a>(all: &'a [Worker], pane: &str, terminal: &str) -> Option<
     })
 }
 
-/// The named worker a session is: the pane worker in its Herdr pane; else the background
+/// The worker a session was started as, by the name reeve gave it, or else the pane worker in
+/// its Herdr pane. A pane worker's name counts only in its own pane: elsewhere it is a session
+/// started from the worker's shell, which inherited the name.
+pub fn own_worker<'a>(all: &'a [Worker], c: &Caller) -> Option<&'a Worker> {
+    let named = c.worker.as_ref().and_then(|n| {
+        all.iter().find(|w| {
+            &w.name == n && (w.backend != Backend::Pane || c.pane.as_ref() == Some(&w.handle))
+        })
+    });
+    named.or_else(|| pane_worker(all, c.pane.as_deref()?, c.terminal.as_deref()?))
+}
+
+/// The named worker a session is: the one it was started as (`own_worker`); else the background
 /// Claude worker whose session `claude agents` (`agents`, asked only then) lists under the
 /// session's id; else the background Codex worker whose log (`thread_of`) has its thread.
 pub fn caller_of<'a>(
@@ -1036,9 +1065,7 @@ pub fn caller_of<'a>(
     agents: impl FnOnce() -> Option<String>,
     thread_of: impl Fn(&Worker) -> Option<String>,
 ) -> Option<&'a Worker> {
-    if let (Some(pane), Some(terminal)) = (&c.pane, &c.terminal)
-        && let Some(w) = pane_worker(all, pane, terminal)
-    {
+    if let Some(w) = own_worker(all, c) {
         return Some(w);
     }
     let bg = |kind| {
@@ -1210,6 +1237,7 @@ pub fn run(
         parent,
         pushed: false,
         terminal,
+        extra: Default::default(),
     })?;
     if let Err(e) = spawn_start(name, tab.as_deref(), &argv) {
         if let Some(tab) = &tab {
@@ -1281,8 +1309,8 @@ pub fn start(r: &Registry, name: &str, tab: Option<&str>, argv: &[String]) -> io
             w.handle.clone()
         }),
         (Backend::Pane, _, None) => Err(io::Error::other("a pane worker needs --tab")),
-        (Backend::Bg, Kind::Claude, _) => start_bg(argv),
-        (Backend::Bg, Kind::Codex, _) => start_exec(argv, &exec_log(&w)),
+        (Backend::Bg, Kind::Claude, _) => start_bg(name, argv),
+        (Backend::Bg, Kind::Codex, _) => start_exec(name, argv, &exec_log(&w)),
     };
     r.set(name, w.started, |w| {
         w.starting = false;
@@ -2285,6 +2313,7 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: None,
+            extra: Default::default(),
         }
     }
 
@@ -2493,7 +2522,9 @@ mod tests {
                 "/w",
                 "--no-focus",
                 "--workspace",
-                "w1"
+                "w1",
+                "--env",
+                "REEVE_WORKER=x"
             ])
         );
     }
@@ -2547,7 +2578,7 @@ mod tests {
     #[test]
     fn a_new_workspace_is_labelled_and_opens_without_focus() {
         assert_eq!(
-            workspace_create_args("reeve", "/w/reeve"),
+            workspace_create_args("reeve", "/w/reeve", "fix-a"),
             s(&[
                 "workspace",
                 "create",
@@ -2555,7 +2586,9 @@ mod tests {
                 "reeve",
                 "--cwd",
                 "/w/reeve",
-                "--no-focus"
+                "--no-focus",
+                "--env",
+                "REEVE_WORKER=fix-a"
             ])
         );
     }
@@ -3793,6 +3826,7 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: Some("t1".into()),
+            extra: Default::default(),
         };
         let all = [
             mk("pane", Backend::Pane, Kind::Claude, "w1:p2"),
@@ -3853,6 +3887,7 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: terminal.map(String::from),
+            extra: Default::default(),
         };
         // Herdr hands the id of a closed pane to a later one; the old entries stay registered.
         let all = [
@@ -3872,6 +3907,64 @@ mod tests {
         // A session the user started in the reused pane is no worker.
         assert_eq!(who(Some("term_9")), None);
         assert_eq!(who(None), None);
+    }
+
+    #[test]
+    fn a_session_reeve_started_knows_itself_by_the_name_reeve_gave_it() {
+        let pane = |name: &str, terminal: Option<&str>| Worker {
+            backend: Backend::Pane,
+            handle: "wH4:p3".into(),
+            terminal: terminal.map(String::from),
+            ..worker(&Registry::at(temp("me")), name, "")
+        };
+        let bg = Worker {
+            backend: Backend::Bg,
+            agent: Kind::Codex,
+            handle: "77".into(),
+            ..pane("next", None)
+        };
+        let all = [pane("old", Some("term_1")), pane("legacy", None), bg];
+        let who = |worker: &str, pane: Option<&str>| {
+            let c = Caller {
+                worker: Some(worker.into()),
+                pane: pane.map(String::from),
+                terminal: Some("term_9".into()),
+                ..Caller::default()
+            };
+            caller_of(&all, &c, || None, |_| None).map(|w| w.name.clone())
+        };
+        // A row an older reeve wrote without its terminal.
+        assert_eq!(who("legacy", Some("wH4:p3")).as_deref(), Some("legacy"));
+        // A background successor that still carried its starter's pane.
+        assert_eq!(who("next", Some("wH4:p3")).as_deref(), Some("next"));
+        assert_eq!(who("next", None).as_deref(), Some("next"));
+        // A pane worker's name in another pane is a shell it started, not the worker.
+        assert_eq!(who("old", Some("wX:p1")), None);
+        assert_eq!(who("nobody", None), None);
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_fields_a_newer_reeve_wrote() {
+        let r = Registry::at(temp("extra"));
+        fs::create_dir_all(r.file().parent().unwrap()).unwrap();
+        fs::write(
+            r.file(),
+            r#"[{"name":"a","backend":"pane","cwd":"/w","started":1,"report":"/r/a.md","handle":"p1","later":{"x":1}}]"#,
+        )
+        .unwrap();
+        r.set("a", 1, |w| w.pushed = true).unwrap();
+        let raw: Value = serde_json::from_str(&fs::read_to_string(r.file()).unwrap()).unwrap();
+        assert_eq!(raw[0]["later"]["x"], 1);
+        assert_eq!(raw[0]["pushed"], true);
+    }
+
+    #[test]
+    fn a_background_worker_is_started_under_its_name_and_never_in_its_starters_pane() {
+        let cmd = worker_command("codex", Kind::Codex, "fix-a");
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert!(envs.contains(&(OsStr::new(WORKER_ENV), Some(OsStr::new("fix-a")))));
+        assert!(envs.contains(&(OsStr::new("HERDR_PANE_ID"), None)));
+        assert!(envs.contains(&(OsStr::new("CLAUDECODE"), None)));
     }
 
     #[test]
