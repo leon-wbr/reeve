@@ -384,6 +384,22 @@ pub fn main(version: &str) -> io::Result<i32> {
         )),
     }
 
+    let settings: Vec<_> = [
+        paths.settings.clone(),
+        PathBuf::from(".claude/settings.json"),
+        PathBuf::from(".claude/settings.local.json"),
+    ]
+    .iter()
+    .filter_map(|f| serde_json::from_str(&fs::read_to_string(f).ok()?).ok())
+    .collect();
+    if let Some(hint) = setup::publish_hint(&settings) {
+        checks.push(problem(
+            Status::Note,
+            "auto mode can deny workers here opening PRs and pushing",
+            hint,
+        ));
+    }
+
     let state = Registry::default_dir()?;
     checks.push(match writable(&state) {
         Ok(()) => ok(format!("state dir writable: {}", tilde(&state))),
