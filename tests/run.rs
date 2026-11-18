@@ -9,7 +9,7 @@ fn executable(path: &Path, script: &str) {
 }
 
 /// A `claude` and a `herdr` on PATH that log the directory they were started in and their
-/// arguments to `<name>.log`, and answer the way reeve expects. `herdr pane get` answers with
+/// arguments to `<name>.log`, and answer the way reeve expects. `herdr pane get` (and `pane list`, for each worker in `workers.json`) answers with
 /// `pane.json` when it exists, and otherwise with a pane that has no agent, either holding
 /// terminal `term-PANE`; `herdr pane read`
 /// with `pane-text`, `herdr workspace list` with `workspaces.json` or no workspace, and
@@ -30,16 +30,29 @@ fn fakes(dir: &Path) -> String {
             untrusted = dir.join("untrusted").display()
         ),
     );
-    // Prints exec's first event, then writes the report when its prompt asks for `report`.
+    // Prints exec's first event, then writes the report when its prompt asks for `report`. Its
+    // app-server, asked for usage, has none to give.
     executable(
         &bin.join("codex"),
         &format!(
-            "pwd -P >> {}\necho \"$*\" >> {0}\nenv | grep -c '^CLAUDECODE=' >> {0}\n\
+            "[ \"$1\" = app-server ] && exit 1\npwd -P >> {}\necho \"$*\" >> {0}\nenv | grep -c '^CLAUDECODE=' >> {0}\n\
              echo '{{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}}'\n\
              for a; do last=$a; done\n\
              case \"$last\" in report*) f=$(echo \"$last\" | sed 's/.*Markdown to \\([^ ]*\\.md\\)\\..*/\\1/'); echo done > \"$f\" ;; esac",
             log("codex")
         ),
+    );
+    executable(
+        &bin.join("herdr-list"),
+        r#"body=""
+[ -f "$1" ] && body=$(sed 's/^ *{"result": *{"pane": *{//; s/} *} *} *$//' "$1")
+printf '{"result":{"panes":['
+sep=""
+for h in $(grep -o '"handle": *"[^"]*"' "$XDG_STATE_HOME/reeve/workers.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/'); do
+  printf '%s{"pane_id":"%s","terminal_id":"term-%s"%s%s}' "$sep" "$h" "$h" "${body:+,}" "$body"
+  sep=,
+done
+echo ']}}'"#,
     );
     executable(
         &bin.join("herdr"),
@@ -48,6 +61,7 @@ fn fakes(dir: &Path) -> String {
              'tab create'|'workspace create') echo '{{\"result\":{{\"tab\":{{\"tab_id\":\"t1\"}},\"root_pane\":{{\"pane_id\":\"p1\",\"terminal_id\":\"term-p1\"}}}}}}' ;;\n\
              'pane get') if [ -f {pane} ]; then sed \"s/\\\"pane\\\":{{/&\\\"terminal_id\\\":\\\"term-$3\\\",/\" {pane}\n\
                else echo \"{{\\\"result\\\":{{\\\"pane\\\":{{\\\"terminal_id\\\":\\\"term-$3\\\"}}}}}}\"; fi ;;\n\
+             'pane list') {bin}/herdr-list {pane} ;;\n\
              'pane read') cat {text} ;;\n\
              'workspace list') if [ -f {ws} ]; then cat {ws}; else echo '{{\"result\":{{\"workspaces\":[]}}}}'; fi ;;\n\
              'agent prompt') if [ -f {busy} ]; then echo refused >> {log}; echo '{{\"error\":{{\"code\":\"agent_blocked\",\"message\":\"m\"}}}}' >&2; exit 1; fi\n\
@@ -61,6 +75,7 @@ fn fakes(dir: &Path) -> String {
             log("herdr"),
             log = log("herdr"),
             pane = dir.join("pane.json").display(),
+            bin = bin.display(),
             text = dir.join("pane-text").display(),
             ws = dir.join("workspaces.json").display(),
             hold = dir.join("hold").display(),
@@ -431,7 +446,7 @@ fn watch_prints_the_report_being_written() {
         .unwrap();
     // A poll asks herdr first and looks for the report after, so the report goes in once the
     // second poll has begun: only then has the first one surely seen the worker running.
-    let polls = || read(root.join("herdr.log")).matches("pane get p-a").count();
+    let polls = || read(root.join("herdr.log")).matches("pane list").count();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while polls() < 2 && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(50));
