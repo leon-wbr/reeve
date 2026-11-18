@@ -52,6 +52,7 @@ Run heavy commands through `reeve heavy`: test suites, e2e (even one spec), loca
 ```sh
 reeve heavy -- cargo test
 reeve heavy --label e2e -- pnpm test:e2e
+reeve heavy --priority low --label bench -- ./bench.sh   # yields to other runs
 reeve heavy ls           # who runs, waits and why
 ```
 
