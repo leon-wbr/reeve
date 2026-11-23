@@ -1504,6 +1504,38 @@ fn the_users_sessions_start_with_what_waits_on_them_and_plain_workers_dont() {
 }
 
 #[test]
+fn a_closed_worker_stops_waiting_and_keeps_its_report() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["b"]);
+    let b = root.join("state/reeve/reports/b.md");
+    std::fs::write(&b, "partial\n\nThe PR needs opening.\n").unwrap();
+    let o = reeve(&root, &project, &["close", "b"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&reeve(&root, &project, &["waiting"]).stdout).into_owned();
+    assert!(!out.contains("Waiting on you"), "{out}");
+    assert!(out.contains("Done in the last 2 days (1): b."), "{out}");
+    assert!(read(b).starts_with("partial"));
+}
+
+#[test]
+fn a_session_that_wrote_its_own_report_and_handed_off_stops_waiting() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["old"]);
+    let old = root.join("state/reeve/reports/old.md");
+    std::fs::write(&old, "partial\n\nI ran past the threshold.\n").unwrap();
+    std::fs::write(project.join("n.md"), "Goal.").unwrap();
+    let args = ["handoff", "--name", "next", "--notes", "n.md", "--bg"];
+    let o = reeve_with(&root, &project, &args, &[("HERDR_PANE_ID", "p-old")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "next");
+    assert_eq!(worker_field(&root, "next", "predecessor"), "old");
+    let out = String::from_utf8_lossy(&reeve(&root, &project, &["waiting"]).stdout).into_owned();
+    assert!(!out.contains("old partial"), "{out}");
+}
+
+#[test]
 fn a_prompt_in_a_session_that_has_not_handed_off_is_left_alone() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();

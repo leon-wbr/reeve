@@ -415,6 +415,9 @@ pub fn handoff(
         let _ = fs::remove_file(r.predecessor_path(next));
         return Err(e);
     }
+    if let (Some(from), Ok(w)) = (from, r.get(next)) {
+        r.set(next, w.started, |w| w.predecessor = Some(from.into()))?;
+    }
     pass_on(r, next, from, &file);
     // Closes the predecessor as soon as it is done, not at some later `reeve ls`.
     if from.is_some() {
@@ -443,6 +446,8 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: None,
+            predecessor: None,
+            dismissed: false,
             extra: Default::default(),
         }
     }
