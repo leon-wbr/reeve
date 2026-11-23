@@ -240,7 +240,7 @@ enum Top {
     /// Close a done, idle or gone worker: its tab (or background session), and its own worktree
     /// when that is clean, pushed, holds no git-ignored data beyond build output and no other
     /// live worker works in it (never forced; it names them instead, the data with its sizes).
-    /// Its report and `reeve ls` entry stay
+    /// Its report and `reeve ls` entry stay; `reeve waiting` no longer lists it
     Close {
         name: String,
         /// Close the tab but keep the worktree, with its ignored files

@@ -33,6 +33,10 @@ pub struct Seen {
     pub summary: String,
     /// Where to answer a blocked worker, e.g. "in its tab".
     pub answer: String,
+    /// Closed with `reeve close`: whatever it left is settled.
+    pub dismissed: bool,
+    /// The session it took over from with `reeve handoff`.
+    pub predecessor: Option<String>,
 }
 
 /// The status line and the first line after it, from the start of a report.
@@ -69,22 +73,24 @@ fn names(mut ws: Vec<&Seen>, label: impl Fn(&Seen) -> String) -> String {
     out.join(", ")
 }
 
+/// A session that handed off waits on nothing while its successor is listed: the successor is
+/// the one to watch, and shows up here itself if it is blocked, failed or gone.
+fn handed_off(w: &Seen, workers: &[Seen]) -> bool {
+    workers.iter().any(|o| {
+        o.predecessor.as_deref() == Some(&w.name)
+            || w.status == "partial" && crate::handoff::handed_off_to(&w.summary) == Some(&o.name)
+    })
+}
+
 /// What waits on the user, newest first, or nothing when nothing does.
 pub fn waiting_section(workers: &[Seen]) -> String {
     let recent = |w: &Seen| w.age < WINDOW_SECS;
-    // A session that handed off waits on nothing while its successor is listed: the successor
-    // is the one to watch, and shows up here itself if it is blocked, failed or gone.
-    let handed_off = |w: &Seen| {
-        w.status == "partial"
-            && crate::handoff::handed_off_to(&w.summary)
-                .is_some_and(|next| workers.iter().any(|o| o.name == next))
-    };
     let mut entries: Vec<(u64, String)> = Vec::new();
     for w in workers {
         let when = workers::age(w.age);
         let line = match w.state {
             State::Blocked => format!("{} blocked, {when}: answer it {}", w.name, w.answer),
-            State::Done if handed_off(w) => continue,
+            State::Done | State::Gone if w.dismissed || handed_off(w, workers) => continue,
             State::Done if recent(w) && (w.status == "partial" || w.status == "failed") => {
                 format!("{} {}, {when}: {}", w.name, w.status, w.summary)
             }
@@ -136,7 +142,7 @@ pub fn render(workers: &[Seen]) -> String {
     let done: Vec<&Seen> = workers
         .iter()
         .filter(|w| w.state == State::Done && w.age < WINDOW_SECS)
-        .filter(|w| w.status != "partial" && w.status != "failed")
+        .filter(|w| w.dismissed || w.status != "partial" && w.status != "failed")
         .collect();
     if !done.is_empty() {
         let n = done.len();
@@ -190,6 +196,8 @@ pub fn collect(r: &Registry) -> io::Result<Vec<Seen>> {
                 status,
                 summary,
                 answer: workers::answer_where(w),
+                dismissed: w.dismissed,
+                predecessor: w.predecessor.clone(),
             }
         })
         .collect())
@@ -208,6 +216,8 @@ mod tests {
             status,
             summary,
             answer: "in its tab".into(),
+            dismissed: false,
+            predecessor: None,
         }
     }
 
@@ -279,6 +289,36 @@ mod tests {
             seen("next-2", State::Done, 30, "failed\nno disk"),
         ]);
         assert_eq!(out, "Waiting on you (1):\n- next-2 failed, 30s: no disk");
+    }
+
+    #[test]
+    fn a_session_whose_successor_names_it_does_not_wait_whatever_its_report_says() {
+        let mut next = seen("next-2", State::Running, 30, "");
+        next.predecessor = Some("old".into());
+        let out = render(&[
+            seen("old", State::Done, 60, "partial\nI ran past the threshold."),
+            next,
+        ]);
+        assert_eq!(out, "Running (1): next-2");
+    }
+
+    #[test]
+    fn dismissed_work_does_not_wait_and_finished_work_still_shows_as_done() {
+        let ws: Vec<Seen> = [
+            seen("a", State::Done, 60, "partial\nPR text in the report."),
+            seen("b", State::Gone, 60, ""),
+            seen("c", State::Done, 60, "failed\nno disk"),
+        ]
+        .into_iter()
+        .map(|mut w| {
+            w.dismissed = true;
+            w
+        })
+        .collect();
+        assert_eq!(
+            render(&ws),
+            "Done in the last 2 days (2): a, c. `reeve report NAME` prints a report."
+        );
     }
 
     #[test]

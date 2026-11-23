@@ -261,6 +261,8 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: None,
+            predecessor: None,
+            dismissed: false,
             extra: Default::default(),
         }
     }

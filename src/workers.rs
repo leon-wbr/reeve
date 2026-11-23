@@ -108,6 +108,12 @@ pub struct Worker {
     /// never a terminal's, so a pane holding another terminal is no longer this worker's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<String>,
+    /// The session it took over from with `reeve handoff`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor: Option<String>,
+    /// Closed with `reeve close`, so `reeve waiting` leaves it out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dismissed: bool,
     /// Fields from a newer reeve, kept so that rewriting the registry doesn't drop them.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -1302,6 +1308,8 @@ pub fn run(
         parent,
         pushed: false,
         terminal,
+        predecessor: None,
+        dismissed: false,
         extra: Default::default(),
     })?;
     if let Err(e) = spawn_start(name, tab.as_deref(), &argv) {
@@ -2373,10 +2381,12 @@ fn remove_worktree(
 
 /// Ends a finished worker's agent (its tab, or its background session) and removes its
 /// worktree when that loses nothing (never with `preserve`). The registry entry and the report
-/// stay. A worker that is still running or waiting for the user is refused.
+/// stay, but `reeve waiting` no longer lists it. A worker that is still running or waiting for
+/// the user is refused.
 pub fn close(r: &Registry, name: &str, preserve: bool) -> io::Result<()> {
+    let started = r.get(name)?.started;
     eprintln!("reeve: {}", close_quiet(r, name, preserve)?);
-    Ok(())
+    r.set(name, started, |w| w.dismissed = true)
 }
 
 /// `close`, returning what became of the worktree instead of printing it.
@@ -2446,6 +2456,8 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: None,
+            predecessor: None,
+            dismissed: false,
             extra: Default::default(),
         }
     }
@@ -3959,6 +3971,8 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: Some("t1".into()),
+            predecessor: None,
+            dismissed: false,
             extra: Default::default(),
         };
         let all = [
@@ -4020,6 +4034,8 @@ mod tests {
             parent: None,
             pushed: false,
             terminal: terminal.map(String::from),
+            predecessor: None,
+            dismissed: false,
             extra: Default::default(),
         };
         // Herdr hands the id of a closed pane to a later one; the old entries stay registered.
