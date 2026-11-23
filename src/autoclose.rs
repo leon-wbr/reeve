@@ -44,6 +44,8 @@ pub struct Facts {
     pub heavy: bool,
     /// It has a parent its report isn't pushed to yet.
     pub unpushed: bool,
+    /// Seconds after the report that it was last seen working; `None` if never.
+    pub worked_after: Option<u64>,
 }
 
 /// What a pass found for one worker.
@@ -65,6 +67,10 @@ pub fn due(f: &Facts, grace: u64) -> Outcome {
     let Some(age) = f.report_age else {
         return Outcome::Not;
     };
+    // It went on working after its report, which no longer says it is done.
+    if f.worked_after.is_some_and(|s| s > GRACE_SECS) {
+        return Outcome::Not;
+    }
     match f.agent {
         Agent::Absent => return Outcome::Not,
         Agent::Working | Agent::Blocked | Agent::Unknown => return Outcome::Not,
@@ -142,10 +148,29 @@ pub fn keep_open_path(r: &Registry, name: &str) -> std::path::PathBuf {
     r.report_path(name).with_extension("keep-open")
 }
 
-fn report_age(w: &Worker, now: u64) -> Option<u64> {
+fn report_mtime(w: &Worker) -> Option<u64> {
     let t = fs::metadata(&w.report).ok()?.modified().ok()?;
-    let secs = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    Some(now.saturating_sub(secs))
+    Some(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs())
+}
+
+fn working_path(w: &Worker) -> std::path::PathBuf {
+    w.report.with_extension("working")
+}
+
+/// Records when a probe last found `w`'s agent working.
+pub fn note_agent(w: &Worker, a: Agent, now: u64) {
+    if a == Agent::Working {
+        let _ = fs::write(working_path(w), now.to_string());
+    }
+}
+
+fn worked_after(w: &Worker, report_at: u64) -> Option<u64> {
+    let at: u64 = fs::read_to_string(working_path(w))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    at.checked_sub(report_at).filter(|&s| s > 0)
 }
 
 /// Whether a heavy job runs or waits in the worker's checkout.
@@ -179,11 +204,12 @@ pub fn sweep(r: &Registry, all: &[Worker]) -> HashMap<String, Outcome> {
         grace(),
         |w| Facts {
             agent: workers::seen_agent(w),
-            report_age: report_age(w, now),
+            report_age: report_mtime(w).map(|t| now.saturating_sub(t)),
             keep_open: keep_open_path(r, &w.name).exists(),
             unread: unread.get(&w.name).copied().unwrap_or(0),
             heavy: heavy_for(w, &jobs),
             unpushed: w.parent.is_some() && !w.pushed,
+            worked_after: report_mtime(w).and_then(|t| worked_after(w, t)),
         },
         |w| {
             let lock = fs::File::create(r.report_path(&w.name).with_extension("close.lock"))?;
@@ -244,6 +270,7 @@ mod tests {
             unread: 0,
             heavy: false,
             unpushed: false,
+            worked_after: None,
         }
     }
 
@@ -295,6 +322,37 @@ mod tests {
             line.ends_with("(worktree kept: it has uncommitted changes)"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn a_worker_seen_working_well_after_its_report_is_not_done() {
+        let mut f = facts(Agent::Idle, Some(9999));
+        f.worked_after = Some(600);
+        assert_eq!(due(&f, 120), Outcome::Not);
+    }
+
+    #[test]
+    fn working_until_just_after_the_report_still_closes() {
+        let mut f = facts(Agent::Idle, Some(9999));
+        f.worked_after = Some(30);
+        assert_eq!(due(&f, 120), Outcome::Closed(String::new()));
+    }
+
+    #[test]
+    fn the_last_working_probe_is_measured_from_the_report() {
+        let dir = std::env::temp_dir().join(format!("reeve-worked-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut w = worker("a");
+        w.report = dir.join("a.md");
+        fs::write(&w.report, "done").unwrap();
+        let at = report_mtime(&w).unwrap();
+        assert_eq!(worked_after(&w, at), None);
+        note_agent(&w, Agent::Idle, at + 500);
+        assert_eq!(worked_after(&w, at), None);
+        note_agent(&w, Agent::Working, at + 500);
+        note_agent(&w, Agent::Idle, at + 900);
+        assert_eq!(worked_after(&w, at), Some(500));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

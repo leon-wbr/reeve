@@ -85,7 +85,8 @@ enum Top {
         sandbox: Option<Option<String>>,
         /// Leave the named worker's tab open when it is done, so you can look at it. By default
         /// reeve closes a done worker after a grace period (REEVE_CLOSE_GRACE, 120 s;
-        /// REEVE_AUTO_CLOSE=0 turns it off for everyone)
+        /// REEVE_AUTO_CLOSE=0 turns it off for everyone), unless it was seen working after it
+        /// wrote its report
         #[arg(long, requires = "name")]
         keep_open: bool,
         /// Start the agent in DIR, usually the project's root, so it loads that project's
@@ -146,7 +147,8 @@ enum Top {
     /// scalars: plain, 'single-quoted' ('' for a quote) or "double-quoted" (backslash escapes)
     Pr { name: String },
     /// Hand off to a successor: write a handoff file from your notes and the named workers, and
-    /// start the successor as a named worker told to read it. Stop once it returns
+    /// start the successor as a named worker told to read it, kept open as with --keep-open.
+    /// Stop once it returns
     Handoff {
         /// The successor's worker name
         #[arg(long)]
