@@ -7,7 +7,7 @@ use crate::workers::{self, Registry, State};
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Finished work older than this has stopped waiting: a report or a gone worker counts for two
 /// days, then drops out, so old work never piles up here.
@@ -82,36 +82,67 @@ fn handed_off(w: &Seen, workers: &[Seen]) -> bool {
     })
 }
 
-/// What waits on the user, newest first, or nothing when nothing does.
-pub fn waiting_section(workers: &[Seen]) -> String {
+/// The three lists every view shows, newest first: what waits on the user, each with what to
+/// say after its name; what runs; and what finished in the last two days.
+struct Lists<'a> {
+    waiting: Vec<(&'a Seen, String)>,
+    running: Vec<&'a Seen>,
+    done: Vec<&'a Seen>,
+}
+
+fn lists(workers: &[Seen]) -> Lists<'_> {
     let recent = |w: &Seen| w.age < WINDOW_SECS;
-    let mut entries: Vec<(u64, String)> = Vec::new();
+    let mut l = Lists {
+        waiting: Vec::new(),
+        running: Vec::new(),
+        done: Vec::new(),
+    };
     for w in workers {
         let when = workers::age(w.age);
         let line = match w.state {
-            State::Blocked => format!("{} blocked, {when}: answer it {}", w.name, w.answer),
-            State::Done | State::Gone if w.dismissed || handed_off(w, workers) => continue,
-            State::Done if recent(w) && (w.status == "partial" || w.status == "failed") => {
-                format!("{} {}, {when}: {}", w.name, w.status, w.summary)
+            State::Blocked => format!("blocked, {when}: answer it {}", w.answer),
+            State::Starting | State::Running | State::Idle | State::Unknown => {
+                l.running.push(w);
+                continue;
             }
-            State::Gone if recent(w) => format!("{} gone without a report, {when}", w.name),
+            State::Done | State::Gone if handed_off(w, workers) => continue,
+            State::Done if recent(w) && w.dismissed => {
+                l.done.push(w);
+                continue;
+            }
+            State::Done if recent(w) && (w.status == "partial" || w.status == "failed") => {
+                format!("{}, {when}: {}", w.status, w.summary)
+            }
+            State::Done if recent(w) => {
+                l.done.push(w);
+                continue;
+            }
+            State::Gone if recent(w) && !w.dismissed => format!("gone without a report, {when}"),
             _ => continue,
         };
-        entries.push((w.age, line));
+        l.waiting.push((w, line));
     }
+    l.waiting.sort_by_key(|(w, _)| w.age);
+    l.running.sort_by_key(|w| w.age);
+    l.done.sort_by_key(|w| w.age);
+    l
+}
+
+/// What waits on the user, newest first, or nothing when nothing does.
+pub fn waiting_section(workers: &[Seen]) -> String {
+    let entries = lists(workers).waiting;
     if entries.is_empty() {
         return String::new();
     }
-    entries.sort_by_key(|(age, _)| *age);
     let mut out = format!("Waiting on you ({}):", entries.len());
-    for (_, line) in entries.iter().take(LINES) {
-        out += &format!("\n- {}", clip(line));
+    for (w, line) in entries.iter().take(LINES) {
+        out += &format!("\n- {}", clip(&format!("{} {line}", w.name)));
     }
     if let Some((oldest, _)) = entries.last().filter(|_| entries.len() > LINES) {
         out += &format!(
             "\n- {} more, the oldest {} old",
             entries.len() - LINES,
-            workers::age(*oldest)
+            workers::age(oldest.age)
         );
     }
     out
@@ -119,16 +150,8 @@ pub fn waiting_section(workers: &[Seen]) -> String {
 
 /// The full view: what waits on the user, then what runs, then what finished lately.
 pub fn render(workers: &[Seen]) -> String {
+    let Lists { running, done, .. } = lists(workers);
     let mut parts = vec![waiting_section(workers)];
-    let running: Vec<&Seen> = workers
-        .iter()
-        .filter(|w| {
-            matches!(
-                w.state,
-                State::Starting | State::Running | State::Idle | State::Unknown
-            )
-        })
-        .collect();
     if !running.is_empty() {
         let n = running.len();
         parts.push(format!(
@@ -139,11 +162,6 @@ pub fn render(workers: &[Seen]) -> String {
             })
         ));
     }
-    let done: Vec<&Seen> = workers
-        .iter()
-        .filter(|w| w.state == State::Done && w.age < WINDOW_SECS)
-        .filter(|w| w.dismissed || w.status != "partial" && w.status != "failed")
-        .collect();
     if !done.is_empty() {
         let n = done.len();
         parts.push(format!(
@@ -160,6 +178,108 @@ pub fn render(workers: &[Seen]) -> String {
         return out;
     }
     format!("{}…", &out[..out.floor_char_boundary(MAX - 3)])
+}
+
+/// What a running or finished worker's entry says after its name.
+fn running_line(w: &Seen) -> String {
+    match w.state {
+        State::Running => String::new(),
+        s => s.to_string(),
+    }
+}
+
+fn done_line(w: &Seen) -> String {
+    let when = workers::age(w.age);
+    match (w.status.as_str(), w.summary.as_str()) {
+        ("", _) => when,
+        (s, "") => format!("{s}, {when}"),
+        (s, summary) => format!("{s}, {when}: {summary}"),
+    }
+}
+
+/// The three lists for a script: `waiting`, `running` and `done`, each entry with its `name`,
+/// `state`, `secs` since its report or start, and the `line` the views show after the name.
+pub fn json(workers: &[Seen]) -> serde_json::Value {
+    let item = |w: &Seen, line: String| serde_json::json!({ "name": w.name, "state": w.state.to_string(), "secs": w.age, "line": line });
+    let l = lists(workers);
+    serde_json::json!({
+        "waiting": l.waiting.into_iter().map(|(w, line)| item(w, line)).collect::<Vec<_>>(),
+        "running": l.running.into_iter().map(|w| item(w, running_line(w))).collect::<Vec<_>>(),
+        "done": l.done.into_iter().map(|w| item(w, done_line(w))).collect::<Vec<_>>(),
+    })
+}
+
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// How often `--follow` looks again, and the page reloads itself.
+const PAGE_EVERY: Duration = Duration::from_secs(15);
+
+/// The view as a page that reloads itself, for `--html`.
+pub fn html(workers: &[Seen]) -> String {
+    let l = lists(workers);
+    let section = |title: &str, items: Vec<(&Seen, String)>| {
+        if items.is_empty() {
+            return String::new();
+        }
+        let lis: String = items
+            .iter()
+            .map(|(w, line)| format!("<li><b>{}</b> {}</li>\n", escape(&w.name), escape(line)))
+            .collect();
+        format!("<h2>{title} ({})</h2>\n<ul>\n{lis}</ul>\n", items.len())
+    };
+    let mut body = [
+        section("Waiting on you", l.waiting),
+        section(
+            "Running",
+            l.running
+                .into_iter()
+                .map(|w| (w, running_line(w)))
+                .collect(),
+        ),
+        section(
+            "Done in the last 2 days",
+            l.done.into_iter().map(|w| (w, done_line(w))).collect(),
+        ),
+    ]
+    .concat();
+    if body.is_empty() {
+        body = "<p>Nothing waits on you, and no worker runs.</p>\n".into();
+    }
+    format!(
+        "<!doctype html>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"refresh\" content=\"{}\">\n\
+         <title>reeve waiting</title>\n\
+         <style>body{{font:15px/1.5 system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem}}</style>\n\
+         {body}",
+        PAGE_EVERY.as_secs()
+    )
+}
+
+/// Writes the page to `path`; with `follow` it keeps looking and rewrites it when it changes.
+pub fn page(r: &Registry, path: &Path, follow: bool, rounds: Option<u32>) -> io::Result<i32> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
+    let mut last = String::new();
+    let mut done = 0;
+    loop {
+        let page = html(&collect(r)?);
+        if page != last {
+            let tmp = path.with_extension("tmp");
+            fs::write(&tmp, &page)?;
+            fs::rename(&tmp, path)?;
+            last = page;
+        }
+        done += 1;
+        if !follow || rounds.is_some_and(|n| done >= n) {
+            return Ok(0);
+        }
+        std::thread::sleep(PAGE_EVERY);
+    }
 }
 
 /// The first few KB of a report, enough for its status and summary.
@@ -289,6 +409,47 @@ mod tests {
             seen("next-2", State::Done, 30, "failed\nno disk"),
         ]);
         assert_eq!(out, "Waiting on you (1):\n- next-2 failed, 30s: no disk");
+    }
+
+    fn mixed() -> Vec<Seen> {
+        vec![
+            seen("fix-a", State::Blocked, 120, ""),
+            seen("pr-<b>", State::Done, 600, "partial\nOpen it & <merge>."),
+            seen("d", State::Running, 60, ""),
+            seen("e", State::Idle, 30, ""),
+            seen("f", State::Done, 60, "done\nMerged."),
+        ]
+    }
+
+    #[test]
+    fn the_json_holds_the_same_three_lists_newest_first() {
+        let v = json(&mixed());
+        assert_eq!(v["waiting"][0]["name"], "fix-a");
+        assert_eq!(v["waiting"][0]["line"], "blocked, 2m: answer it in its tab");
+        assert_eq!(v["waiting"][1]["name"], "pr-<b>");
+        assert_eq!(v["waiting"][1]["secs"], 600);
+        assert_eq!(v["running"][0]["name"], "e");
+        assert_eq!(v["running"][0]["state"], "idle");
+        assert_eq!(v["running"][1]["state"], "running");
+        assert_eq!(v["done"][0]["name"], "f");
+        assert_eq!(v["done"][0]["line"], "done, 1m: Merged.");
+    }
+
+    #[test]
+    fn the_page_shows_the_lists_escaped_and_reloads_itself() {
+        let page = html(&mixed());
+        assert!(page.contains(r#"<meta http-equiv="refresh""#), "{page}");
+        for part in [
+            "<h2>Waiting on you (2)</h2>",
+            "<h2>Running (2)</h2>",
+            "<h2>Done in the last 2 days (1)</h2>",
+            "<b>pr-&lt;b&gt;</b> partial, 10m: Open it &amp; &lt;merge&gt;.",
+            "<b>e</b> idle",
+        ] {
+            assert!(page.contains(part), "{part}\n{page}");
+        }
+        assert!(!page.contains("<merge>"));
+        assert!(html(&[]).contains("Nothing waits on you"));
     }
 
     #[test]
