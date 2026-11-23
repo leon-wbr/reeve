@@ -1504,6 +1504,33 @@ fn the_users_sessions_start_with_what_waits_on_them_and_plain_workers_dont() {
 }
 
 #[test]
+fn reeve_waiting_writes_a_page_and_prints_json() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["b"]);
+    std::fs::write(
+        root.join("state/reeve/reports/b.md"),
+        "partial\n\nThe PR needs opening.\n",
+    )
+    .unwrap();
+    let page = root.join("page/waiting.html");
+    let args = [
+        "waiting",
+        "--html",
+        page.to_str().unwrap(),
+        "--follow",
+        "--rounds",
+        "1",
+    ];
+    let o = reeve(&root, &project, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(read(page).contains("<b>b</b> partial, "));
+    let o = reeve(&root, &project, &["waiting", "--json"]);
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["waiting"][0]["name"], "b");
+}
+
+#[test]
 fn a_closed_worker_stops_waiting_and_keeps_its_report() {
     let (d, project, _elsewhere) = dirs();
     let root = d.path().canonicalize().unwrap();

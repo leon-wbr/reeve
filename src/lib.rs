@@ -203,7 +203,19 @@ enum Top {
     /// What waits on the user (blocked workers, partial, failed or lost work from the last 2
     /// days), then what runs and what finished lately. Worked out from reeve's records each
     /// time; nothing is stored
-    Waiting,
+    Waiting {
+        /// Print the three lists as JSON
+        #[arg(long, conflicts_with = "html")]
+        json: bool,
+        /// Write them as a page that reloads itself
+        #[arg(long, value_name = "PATH")]
+        html: Option<PathBuf>,
+        /// With --html, keep rewriting the page when something changes
+        #[arg(long, requires = "html")]
+        follow: bool,
+        #[arg(long, hide = true, requires = "follow")]
+        rounds: Option<u32>,
+    },
     /// How much of the 5-hour and weekly plan limits Claude Code and Codex have used: percent,
     /// reset time and when each CLI reported it, or `unknown` and why. Codex is asked through
     /// `codex app-server`; Claude's numbers are what its statusline last got (see `record`)
@@ -1000,13 +1012,24 @@ pub fn main() -> ExitCode {
             all,
             ..
         }) => inbox::list(from.as_deref(), to.as_deref(), unanswered, all),
-        Top::Waiting => workers()
-            .and_then(|r| waiting::collect(&r))
-            .map(|seen| match waiting::render(&seen) {
-                s if s.is_empty() => println!("Nothing waits on you, and no worker runs."),
-                s => println!("{s}"),
-            })
-            .map(|_| 0),
+        Top::Waiting {
+            json,
+            html,
+            follow,
+            rounds,
+        } => workers().and_then(|r| match html {
+            Some(path) => waiting::page(&r, &path, follow, rounds),
+            None => waiting::collect(&r).map(|seen| {
+                match json {
+                    true => println!("{}", waiting::json(&seen)),
+                    false => match waiting::render(&seen) {
+                        s if s.is_empty() => println!("Nothing waits on you, and no worker runs."),
+                        s => println!("{s}"),
+                    },
+                }
+                0
+            }),
+        }),
     };
     ev.finish(*result.as_ref().unwrap_or(&1), result.as_ref().err());
     if !ev.skip {
