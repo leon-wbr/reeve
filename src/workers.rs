@@ -2108,7 +2108,7 @@ fn git(dir: &Path, args: &[&OsStr]) -> io::Result<String> {
     stdout("git", all)
 }
 
-/// Whether a git-ignored path is output a build or an install brings back.
+/// Whether a git-ignored path is output a build, a test run or an install brings back.
 pub fn regenerable(rel: &str) -> bool {
     rel.split('/').any(|c| {
         matches!(
@@ -2129,8 +2129,14 @@ pub fn regenerable(rel: &str) -> bool {
                 | "coverage"
                 | ".gradle"
                 | ".DS_Store"
+                | ".cache"
+                | ".nuxt"
+                | ".output"
+                | ".parcel-cache"
+                | "test-results"
+                | "playwright-report"
         )
-    })
+    }) || rel.contains(".moon/cache")
 }
 
 /// Whether a git-ignored file under `.claude/` is one a worker made on purpose: not other
@@ -3883,6 +3889,23 @@ mod tests {
         let msg = remove_worktree(&w, false, &none_live).unwrap();
         assert!(msg.starts_with("removed worktree "), "{msg}");
         assert!(!repo.join(".claude/worktrees/w").exists());
+    }
+
+    #[test]
+    fn a_locked_worktree_holding_only_caches_goes() {
+        let (repo, w) = repo_with_worktree("wt-caches", "w");
+        let ignore = ".moon/cache/\n.cache/\n.nuxt/\ntest-results/\n";
+        fs::write(repo.join(".git/info/exclude"), ignore).unwrap();
+        for d in [".moon/cache", "layers/api/.cache", ".nuxt", "test-results"] {
+            fs::create_dir_all(w.cwd.join(d)).unwrap();
+            fs::write(w.cwd.join(d).join("x"), "x").unwrap();
+        }
+        let reason = format!("claude session w (pid {})", dead_pid());
+        git_ok(&w.cwd, &["worktree", "lock", "--reason", &reason, "."]);
+        let msg = remove_worktree(&w, false, &none_live).unwrap();
+        assert!(msg.starts_with("removed worktree "), "{msg}");
+        assert!(!repo.join(".claude/worktrees/w").exists());
+        assert!(!regenerable(".moon/data/x") && !regenerable("cache/x"));
     }
 
     #[test]
