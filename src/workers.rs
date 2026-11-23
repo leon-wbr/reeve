@@ -1163,8 +1163,34 @@ pub fn idle_why(tab: &str) -> Option<String> {
     })
 }
 
-/// [`idle_why`] for a pane worker; other workers have no tab to read.
-pub fn why_idle(w: &Worker) -> Option<String> {
+/// Whether Claude's footer, at the end of its tab, counts a background shell, or a monitor
+/// besides the `reeve inbox --follow` one every worker runs: "1 shell, 2 monitors".
+pub fn waits_on_own_task(tab: &str) -> bool {
+    let count = |item: &str| {
+        let (n, what) = item.trim().split_once(' ')?;
+        let n: u32 = n.parse().ok()?;
+        match what {
+            "shell" | "shells" => Some((n, 0)),
+            "monitor" | "monitors" => Some((0, n)),
+            _ => None,
+        }
+    };
+    let footer = tab
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    footer.split(" · ").any(|part| {
+        let items: Option<Vec<_>> = part.split(',').map(count).collect();
+        items.is_some_and(|i| {
+            let (shells, monitors) = i.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+            shells > 0 || monitors > 1
+        })
+    })
+}
+
+/// A pane worker's last lines; other workers have no tab to read.
+fn tab_end(w: &Worker) -> Option<String> {
     (w.backend == Backend::Pane)
         .then(|| {
             probe(
@@ -1175,7 +1201,11 @@ pub fn why_idle(w: &Worker) -> Option<String> {
             )
         })
         .and_then(Result::ok)
-        .and_then(|t| idle_why(&t))
+}
+
+/// [`idle_why`] for a pane worker.
+pub fn why_idle(w: &Worker) -> Option<String> {
+    idle_why(&tab_end(w)?)
 }
 
 pub fn agent(w: &Worker) -> Agent {
@@ -1843,10 +1873,10 @@ impl Watch {
     }
 
     /// One line per worker whose state changed since the last poll, at `now` ms. Each worker
-    /// comes with whether a `reeve heavy` job of its own runs or waits. A worker seen for the
-    /// first time is reported only if it needs someone, so a restart doesn't replay old news. A
-    /// done worker that automatic closing will close is held back until it is, so its line can
-    /// say so. An idle worker with a reason in `why` (see [`idle_why`]) is news at once.
+    /// comes with whether a `reeve heavy` job or background task of its own runs or waits. A
+    /// worker seen for the first time is reported only if it needs someone, so a restart doesn't
+    /// replay old news. A done worker that automatic closing will close is held back until it
+    /// is, so its line can say so. An idle worker with a reason in `why` (see [`idle_why`]) is news at once.
     pub fn step_at(
         &mut self,
         now: u64,
@@ -1930,7 +1960,8 @@ impl Watch {
 fn idle_for(w: &Worker, min: u64) -> String {
     let name = &w.name;
     format!(
-        "{name} idle without a report for {min} min and no `reeve heavy` job of its own: read \
+        "{name} idle without a report for {min} min and no `reeve heavy` job or background task \
+         of its own: read \
          {}; nudge it with `reeve send {name} \"TEXT\"`, let it carry on, or ask the user",
         look_where(w)
     )
@@ -2007,13 +2038,21 @@ pub fn watch(r: &Registry, names: &[String], stall: Option<Duration>) -> io::Res
         } else {
             Default::default()
         };
+        let mut why = HashMap::new();
         let polled: Vec<_> = all
             .iter()
             .cloned()
             .zip(states(&all))
-            .map(|(w, (s, _))| {
-                let b = busy.contains(&w.name);
-                (w, s, b)
+            .map(|(x, (s, _))| {
+                let tab = (s == State::Idle && !w.reported_idle(&x.name))
+                    .then(|| tab_end(&x))
+                    .flatten();
+                if let Some(y) = tab.as_deref().and_then(idle_why) {
+                    why.insert(x.name.clone(), y);
+                }
+                let own = x.agent == Kind::Claude && tab.as_deref().is_some_and(waits_on_own_task);
+                let b = busy.contains(&x.name) || own;
+                (x, s, b)
             })
             .collect();
         let done: Vec<Worker> = polled
@@ -2022,11 +2061,6 @@ pub fn watch(r: &Registry, names: &[String], stall: Option<Duration>) -> io::Res
             .map(|(w, _, _)| w.clone())
             .collect();
         let closing = crate::autoclose::sweep(r, &done);
-        let why: HashMap<_, _> = polled
-            .iter()
-            .filter(|(x, s, _)| *s == State::Idle && !w.reported_idle(&x.name))
-            .filter_map(|(x, _, _)| Some((x.name.clone(), why_idle(x)?)))
-            .collect();
         for line in w.step_at(crate::events::now_ms(), &polled, &closing, &why) {
             println!("{line}");
         }
@@ -4224,6 +4258,31 @@ mod tests {
         assert!(long.chars().count() <= 120, "{long}");
         let old = format!("API Error: Connection error.\n{}", "line\n".repeat(60));
         assert_eq!(idle_why(&old), None, "only the end of the tab counts");
+    }
+
+    #[test]
+    fn a_claude_tab_waits_on_its_own_shell_or_a_monitor_besides_the_inbox() {
+        let tab = |done: &str, footer: &str| {
+            format!(
+                "✻ Worked for 59s · done 3:37 PM{done}\n\n{bar} a ─\n❯\n{bar}\n  \
+                 a git:(fix/x) [Opus 5.5] ctx:16%\n  ⏵⏵ auto mode on{footer} · ↓ to manage\n",
+                bar = "─".repeat(40)
+            )
+        };
+        let waits = |d: &str, f: &str| waits_on_own_task(&tab(d, f));
+        assert!(waits(
+            " · 1 shell, 1 monitor still running",
+            " · PR #5 · 1 shell, 1 monitor"
+        ));
+        assert!(waits(" · 2 monitors still running", " · 2 monitors"));
+        assert!(waits(
+            " · 1 shell, 2 monitors still running",
+            " · 1 shell, 2 monitors"
+        ));
+        assert!(waits("", " · 3 shells"));
+        assert!(!waits(" · 1 monitor still running", " · 1 monitor"));
+        assert!(!waits(" · 2 shells still running", ""));
+        assert!(!waits("", ""));
     }
 
     #[test]
