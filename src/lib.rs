@@ -142,7 +142,8 @@ enum Top {
     Report { name: String },
     /// Open the PR a worker saved because it couldn't: `gh pr create` from NAME.pr.md, next to
     /// its report, run in its directory. The file is `title:`, `head:` and optionally `base:`,
-    /// `repo:` and `draft: true` lines between two `---` lines, then the body
+    /// `repo:` and `draft: true` lines between two `---` lines, then the body. Values are YAML
+    /// scalars: plain, 'single-quoted' ('' for a quote) or "double-quoted" (backslash escapes)
     Pr { name: String },
     /// Hand off to a successor: write a handoff file from your notes and the named workers, and
     /// start the successor as a named worker told to read it. Stop once it returns
