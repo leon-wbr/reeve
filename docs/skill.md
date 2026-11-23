@@ -1,22 +1,22 @@
 # reeve, for agents
 
-reeve runs coding agents beside your session. Two rules aren't optional:
+reeve runs agents beside your session. Two rules aren't optional:
 
 - Run test suites, e2e, builds and installs through `reeve heavy -- <command>`, started in the background.
 - When a "Context check" says you passed the handoff threshold, run `reeve handoff --name NAME --notes FILE` and stop.
 
 ## Named workers: work that outlives this session
 
-`reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session and writes its report to `~/.local/state/reeve/reports/NAME.md`. Pass the project root as `--cwd` for its `.claude/` setup.
+`reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session; its report goes to `~/.local/state/reeve/reports/NAME.md`. Pass the project root as `--cwd` for its `.claude/` setup.
 
-Inside Herdr each worker gets its own tab in its project's workspace, where the user sees and answers it; use `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session (`--bg`, for that case only). `--force` skips reeve's safety checks.
+Inside Herdr each worker gets its own tab, where the user sees and answers it; use `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session (`--bg`, for that case only). `--force` skips reeve's safety checks.
 
 ```sh
 reeve run --name fix-flaky --cwd ~/app -- "Fix the flaky test in tests/api; run it 20 times to confirm."
 reeve run --name review --cwd ~/app -- --model sonnet "Review it."
 reeve ls                 # live and recent workers; --all
 reeve waiting            # what waits on you
-reeve usage              # limits; --max 90 [--window session|all] exits 1 over
+reeve usage              # limits; --max 90 exits 1 over
 reeve watch fix-flaky    # a line, with the next step, when it needs you
 reeve report fix-flaky   # the report
 reeve close fix-flaky    # closes it now, with its clean pushed worktree
@@ -25,7 +25,7 @@ reeve close fix-flaky    # closes it now, with its clean pushed worktree
 The last argument after `--` is the prompt; agent flags like `--model` go before it. `--worktree` gives it its own git worktree; `--agent codex` runs Codex.
 For unattended work with a clear end, start the prompt with `/goal` and pass `--permission-mode auto` after `--`; name the check, a separate model runs it each turn.
 
-Reports reach your inbox as `NAME done: …`; also follow each with `reeve watch NAME...`: in Claude Code the Monitor tool with `timeout_ms` 1800000, re-armed for the rest; elsewhere a background shell. It prints only what needs you and exits once each is done or gone; don't poll. Act on each line:
+Reports reach your inbox as `NAME done: …`; also follow each with `reeve watch NAME...`: in Claude Code the Monitor tool with `timeout_ms` 1800000, re-armed; elsewhere a background shell. It prints only what needs you and exits once each is done or gone; don't poll. Act on each line:
 
 - **done**: read it if needed; reeve closes it in 2 minutes, or says why not.
 - **idle** without a report or `reeve heavy` job for 10 minutes: read it where the line says; one stuck on a prompt can show as idle. If it waits on its own background job, do nothing; else nudge it with `reeve send NAME "TEXT"`, let it carry on if it can decide, or ask the user.
@@ -36,7 +36,7 @@ A **gone** worker stopped without a report. See what it left (`reeve wait NAME` 
 
 Workers suit long or parallel work; use a subagent for short work.
 
-A worker denied publishing (a PR, a comment) pushes its branch and puts the text in its report.
+A worker opens its PR as a draft (`gh pr create --draft`), done once checks pass; marking it ready waits for the user's OK. Denied, it pushes its branch and saves the PR for `reeve pr NAME` (see its `--help`); other unpublished text goes in its report.
 
 ## Handoffs
 
@@ -46,11 +46,11 @@ The hook `reeve setup claude` (or `codex`) installs adds a "Context check" line 
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It starts the successor, a worker told to read the file. Stop once it returns. Workers keep running; the successor checks `reeve ls` and `reeve report NAME` first. A message the user sends the old session goes to the successor's inbox; don't relay it.
+It starts the successor, a worker told to read the file. Stop once it returns. The successor checks `reeve ls` and `reeve report NAME` first. A message the user sends the old session goes to the successor's inbox; don't relay it.
 
 ## Heavy commands
 
-Heavy means test suites, e2e (even one spec), local CI, typecheck, lint, builds and installs. `reeve heavy` waits for a slot and free memory, exits with the command's code, and runs in the background (`run_in_background`, a Codex background terminal).
+Heavy means test suites, e2e (even one spec), local CI, typecheck, lint, builds and installs. `reeve heavy` waits for a slot and free memory, and runs in the background (`run_in_background`, a Codex background terminal).
 
 ```sh
 reeve heavy -- cargo test
@@ -59,9 +59,9 @@ reeve heavy --priority low --label bench -- ./bench.sh   # yields to other runs
 reeve heavy ls           # who runs, waits and why
 ```
 
-You decide what's heavy; if in doubt, queue it; one unit test can skip it. It limits load, not collisions. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
+If in doubt, queue it; one unit test can skip it. It limits load, not collisions. Prefer isolation (a per-run database or port); for a resource that can't be split, add `--lock KEY`: one run per key, freed on exit.
 
-Runs time out after 30 minutes with a slot (exit 124): start e2e runs narrow; `--timeout 45m` is for a known full run.
+Runs time out after 30 minutes with a slot (exit 124): start e2e runs narrow; `--timeout 45m` is for a full run.
 
 ## Messages
 
