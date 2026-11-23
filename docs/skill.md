@@ -7,12 +7,12 @@ reeve runs agents beside your session. Two rules aren't optional:
 
 ## Named workers: work that outlives this session
 
-`reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session; its report goes to `~/.local/state/reeve/reports/NAME.md`. Pass the project root as `--cwd` for its `.claude/` setup.
+`reeve run --name NAME --cwd DIR -- "PROMPT"` starts a named worker. It outlives your session and reports to `~/.local/state/reeve/reports/NAME.md`. Pass the project root as `--cwd` for its `.claude/` setup.
 
 Inside Herdr each worker gets its own tab, where the user sees and answers it; use `reeve run`, not Herdr's agent commands. Outside Herdr it is a Claude Code background session (`--bg`, for that case only). `--force` skips reeve's safety checks.
 
 ```sh
-reeve run --name fix-flaky --cwd ~/app -- "Fix the flaky test in tests/api; run it 20 times to confirm."
+reeve run --name fix-flaky --cwd ~/app -- "Fix the flaky test in tests/api."
 reeve run --name review --cwd ~/app -- --model sonnet "Review it."
 reeve ls                 # live and recent workers; --all
 reeve waiting            # what waits on you
@@ -22,8 +22,8 @@ reeve report fix-flaky   # the report
 reeve close fix-flaky    # closes it now, with its clean pushed worktree
 ```
 
-The last argument after `--` is the prompt; agent flags like `--model` go before it. `--worktree` gives it its own git worktree; `--agent codex` runs Codex.
-For unattended work with a clear end, start the prompt with `/goal` and pass `--permission-mode auto` after `--`; name the check, a separate model runs it each turn.
+The last argument after `--` is the prompt, after agent flags; put one with backticks, `$` or quotes in a `--prompt-file` (`-`: stdin). `--worktree` gives it its own git worktree; `--agent codex` runs Codex.
+For unattended work with a clear end, start the prompt with `/goal` and pass `--permission-mode auto` after `--`; name the check; a model runs it each turn.
 
 Reports reach your inbox as `NAME done: …`; also follow each with `reeve watch NAME...`: in Claude Code the Monitor tool with `timeout_ms` 1800000, re-armed; elsewhere a background shell. It prints only what needs you and exits once each is done or gone; don't poll. Act on each line:
 
@@ -32,7 +32,7 @@ Reports reach your inbox as `NAME done: …`; also follow each with `reeve watch
 - **idle on** a usage limit or API error: nudge it once clear, or restart it.
 - **blocked** (a permission prompt, a question): answer it yourself, as the line says. Approve reads and work within its task; bring the user only deploys, production data changes, force-pushes and anything published.
 
-A **gone** worker stopped without a report. See what it left (`reeve wait NAME` says where), then restart it under its name saying where to pick up, or report it lost. `reeve rm NAME` drops it.
+A **gone** worker stopped without a report. See what it left (`reeve wait NAME` says where), then restart it under its name with where to pick up, or report it lost. `reeve rm NAME` drops it.
 
 Workers suit long or parallel work; use a subagent for short work.
 
@@ -46,7 +46,7 @@ The hook `reeve setup claude` (or `codex`) installs adds a "Context check" line 
 reeve handoff --name NAME-2 --notes handoff.md   # goal, what's done, what's next, open questions
 ```
 
-It starts the successor, a worker told to read the file. Stop once it returns. The successor checks `reeve ls` and `reeve report NAME` first. A message the user sends the old session goes to the successor's inbox; don't relay it.
+It starts a successor worker told to read the file. Stop once it returns. The successor checks `reeve ls` and `reeve report NAME` first. A message the user sends the old session goes to the successor's inbox; don't relay it.
 
 ## Heavy commands
 

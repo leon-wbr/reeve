@@ -100,8 +100,15 @@ fn reeve(dir: &Path, from: &Path, args: &[&str]) -> Output {
 }
 
 fn reeve_with(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_reeve"))
-        .args(args)
+    command(dir, from, args, env)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+fn command(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_reeve"));
+    c.args(args)
         .current_dir(from)
         .env("PATH", fakes(dir))
         .env("XDG_STATE_HOME", dir.join("state"))
@@ -117,10 +124,8 @@ fn reeve_with(dir: &Path, from: &Path, args: &[&str], env: &[(&str, &str)]) -> O
         .env_remove("HERDR_WORKSPACE_ID")
         .env_remove("CLAUDECODE")
         .env_remove("CODEX_THREAD_ID")
-        .envs(env.iter().copied())
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        .envs(env.iter().copied());
+    c
 }
 
 fn read(path: PathBuf) -> String {
@@ -1770,4 +1775,67 @@ fn a_handoff_passes_the_parent_on_takes_over_the_workers_and_reports_the_predece
         "{out}"
     );
     assert_eq!(follow(), "");
+}
+
+#[test]
+fn a_prompt_file_reaches_the_worker_verbatim_past_any_shell() {
+    let (d, project, elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let prompt = "run `reeve ls`, $(gh pr create) and $HOME with \"quotes\" and 'more'";
+    std::fs::write(elsewhere.join("p.md"), format!("{prompt}\n")).unwrap();
+    let cwd = project.display().to_string();
+    let args = [
+        "run",
+        "--name",
+        "w",
+        "--bg",
+        "--cwd",
+        &cwd,
+        "--prompt-file",
+        "p.md",
+        "--",
+        "--model",
+        "opus",
+    ];
+    let o = reeve(&root, &elsewhere, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "w");
+    let log = read(root.join("claude.log"));
+    assert!(log.contains("--model opus"), "{log}");
+    assert!(log.contains(&format!("-n w {prompt} When")), "{log}");
+}
+
+#[test]
+fn a_prompt_file_of_dash_is_read_from_stdin() {
+    use std::io::Write;
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let args = ["run", "--name", "w", "--bg", "--prompt-file", "-"];
+    let mut child = command(&root, &project, &args, &[])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"fix `this`")
+        .unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    started(&root, "w");
+    assert!(read(root.join("claude.log")).contains("fix `this` When"));
+}
+
+#[test]
+fn a_prompt_file_that_cannot_be_read_starts_nothing() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    let args = ["run", "--name", "w", "--bg", "--prompt-file", "nope.md"];
+    let o = reeve(&root, &project, &args);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("--prompt-file nope.md"), "{err}");
+    assert!(read(root.join("claude.log")).is_empty());
 }

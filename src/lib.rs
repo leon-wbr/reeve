@@ -92,6 +92,10 @@ enum Top {
         /// CLAUDE.md, .claude/ settings, skills and hooks from the start [default: here]
         #[arg(long, value_name = "DIR")]
         cwd: Option<PathBuf>,
+        /// Read the prompt from FILE (`-` for stdin) and pass it after the arguments, so no shell
+        /// sees its backticks, `$` or quotes
+        #[arg(long, value_name = "FILE")]
+        prompt_file: Option<PathBuf>,
         #[command(flatten)]
         opts: sandbox::Opts,
         /// Arguments passed to the agent, its prompt last for a named worker
@@ -591,6 +595,19 @@ pub fn bg_in_herdr(who: &str) -> String {
     )
 }
 
+fn read_prompt(file: &std::path::Path) -> io::Result<String> {
+    let text = if file.as_os_str() == "-" {
+        io::read_to_string(io::stdin())
+    } else {
+        std::fs::read_to_string(file)
+    };
+    let why = |e: String| io::Error::other(format!("--prompt-file {}: {e}", file.display()));
+    match text.map_err(|e| why(e.to_string()))?.trim_end() {
+        "" => Err(why("empty".into())),
+        p => Ok(p.into()),
+    }
+}
+
 fn in_herdr() -> bool {
     std::env::var("HERDR_ENV").is_ok_and(|v| v == "1")
 }
@@ -658,18 +675,26 @@ pub fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let workers = || workers::Registry::default_dir().map(workers::Registry::at);
-    let Some(command) = cli.command else {
+    let Some(mut command) = cli.command else {
         print!("{SKILL}");
         ev.finish(0, None);
         events::log(&ev);
         return ExitCode::SUCCESS;
     };
+    let prompt = match &mut command {
+        Top::Run {
+            prompt_file: Some(f),
+            args,
+            ..
+        } => read_prompt(f).map(|p| args.push(p)),
+        _ => Ok(()),
+    };
     // Every backend (pane, background session, foreground, sandbox) starts from here.
-    let cd = match &command {
+    let cd = prompt.and_then(|_| match &command {
         Top::Run { cwd: Some(dir), .. } => std::env::set_current_dir(dir)
             .map_err(|e| io::Error::other(format!("--cwd {}: {e}", dir.display()))),
         _ => Ok(()),
-    };
+    });
     let result: io::Result<i32> = match command {
         _ if cd.is_err() => cd.map(|_| 0),
         Top::Run { name: Some(_), .. } if explicit => {
@@ -1171,6 +1196,7 @@ mod tests {
             "gh pr create --draft",
             "--cwd DIR",
             "-- --model sonnet \"",
+            "`--prompt-file` (`-`: stdin)",
             "`reeve heavy -- <command>`",
             "Prefer isolation",
             "`--lock KEY`",
