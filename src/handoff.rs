@@ -415,6 +415,8 @@ pub fn handoff(
         let _ = fs::remove_file(r.predecessor_path(next));
         return Err(e);
     }
+    // A handoff successor is the user's own session, which a report never ends.
+    fs::write(crate::autoclose::keep_open_path(r, next), "")?;
     if let (Some(from), Ok(w)) = (from, r.get(next)) {
         r.set(next, w.started, |w| w.predecessor = Some(from.into()))?;
     }

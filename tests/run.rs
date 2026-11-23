@@ -1038,6 +1038,17 @@ fn a_handoff_from_a_codex_session_starts_a_codex_successor() {
     assert!(read(root.join("claude.log")).contains("--bg"));
 }
 
+#[test]
+fn a_handoff_successor_is_kept_open_like_run_keep_open() {
+    let (d, project, _elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    std::fs::write(project.join("n.md"), "Goal.").unwrap();
+    let args = ["handoff", "--name", "next", "--notes", "n.md", "--bg"];
+    let o = reeve(&root, &project, &args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(root.join("state/reeve/reports/next.keep-open").exists());
+}
+
 fn idle_pane(root: &Path, input: &str) {
     std::fs::write(
         root.join("pane.json"),

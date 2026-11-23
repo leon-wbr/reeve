@@ -1572,6 +1572,7 @@ pub(crate) fn states(all: &[Worker]) -> Vec<(State, bool)> {
             });
             if w.error.is_none() && !w.starting {
                 seen(|m| m.insert(w.name.clone(), a));
+                crate::autoclose::note_agent(w, a, now);
             }
             (s, history(s, a, finished_ago(w, now)))
         })
@@ -1617,7 +1618,11 @@ fn seen<T>(f: impl FnOnce(&mut HashMap<String, Agent>) -> T) -> T {
 /// `w`'s agent as [`states`] last found it in this process, else probed now.
 pub(crate) fn seen_agent(w: &Worker) -> Agent {
     let known = seen(|m| m.get(&w.name).copied());
-    known.unwrap_or_else(|| agent(w))
+    known.unwrap_or_else(|| {
+        let a = agent(w);
+        crate::autoclose::note_agent(w, a, now());
+        a
+    })
 }
 
 pub fn ls_brief(r: &Registry) -> io::Result<String> {
