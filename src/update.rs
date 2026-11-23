@@ -33,6 +33,39 @@ impl Install {
         };
         words.into_iter().map(String::from).collect()
     }
+
+    /// The command that installs it again over a broken upgrade; None for Claude Code's own
+    /// installer, whose `claude update` needs a working `claude`.
+    pub fn reinstall(&self) -> Option<Vec<String>> {
+        let words: Vec<&str> = match self {
+            Install::BrewCask(c) => vec!["brew", "reinstall", "--cask", c],
+            Install::BrewFormula(f) => vec!["brew", "reinstall", f],
+            Install::Npm(_) => return Some(self.command()),
+            Install::Native => return None,
+        };
+        Some(words.into_iter().map(String::from).collect())
+    }
+}
+
+/// The version an upgraded CLI reports, after one reinstall if it reported none; else the
+/// command that should fix it.
+fn verify(
+    install: &Install,
+    mut version: impl FnMut() -> Option<String>,
+    mut run: impl FnMut(&[String]) -> bool,
+) -> Result<String, String> {
+    if let Some(v) = version() {
+        return Ok(v);
+    }
+    let Some(fix) = install.reinstall() else {
+        return Err("curl -fsSL https://claude.ai/install.sh | bash".into());
+    };
+    if run(&fix)
+        && let Some(v) = version()
+    {
+        return Ok(v);
+    }
+    Err(fix.join(" "))
 }
 
 /// The npm package of each CLI.
@@ -80,31 +113,28 @@ pub fn starting(all: &[workers::Worker], kind: Kind, now: u64) -> Vec<String> {
         .collect()
 }
 
-/// The first line of `BIN --version`, or "unknown" if it fails or takes over 10 s.
-fn version(bin: &str) -> String {
-    let read = || -> Option<String> {
-        let mut child = Command::new(bin)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while child.try_wait().ok()?.is_none() {
-            if Instant::now() > deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+/// The first line of `BIN --version`, or None if it fails or takes over 10 s.
+fn version(bin: &str) -> Option<String> {
+    let mut child = Command::new(bin)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().ok()?.is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
         }
-        let o = child.wait_with_output().ok()?;
-        let s = String::from_utf8_lossy(&o.stdout);
-        let line = s.lines().next()?.trim();
-        (o.status.success() && !line.is_empty()).then(|| line.to_string())
-    };
-    read().unwrap_or_else(|| "unknown".into())
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().ok()?;
+    let s = String::from_utf8_lossy(&o.stdout);
+    let line = s.lines().next()?.trim();
+    (o.status.success() && !line.is_empty()).then(|| line.to_string())
 }
 
 /// Runs git in `dir` and returns its trimmed stdout, or its stderr as the error.
@@ -296,7 +326,7 @@ fn update_self(reeve: &Path, dry_run: bool) -> io::Result<bool> {
         return Ok(false);
     }
     let installed = root.map_or_else(|| exe.clone(), |r| r.join("bin/reeve"));
-    let after = version(&installed.to_string_lossy());
+    let after = version(&installed.to_string_lossy()).unwrap_or_else(|| "unknown".into());
     let after = after.strip_prefix("reeve ").unwrap_or(&after);
     println!("reeve: {current} -> {after}");
     Ok(true)
@@ -327,7 +357,7 @@ pub fn main(dry_run: bool) -> io::Result<i32> {
             continue;
         };
         let cmd = install.command();
-        let before = version(bin);
+        let before = version(bin).unwrap_or_else(|| "unknown".into());
         if dry_run {
             println!("{bin} {before}: would run reeve heavy -- {}", cmd.join(" "));
             continue;
@@ -350,7 +380,27 @@ pub fn main(dry_run: bool) -> io::Result<i32> {
             code = 1;
             continue;
         }
-        let after = version(bin);
+        let reinstall = |c: &[String]| {
+            println!(
+                "{bin}: no version after the upgrade; running {}",
+                c.join(" ")
+            );
+            Command::new(&reeve)
+                .args(["heavy", "--label", &format!("reinstall {bin}"), "--"])
+                .args(c)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let after = match verify(&install, || version(bin), reinstall) {
+            Ok(v) => v,
+            Err(fix) => {
+                println!(
+                    "{bin}: broken after the upgrade, `{bin} --version` fails; fix it with: {fix}"
+                );
+                code = 1;
+                continue;
+            }
+        };
         if after == before {
             println!("{bin}: already current, {after}");
         } else {
@@ -423,6 +473,49 @@ mod tests {
                 "{p}"
             );
         }
+    }
+
+    #[test]
+    fn an_upgrade_that_leaves_no_version_is_reinstalled_once() {
+        let cask = Install::BrewCask("claude-code@latest".into());
+        let ok = verify(&cask, || Some("2.1.330".into()), |_| panic!("no reinstall"));
+        assert_eq!(ok.unwrap(), "2.1.330");
+
+        let mut ran = vec![];
+        let mut versions = vec![Some("2.1.330".to_string()), None];
+        let fixed = verify(
+            &cask,
+            || versions.pop().unwrap(),
+            |c: &[String]| {
+                ran.push(c.join(" "));
+                true
+            },
+        );
+        assert_eq!(fixed.unwrap(), "2.1.330");
+        assert_eq!(ran, ["brew reinstall --cask claude-code@latest"]);
+
+        let formula = Install::BrewFormula("codex".into());
+        let mut runs = 0;
+        let broken = verify(
+            &formula,
+            || None,
+            |_| {
+                runs += 1;
+                true
+            },
+        );
+        assert_eq!(broken.unwrap_err(), "brew reinstall codex");
+        assert_eq!(runs, 1);
+
+        let npm = Install::Npm("@openai/codex");
+        let failed = verify(&npm, || None, |_| false);
+        assert_eq!(failed.unwrap_err(), "npm install -g @openai/codex@latest");
+
+        let native = verify(&Install::Native, || None, |_| panic!("no reinstall"));
+        assert_eq!(
+            native.unwrap_err(),
+            "curl -fsSL https://claude.ai/install.sh | bash"
+        );
     }
 
     #[test]
