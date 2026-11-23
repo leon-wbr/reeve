@@ -10,6 +10,7 @@ mod heavy;
 mod inbox;
 pub mod mem;
 mod msg;
+mod pr;
 mod push;
 mod remote;
 mod run;
@@ -135,6 +136,10 @@ enum Top {
     },
     /// Print a named worker's report
     Report { name: String },
+    /// Open the PR a worker saved because it couldn't: `gh pr create` from NAME.pr.md, next to
+    /// its report, run in its directory. The file is `title:`, `head:` and optionally `base:`,
+    /// `repo:` and `draft: true` lines between two `---` lines, then the body
+    Pr { name: String },
     /// Hand off to a successor: write a handoff file from your notes and the named workers, and
     /// start the successor as a named worker told to read it. Stop once it returns
     Handoff {
@@ -889,6 +894,10 @@ pub fn main() -> ExitCode {
             window,
             ..
         }) => usage::main(agent, json, &max, window),
+        Top::Pr { name } => {
+            ev.worker = Some(name.clone());
+            workers().and_then(|r| pr::open(&r, &name))
+        }
         Top::Report { name } => {
             ev.worker = Some(name.clone());
             workers()
@@ -1158,6 +1167,8 @@ mod tests {
             "reeve close",
             "reeve report",
             "reeve rm NAME",
+            "`reeve pr NAME`",
+            "gh pr create --draft",
             "--cwd DIR",
             "-- --model sonnet \"",
             "`reeve heavy -- <command>`",

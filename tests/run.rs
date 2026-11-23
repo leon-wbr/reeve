@@ -43,6 +43,13 @@ fn fakes(dir: &Path) -> String {
         ),
     );
     executable(
+        &bin.join("gh"),
+        &format!(
+            "pwd -P >> {}\necho \"$*\" >> {0}\ncat >> {0}\necho https://github.com/o/r/pull/7",
+            log("gh")
+        ),
+    );
+    executable(
         &bin.join("herdr-list"),
         r#"body=""
 [ -f "$1" ] && body=$(sed 's/^ *{"result": *{"pane": *{//; s/} *} *} *$//' "$1")
@@ -385,6 +392,36 @@ fn registry(root: &Path, names: &[&str]) {
         })
         .collect();
     std::fs::write(state.join("workers.json"), Value::Array(all).to_string()).unwrap();
+}
+
+#[test]
+fn reeve_pr_opens_the_pr_a_worker_saved_from_its_directory_and_no_shell_sees_the_body() {
+    let (d, _project, elsewhere) = dirs();
+    let root = d.path().canonicalize().unwrap();
+    registry(&root, &["w", "none"]);
+    std::fs::write(
+        root.join("state/reeve/reports/w.pr.md"),
+        "---\ntitle: fix: it\nhead: fix/it\ndraft: true\n---\n\nRuns `gh pr create` $(never).\n",
+    )
+    .unwrap();
+    let o = reeve(&root, &elsewhere, &["pr", "w"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        read(root.join("gh.log")),
+        format!(
+            "{}\npr create --title fix: it --head fix/it --draft --body-file -\nRuns `gh pr create` $(never).\n",
+            root.display()
+        )
+    );
+    assert!(String::from_utf8_lossy(&o.stdout).contains("/pull/7"));
+
+    let o = reeve(&root, &elsewhere, &["pr", "none"]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("none saved no PR") && err.contains("none.pr.md"),
+        "{err}"
+    );
 }
 
 fn report(root: &Path, name: &str) {
