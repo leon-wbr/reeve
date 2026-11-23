@@ -13,6 +13,8 @@
 //! ---
 //! The body, in Markdown.
 //! ```
+//!
+//! Values are one-line YAML scalars, so a title may also be quoted.
 
 use crate::workers::Registry;
 use std::io::{self, Write};
@@ -39,6 +41,7 @@ pub fn gh_args(text: &str) -> Result<(Vec<String>, String), String> {
             .split_once(':')
             .map(|(k, v)| (k.trim(), v.trim()))
             .ok_or_else(|| format!("`{line}` is no `key: value` line"))?;
+        let value = &scalar(value).map_err(|e| format!("`{line}`: {e}"))?;
         match key {
             "draft" if value == "true" => args.push("--draft".into()),
             "draft" if value == "false" => {}
@@ -59,6 +62,50 @@ pub fn gh_args(text: &str) -> Result<(Vec<String>, String), String> {
     }
     args.extend(["--body-file", "-"].map(String::from));
     Ok((args, body.trim().to_string() + "\n"))
+}
+
+/// A one-line YAML scalar: 'single-quoted' (`''` is a quote), "double-quoted" (backslash
+/// escapes) or plain, taken as it stands.
+fn scalar(value: &str) -> Result<String, String> {
+    let mut chars = value.chars();
+    let quote = match chars.next() {
+        Some(q @ ('\'' | '"')) => q,
+        _ => return Ok(value.into()),
+    };
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if quote == '\'' && chars.clone().next() == Some('\'') => {
+                chars.next();
+                out.push('\'');
+            }
+            '\\' if quote == '"' => out.push(match chars.next() {
+                Some('\\') => '\\',
+                Some('"') => '"',
+                Some('/') => '/',
+                Some('n') => '\n',
+                Some('t') => '\t',
+                Some('r') => '\r',
+                Some('0') => '\0',
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    u32::from_str_radix(&hex, 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .ok_or(format!("`\\u{hex}` is no escape"))?
+                }
+                e => return Err(format!("`\\{}` is no escape", e.unwrap_or(' '))),
+            }),
+            c if c == quote => {
+                return match chars.as_str().trim() {
+                    "" => Ok(out),
+                    _ => Err("text after its closing quote".into()),
+                };
+            }
+            c => out.push(c),
+        }
+    }
+    Err(format!("unclosed {quote}"))
 }
 
 /// Opens the PR a worker saved, with `gh` in the worker's directory while it is still there.
@@ -105,6 +152,25 @@ mod tests {
     }
 
     #[test]
+    fn front_matter_values_are_yaml_scalars() {
+        for (value, title) in [
+            (
+                r#"'feat(desktop): "Your presence" opens a popover'"#,
+                r#"feat(desktop): "Your presence" opens a popover"#,
+            ),
+            ("'it''s done'", "it's done"),
+            (r#""fix: it doesn't …""#, "fix: it doesn't …"),
+            (r#""a \"b\" \\ c\td""#, "a \"b\" \\ c\td"),
+            ("fix: plain: with colons", "fix: plain: with colons"),
+            ("it's \"plain\"", "it's \"plain\""),
+        ] {
+            let (args, _) = gh_args(&format!("---\ntitle: {value}\nhead: 'h'\n---\nb")).unwrap();
+            assert_eq!(args[3], title, "{value}");
+            assert_eq!(args[5], "h");
+        }
+    }
+
+    #[test]
     fn a_pr_file_without_a_title_head_or_front_matter_is_refused() {
         for (text, why) in [
             ("title: t\n", "front matter"),
@@ -113,6 +179,13 @@ mod tests {
             ("---\ntitle: t\n---\nb", "a title and a head"),
             ("---\ntitle: t\nhead: h\nreviewer: x\n---\nb", "reeve knows"),
             ("---\ntitle: t\nhead: h\ndraft: yes\n---\nb", "reeve knows"),
+            ("---\ntitle: 'open\nhead: h\n---\nb", "unclosed"),
+            (
+                "---\ntitle: \"a\" b\nhead: h\n---\nb",
+                "after its closing quote",
+            ),
+            ("---\ntitle: \"\\q\"\nhead: h\n---\nb", "escape"),
+            ("---\ntitle: ''\nhead: h\n---\nb", "reeve knows"),
         ] {
             let err = gh_args(text).unwrap_err();
             assert!(err.contains(why), "{text:?}: {err}");
