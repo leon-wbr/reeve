@@ -120,9 +120,9 @@ enum Top {
         timeout: Option<u64>,
     },
     /// Print a line on stdout each time a named worker is done, blocked or gone, or has sat idle
-    /// without a report and without a `reeve heavy` job of its own for --stall minutes, for
-    /// Claude Code's Monitor tool or a background shell. Without names it follows every worker
-    /// and never exits; with names it exits once each is done (0) or gone (1)
+    /// without a report and without a `reeve heavy` job or background task of its own for
+    /// --stall minutes, for Claude Code's Monitor tool or a background shell. Without names it
+    /// follows every worker and never exits; with names it exits once each is done (0) or gone (1)
     Watch {
         #[arg(value_name = "NAME")]
         names: Vec<String>,
